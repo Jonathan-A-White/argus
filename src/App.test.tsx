@@ -44,7 +44,7 @@ describe('application shell', { timeout: 60_000 }, () => {
       expect(within(screen.getByRole('navigation', { name: 'Mobile navigation' })).getByRole('button', { name: label })).toBeInTheDocument()
     }
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Mobile navigation' })).getByRole('button', { name: 'More' }))
-    expect(await screen.findByRole('heading', { name: 'Command Center' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Command Center', level: 1 })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }))
     expect(await screen.findByText('Data integrity healthy')).toBeInTheDocument()
   })

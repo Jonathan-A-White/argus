@@ -1,17 +1,18 @@
-/** Search helpers shared by every list. Common supply abbreviations match their long forms. */
+/** Search helpers shared by every list. Common supply abbreviations also match their long forms. */
+const ABBREVIATIONS: Record<string, string> = { pt: 'physical training', nsu: 'navy service uniform', sdb: 'service dress blue', oxford: 'shoe' }
+const tokens = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
+
 export function normalizeSearch(value: string) {
-  const abbreviations: Record<string, string> = { pt: 'physical training', nsu: 'navy service uniform', oxford: 'shoe' }
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean).map(token => abbreviations[token] ?? token).join(' ')
+  return tokens(value).map(token => ABBREVIATIONS[token] ?? token).join(' ')
 }
 
+/** True when the query matches any field, comparing both as typed and with abbreviations expanded (so "oxford" finds "Black Oxfords" and "PT" finds "Physical Training"). */
 export function matchesSearch(query: string, ...fields: string[]) {
-  const needle = normalizeSearch(query)
-  if (!needle) return true
-  const compactNeedle = needle.replaceAll(' ', '')
-  const words = needle.split(' ')
+  const raw = tokens(query).join(' ')
+  if (!raw) return true
+  const needles = [...new Set([raw, normalizeSearch(query)])]
   return fields.some(field => {
-    const normalized = normalizeSearch(field)
-    const haystack = normalized.replaceAll(' ', '')
-    return haystack.includes(compactNeedle) || words.every(word => normalized.includes(word))
+    const haystacks = [...new Set([tokens(field).join(' '), normalizeSearch(field)])]
+    return needles.some(needle => haystacks.some(haystack => haystack.replaceAll(' ', '').includes(needle.replaceAll(' ', '')) || needle.split(' ').every(word => haystack.includes(word))))
   })
 }

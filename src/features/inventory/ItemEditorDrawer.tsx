@@ -73,8 +73,9 @@ export function ItemEditorDrawer({ catalogId, projection, controller, can, onPro
         {item.sized && !canCreate && !variants.length && (
           <p className="catalog-section-text">Ask a supply officer to add the sizes your unit stocks.</p>
         )}
+        {/* Re-keyed on version so an edit saved here or synced from another device refreshes the form instead of leaving stale values that would revert it. */}
         <ItemDetailsForm
-          key={item.catalogId}
+          key={`${item.catalogId}:${item.version}`}
           item={item}
           variants={variants}
           categories={categoriesOf(projection.catalog)}

@@ -1,6 +1,6 @@
 import { canonicalize, sha256 } from '../distributed/canonical'
-import { parseEncryptedEnvelope } from '../private-sync/schema'
-import type { EncryptedArgusEnvelope } from '../private-sync/types'
+import { parseEncryptedEnvelope, parseKeyGrantRecord } from '../private-sync/schema'
+import type { EncryptedArgusEnvelope, KeyGrantRecord } from '../private-sync/types'
 import { assertTestnetOnly } from './ArgusWalletAdapter'
 
 /** Minimal subset of the current BRC-100 createAction contract used by A.R.G.U.S. */
@@ -34,13 +34,28 @@ export function encodeEventOutput(input: EncryptedArgusEnvelope) {
 }
 
 export function decodeEventOutput(lockingScript: string) {
+  return parseEncryptedEnvelope(decodeArgusDataOutput(lockingScript))
+}
+
+/** Encodes a KEY_GRANT record the same way encodeEventOutput encodes an event envelope: an OP_FALSE OP_RETURN data output. */
+export function encodeKeyGrantOutput(input: KeyGrantRecord) {
+  const record = parseKeyGrantRecord(input)
+  const payload = utf8.encode(canonicalize(record))
+  return hex(concat(Uint8Array.of(0x00, 0x6a), push(payload.length), payload))
+}
+
+export function decodeKeyGrantOutput(lockingScript: string) {
+  return parseKeyGrantRecord(decodeArgusDataOutput(lockingScript))
+}
+
+function decodeArgusDataOutput(lockingScript: string): unknown {
   const bytes = unhex(lockingScript)
   if (bytes[0] !== 0x00 || bytes[1] !== 0x6a) throw new Error('Transaction output is not an A.R.G.U.S. data output.')
   let length = bytes[2], offset = 3
   if (length === 0x4c) { length = bytes[3]; offset = 4 }
   else if (length === 0x4d) { length = bytes[3] | bytes[4] << 8; offset = 5 }
   if (offset + length !== bytes.length) throw new Error('A.R.G.U.S. data output length is invalid.')
-  return parseEncryptedEnvelope(JSON.parse(new TextDecoder().decode(bytes.slice(offset))))
+  return JSON.parse(new TextDecoder().decode(bytes.slice(offset)))
 }
 
 export class EncryptedEventTestnetAdapter {

@@ -45,10 +45,8 @@ import {
 import { SupplyWorkflow } from "./components/SupplyWorkflow";
 import { IdentityGate } from "./identity/screens/IdentityGate";
 import { PendingAdmissionScreen } from "./identity/screens/PendingAdmissionScreen";
-import {
-  buildAuthenticatedController,
-  identityGateRequired,
-} from "./identity/runtime";
+import { identityGateRequired } from "./identity/runtime";
+import { createRuntimeController } from "./private-sync/runtime";
 import {
   admitPerson,
   knownPeople,
@@ -146,18 +144,30 @@ export default function App({ controller: supplied, ...rest }: Props) {
 function IdentityGatedApp(props: Omit<Props, "controller">) {
   const [unlocked, setUnlocked] = useState<UnlockedDeviceIdentity>();
   const [record, setRecord] = useState<DeviceIdentityRecord>();
-  const controller = useMemo(() => {
-    if (!identityGateRequired()) return new DistributedAppController();
-    if (unlocked?.authorization)
-      return buildAuthenticatedController({
-        ...unlocked,
-        authorization: unlocked.authorization,
-      });
-    return undefined;
-  }, [unlocked]);
+  const [authenticatedController, setAuthenticatedController] =
+    useState<DistributedAppController>();
+  // Constructed once and only used when the gate is bypassed (mock-development); building it is cheap
+  // and side-effect-free, so it is safe to hold even when the authenticated path below is the one in use.
+  const mockController = useMemo(() => new DistributedAppController(), []);
+  const gateRequired = identityGateRequired();
+  useEffect(() => {
+    if (!gateRequired || !unlocked?.authorization) return;
+    let active = true;
+    createRuntimeController(
+      resolveBlockchainMode(import.meta.env.VITE_ARGUS_BLOCKCHAIN_MODE),
+      { unlocked: { ...unlocked, authorization: unlocked.authorization } },
+    ).then((next) => {
+      if (active) setAuthenticatedController(next);
+    });
+    return () => {
+      active = false;
+    };
+  }, [gateRequired, unlocked]);
+  const controller = gateRequired ? authenticatedController : mockController;
   const lock = () => {
     setUnlocked(undefined);
     setRecord(undefined);
+    setAuthenticatedController(undefined);
   };
   if (!controller) {
     if (unlocked && record)

@@ -1,5 +1,11 @@
 import { IDBFactory } from "fake-indexeddb";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import App from "./App";
 import { DEVICE_IDENTITY_STORAGE_KEY } from "./identity/deviceIdentity";
@@ -56,12 +62,14 @@ async function createJoiningIdentity() {
   fireEvent.click(
     within(form).getByRole("button", { name: "Join this unit" }),
   );
-  const codeField = await screen.findByLabelText(
+  const codeField = (await screen.findByLabelText(
     "Your identity code",
     {},
     CRYPTO_TIMEOUT,
-  );
-  return (codeField as HTMLTextAreaElement).value;
+  )) as HTMLTextAreaElement;
+  // The identity code is filled in asynchronously after the textarea mounts; wait for it, not just the element.
+  await waitFor(() => expect(codeField.value).not.toBe(""), CRYPTO_TIMEOUT);
+  return codeField.value;
 }
 
 async function openRolesPanel() {

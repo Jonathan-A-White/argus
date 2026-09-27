@@ -2,6 +2,7 @@ import { AuthorizationService, ROLE_PERMISSIONS, issueCredential } from '../auth
 import { seedData } from '../data'
 import { STORAGE_KEY } from '../domain'
 import { MockIdentityProvider } from '../identity/identity'
+import { SyncScheduler } from '../private-sync/engine'
 import { IndexedDbRepository, type ArgusRepository } from '../storage/repository'
 import { MockSyncProvider, type EventSyncProvider } from '../sync/mock'
 import type { ArgusIdentityProvider } from '../identity/identity'
@@ -86,13 +87,12 @@ export class DistributedAppController {
   async addStillNeeded(input: Parameters<ArgusReplica['addStillNeeded']>[0]) { await this.ready().addStillNeeded(input); return this.project() }
   async updateStillNeeded(id: string, changes: Parameters<ArgusReplica['updateStillNeeded']>[1]) { await this.ready().updateStillNeeded(id, changes); return this.project() }
   async sync() { await this.ready().sync(); return this.project() }
-  /** Polling/reconnect bridge for React and other normal-runtime clients. */
-  startAutoSync(onProjection: (projection: ArgusAppProjection) => void, intervalMs = 5_000) {
-    let stopped = false, running = false
-    const run = async () => { if (stopped || running) return; running = true; try { const projection = await this.sync(); if (!stopped) onProjection(projection) } catch { /* the durable outbox remains retryable */ } finally { running = false } }
-    const timer = setInterval(() => { void run() }, intervalMs), online = () => { void run() }
-    globalThis.addEventListener?.('online', online); void run()
-    return () => { stopped = true; clearInterval(timer); globalThis.removeEventListener?.('online', online) }
+  /** Polling/reconnect bridge for React and other normal-runtime clients, driven by a SyncScheduler (periodic, online, visibilitychange). */
+  startAutoSync(onProjection: (projection: ArgusAppProjection) => void, intervalMs?: number) {
+    let stopped = false
+    const scheduler = new SyncScheduler({ sync: async () => { const projection = await this.sync(); if (!stopped) onProjection(projection) } }, intervalMs)
+    scheduler.start()
+    return () => { stopped = true; scheduler.stop() }
   }
   private ready() { if (!this.replica) throw new Error('Distributed application repository is not initialized.'); return this.replica }
   async project(): Promise<ArgusAppProjection> { const state = await this.repository.snapshot(); const openNeeds=state.stillNeeded.filter(item=>['OPEN','PARTIALLY_FULFILLED'].includes(item.status)); return { inventory: state.inventory, countSessions: state.countSessions, cadets: state.cadets.map(cadet => ({ ...cadet, propertyCount: cadet.currentProperty.reduce((sum, item) => sum + item.quantity, 0), stillNeededCount: openNeeds.filter(item => item.cadetId === cadet.cadetId).length, readiness: cadetReadiness(openNeeds.filter(item => item.cadetId === cadet.cadetId)) })), bundles: state.bundles.map(bundle => ({ ...bundle, mapping: bundleMapping(bundle, state.inventory) })), stillNeeded: openNeeds.map(requirement => ({ ...requirement, availability: requirementAvailability(requirement, state.inventory) })), transactions: state.transactions, conflicts: state.conflicts, events: state.events, audit: auditFrom(state), sync: { mode: this.syncMode, outbox: state.outbox.length, openConflicts: state.conflicts.filter(conflict => conflict.status === 'OPEN').length }, integrity: inspectRepository(state) } }

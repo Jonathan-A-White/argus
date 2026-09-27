@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   ArrowRight,
@@ -42,6 +42,7 @@ import {
   type TestnetWalletStatus,
   type TestnetWalletStatusProvider,
 } from "./blockchain/ArgusWalletAdapter";
+import { FUNDING_FLOOR_SATOSHIS } from "./blockchain/fundingFloor";
 import { SupplyWorkflow } from "./components/SupplyWorkflow";
 import { IdentityGate } from "./identity/screens/IdentityGate";
 import { PendingAdmissionScreen } from "./identity/screens/PendingAdmissionScreen";
@@ -271,6 +272,7 @@ function AuthenticatedApp({
   const [walletProvider] = useState<TestnetWalletStatusProvider>(
     () => walletStatusProvider ?? new UnconfiguredTestnetWalletStatusProvider(),
   );
+  const [walletStatus, setWalletStatus] = useState<TestnetWalletStatus>();
   const [selectedId, setSelectedId] = useState(""),
     [selectedCadetId, setSelectedCadetId] = useState(""),
     [count, setCount] = useState(0),
@@ -388,15 +390,20 @@ function AuthenticatedApp({
       </main>
     );
   const cadet = projection.cadets.find((c) => c.cadetId === selectedCadetId);
+  const unfunded =
+    walletStatus?.connection === "CONNECTED" &&
+    (walletStatus.balanceSatoshis ?? 0) < FUNDING_FLOOR_SATOSHIS;
   const sync = projection.sync.openConflicts
     ? "CONFLICT · ACTION REQUIRED"
-    : projection.sync.mode === "remote"
-      ? projection.sync.outbox
-        ? `SHARED SYNC · ${projection.sync.outbox} QUEUED`
-        : "SHARED SYNC · CONNECTED"
-      : projection.sync.outbox
-        ? `LOCAL · ${projection.sync.outbox} CHANGES QUEUED`
-        : "LOCAL · THIS DEVICE ONLY";
+    : unfunded && projection.sync.outbox
+      ? "Queued: device unfunded"
+      : projection.sync.mode === "remote"
+        ? projection.sync.outbox
+          ? `SHARED SYNC · ${projection.sync.outbox} QUEUED`
+          : "SHARED SYNC · CONNECTED"
+        : projection.sync.outbox
+          ? `LOCAL · ${projection.sync.outbox} CHANGES QUEUED`
+          : "LOCAL · THIS DEVICE ONLY";
   return (
     <div className="app-shell">
       <div className="aether-field" aria-hidden="true">
@@ -656,6 +663,7 @@ function AuthenticatedApp({
         <WalletStatusPanel
           provider={walletProvider}
           close={() => setWalletOpen(false)}
+          onStatus={setWalletStatus}
         />
       )}{" "}
       {addOpen && (
@@ -2017,9 +2025,11 @@ function SettingsPanel({
 function WalletStatusPanel({
   provider,
   close,
+  onStatus,
 }: {
   provider: TestnetWalletStatusProvider;
   close: () => void;
+  onStatus?: (status: TestnetWalletStatus) => void;
 }) {
   const [status, setStatus] = useState<TestnetWalletStatus>(),
     [error, setError] = useState(""),
@@ -2039,12 +2049,19 @@ function WalletStatusPanel({
     }>(),
     [replaceConfirmed, setReplaceConfirmed] = useState(false),
     [rollbackConfirmed, setRollbackConfirmed] = useState(false);
+  const apply = useCallback(
+    (value: TestnetWalletStatus) => {
+      setStatus(value);
+      onStatus?.(value);
+    },
+    [onStatus],
+  );
   const refresh = () => {
     setLoading(true);
     setError("");
     provider
       .getStatus()
-      .then(setStatus)
+      .then(apply)
       .catch((reason) =>
         setError(
           reason instanceof Error
@@ -2059,7 +2076,7 @@ function WalletStatusPanel({
     provider
       .getStatus()
       .then((value) => {
-        if (active) setStatus(value);
+        if (active) apply(value);
       })
       .catch((reason) => {
         if (active)
@@ -2075,7 +2092,7 @@ function WalletStatusPanel({
     return () => {
       active = false;
     };
-  }, [provider]);
+  }, [provider, apply]);
   const attempt = async (kind: "create" | "unlock") => {
     if (failures >= 5) {
       setError(
@@ -2095,7 +2112,7 @@ function WalletStatusPanel({
         throw new Error(
           "This wallet provider does not support that lifecycle operation.",
         );
-      setStatus(next);
+      apply(next);
       setFailures(0);
       setError("");
     } catch (reason) {
@@ -2173,7 +2190,7 @@ function WalletStatusPanel({
       setRecoveryPassword("");
       setRecoveryFile("");
       setRecoveryDetails(undefined);
-      setStatus(next);
+      apply(next);
       setError("Organization testnet wallet recovered successfully.");
     } catch (reason) {
       setRecoveryPassword("");
@@ -2305,6 +2322,13 @@ function WalletStatusPanel({
           <button onClick={() => void copy()}>
             {copied ? "Address copied ✓" : "Copy address"}
           </button>
+          <a
+            href="https://witnessonchain.com/faucet/tbsv"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Get testnet coins
+          </a>
           <div className="record-stats">
             <Summary
               label="Confirmed balance"
@@ -2325,6 +2349,12 @@ function WalletStatusPanel({
               }
             />
           </div>
+          {(status.balanceSatoshis ?? 0) < FUNDING_FLOOR_SATOSHIS && (
+            <p role="alert">
+              Unfunded: this device cannot write until it has at least{" "}
+              {FUNDING_FLOOR_SATOSHIS.toLocaleString()} satoshis
+            </p>
+          )}
           <div className="split-actions">
             <button onClick={refresh}>Refresh</button>
             <button

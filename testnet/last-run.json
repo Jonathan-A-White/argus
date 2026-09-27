@@ -1,0 +1,13 @@
+{
+  "at": "2026-09-27T23:35:42.315Z",
+  "unitId": "u-32c7dc14f49157f9ab94",
+  "anchor": "mfa1zX3eq5SyA3PxWMQdW1WA7dg5HESboS",
+  "anchorExplorer": "https://test.whatsonchain.com/address/mfa1zX3eq5SyA3PxWMQdW1WA7dg5HESboS",
+  "transactions": [
+    "https://test.whatsonchain.com/tx/eb8e8d3089a33d11e9a23b871a044c180d5de4a40a407af40873d50901437f57",
+    "https://test.whatsonchain.com/tx/2e9893085f189efe6fc1a748b2a14c32b765a9a809db5854c02aafb7c983eb31",
+    "https://test.whatsonchain.com/tx/52ca8c31823c481143aaf6865eed8be846ad3094a7b42c4c27fd5088d741c88f",
+    "https://test.whatsonchain.com/tx/4d28d972fd63a0aaca421939904e3dde53f8e45002ecb199389628483dd2f89a"
+  ],
+  "masterBalanceAfter": 681
+}

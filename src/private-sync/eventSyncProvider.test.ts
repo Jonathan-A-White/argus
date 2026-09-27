@@ -15,8 +15,8 @@ describe('normal-runtime encrypted shared counting', () => {
     const authorization=new AuthorizationService(await root.getPublicIdentity(),root)
     for(const identity of [a,b])await authorization.acceptCredential(await issueCredential(root,{subjectPublicIdentity:await identity.getPublicIdentity(),role:'SUPPLY_OFFICER',permissions:[...ROLE_PERMISSIONS.SUPPLY_OFFICER],issuedAt:'2026-01-01T00:00:00.000Z'}))
     const keys=new MockEpochKeyDistribution(organizationId);await keys.rotateEpoch([await a.getPublicIdentity(),await b.getPublicIdentity()])
-    const relay=new MockPrivateHistoryProvider('shared-relay'),repositories=[new MemoryRepository(),new MemoryRepository()]
-    const providers=[a,b].map((identity,index)=>new DurableEncryptedEventSyncProvider('relay',repositories[index],relay,identity,keys,organizationId))
+    const transport=new MockPrivateHistoryProvider('shared-transport'),repositories=[new MemoryRepository(),new MemoryRepository()]
+    const providers=[a,b].map((identity,index)=>new DurableEncryptedEventSyncProvider('transport',repositories[index],transport,identity,keys,organizationId))
     const clients=[a,b].map((identity,index)=>new DistributedAppController(repositories[index],{identity,authorization,provider:providers[index],organizationId}))
     for(const client of clients)await client.initialize(storage())
     const item=(await clients[0].project()).inventory[0]
@@ -26,22 +26,22 @@ describe('normal-runtime encrypted shared counting', () => {
     clients[0].setOnline(true);clients[1].setOnline(true)
     await clients[0].sync();await clients[1].sync();await clients[0].sync()
     for(const client of clients)expect((await client.project()).countSessions[0].totals[item.entityId]).toBe(6)
-    const raw=await relay.getSince();expect(JSON.stringify(raw.envelopes)).not.toContain('COUNT_CONTRIBUTED')
+    const raw=await transport.getSince();expect(JSON.stringify(raw.envelopes)).not.toContain('COUNT_CONTRIBUTED')
   })
 
   it('retains and reuses prepared ciphertext after an ambiguous publish failure', async () => {
     const organizationId='org-retry',identity=await WebCryptoIdentityProvider.create(),keys=new MockEpochKeyDistribution(organizationId)
     await keys.rotateEpoch([await identity.getPublicIdentity()])
     const repository=new MemoryRepository();await repository.initialize()
-    const relay=new MockPrivateHistoryProvider('retry'),original=relay.publish.bind(relay);let lose=true
-    relay.publish=async envelope=>{await original(envelope);if(lose){lose=false;throw new Error('ack lost')}return undefined}
-    const provider=new DurableEncryptedEventSyncProvider('relay',repository,relay,identity,keys,organizationId)
+    const transport=new MockPrivateHistoryProvider('retry'),original=transport.publish.bind(transport);let lose=true
+    transport.publish=async envelope=>{await original(envelope);if(lose){lose=false;throw new Error('ack lost')}return undefined}
+    const provider=new DurableEncryptedEventSyncProvider('transport',repository,transport,identity,keys,organizationId)
     const event={protocol:'ARGUS' as const,protocolVersion:1 as const,organizationId,eventVersion:1 as const,eventId:'event-retry',eventType:'COUNT_CONTRIBUTED' as const,entityId:'session',actorPublicIdentity:await identity.getPublicIdentity(),timestamp:'2026-09-26T00:00:00.000Z',payload:{assignmentId:'a',itemId:'i',quantity:3},signature:'placeholder'}
     await expect(provider.publish(event)).resolves.toBeUndefined()
-    const prepared=await relay.getByEventId(event.eventId)
+    const prepared=await transport.getByEventId(event.eventId)
     expect((await repository.snapshot()).privateSyncOutbox).toEqual([])
     await provider.publish(event)
-    expect(await relay.getByEventId(event.eventId)).toEqual(prepared)
+    expect(await transport.getByEventId(event.eventId)).toEqual(prepared)
     expect((await repository.snapshot()).privateSyncOutbox).toEqual([])
     expect((await repository.snapshot()).privateSyncDeliveries[0].envelope).toEqual(prepared)
   })

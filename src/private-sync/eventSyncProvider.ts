@@ -9,7 +9,7 @@ import { canonicalize } from '../distributed/canonical'
 import { parseEncryptedEnvelope } from './schema'
 
 /**
- * Adapts the encrypted relay protocol to the replica transport contract.
+ * Adapts the encrypted private-history transport to the replica sync contract.
  * Prepared ciphertext is committed to IndexedDB before the network request,
  * so an ambiguous retry sends byte-for-byte the same authenticated envelope.
  * Pulls intentionally replay from cursor zero: replica event IDs make this
@@ -43,13 +43,13 @@ export class DurableEncryptedEventSyncProvider implements EventSyncProvider {
     try {
       acknowledgment = await this.provider.publish(envelope)
     } catch (error) {
-      // The relay may have committed the envelope while its acknowledgement
+      // The provider may have committed the envelope while its acknowledgement
       // was lost. A verified lookup turns that ambiguous result into success;
       // a different envelope is still a hard collision.
       const remote = await this.provider.getByEventId(event.eventId).catch(() => undefined)
       if (!remote || canonicalize(parseEncryptedEnvelope(remote)) !== canonicalize(envelope)) throw error
     }
-    if (acknowledgment && acknowledgment.accepted !== true) throw new Error('Encrypted relay did not durably acknowledge the event.')
+    if (acknowledgment && acknowledgment.accepted !== true) throw new Error('Encrypted transport did not durably acknowledge the event.')
     await this.repository.transaction(state => {
       state.privateSyncOutbox = state.privateSyncOutbox.filter(item => item.providerId !== this.providerId || item.eventId !== event.eventId)
       if (!state.privateSyncDeliveries.some(item => item.providerId === this.providerId && item.eventId === event.eventId)) state.privateSyncDeliveries.push({ providerId: this.providerId, eventId: event.eventId, envelope: envelope! })

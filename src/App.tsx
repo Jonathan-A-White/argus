@@ -12,7 +12,9 @@ import {
   LayoutGrid,
   Settings,
   ShieldCheck,
+  GraduationCap,
   Shirt,
+  UserPlus,
   Users,
   Wallet,
   Wifi,
@@ -40,6 +42,8 @@ import { SharedCountView } from "./features/count/SharedCountView";
 import { InventoryCatalogView } from "./features/inventory/InventoryCatalogView";
 import { CadetsView } from "./features/cadets/CadetsView";
 import { ConflictsPanel } from "./features/conflicts/ConflictsPanel";
+import { BundleEditorPanel } from "./features/bundles";
+import { RolloverPanel, RosterImportPanel } from "./features/admin";
 import { cadetLabel } from "./stage3/domain";
 import { UnitGate } from "./unit/screens/UnitGate";
 import { MembersPanel, WalletPanel } from "./unit/screens/UnitPanels";
@@ -60,6 +64,8 @@ type Panel =
   | "wallet"
   | "conflicts"
   | "diagnostics"
+  | "import"
+  | "rollover"
   | null;
 const nav: Array<{ id: Tab; label: string; icon: typeof Activity }> = [
   { id: "count", label: "Count", icon: ClipboardCheck },
@@ -378,6 +384,7 @@ function AuthenticatedApp({
           <CommandCenter
             projection={projection}
             hasRuntime={Boolean(runtime)}
+            can={can}
             open={setPanel}
             settings={() => setSettingsOpen(true)}
             lock={onLock}
@@ -407,9 +414,33 @@ function AuthenticatedApp({
         />
       )}
       {panel === "bundles" && (
-        <BundlesPanel
+        <BundleEditorPanel
           projection={projection}
+          controller={controller}
+          can={can}
           memberName={memberName}
+          onProjection={setProjection}
+          notify={notify}
+          close={() => setPanel(null)}
+        />
+      )}
+      {panel === "import" && (
+        <RosterImportPanel
+          projection={projection}
+          controller={controller}
+          can={can}
+          onProjection={setProjection}
+          notify={notify}
+          close={() => setPanel(null)}
+        />
+      )}
+      {panel === "rollover" && (
+        <RolloverPanel
+          projection={projection}
+          controller={controller}
+          can={can}
+          onProjection={setProjection}
+          notify={notify}
           close={() => setPanel(null)}
         />
       )}
@@ -683,12 +714,14 @@ type CommandAction = [Exclude<Panel, null>, string, string, typeof Activity];
 function CommandCenter({
   projection,
   hasRuntime,
+  can,
   open,
   settings,
   lock,
 }: {
   projection: ArgusAppProjection;
   hasRuntime: boolean;
+  can: (permission: ArgusPermission) => boolean;
   open: (p: Panel) => void;
   settings: () => void;
   lock?: () => void;
@@ -717,7 +750,30 @@ function CommandCenter({
       "Competing offline changes that need a decision",
       AlertTriangle,
     ],
-    ["bundles", "Issue bundles", "Bundle contents and version history", Shirt],
+    [
+      "bundles",
+      "Issue bundles",
+      can("bundles.manage")
+        ? "Edit bundle contents; every change is a new version"
+        : "Bundle contents and version history",
+      Shirt,
+    ],
+    ...(can("cadets.manage")
+      ? ([
+          [
+            "import",
+            "Import cadets",
+            "Add a class of cadets by cadet ID (e.g. for NCO)",
+            UserPlus,
+          ],
+          [
+            "rollover",
+            "Annual rollover",
+            "Advance NS levels and graduate NS4 cadets",
+            GraduationCap,
+          ],
+        ] as CommandAction[])
+      : []),
     [
       "needed",
       "Still needed",
@@ -774,71 +830,9 @@ function CommandCenter({
         )}
       </div>
       <p className="safe-note">
-        <CalendarRange size={14} /> Planned next: supply calendar (NCO, BLT,
-        AMI, Military Ball, End-of-Year), alerts, dashboard readiness tree,
-        roster import and annual rollover.
+        <CalendarRange size={14} /> Planned next: device push notifications (spec §20 tier 2) and SPV inclusion proofs.
       </p>
     </div>
-  );
-}
-
-function BundlesPanel({
-  projection,
-  memberName,
-  close,
-}: {
-  projection: ArgusAppProjection;
-  memberName: (publicIdentity: string) => string;
-  close: () => void;
-}) {
-  return (
-    <Drawer title="Issue bundles" icon={<Shirt />} close={close}>
-      {projection.bundles.map((b) => {
-        const current = b.versions.find((v) => v.version === b.currentVersion)!;
-        return (
-          <details className="panel-rows" key={b.bundleId}>
-            <summary>
-              <strong>{current.displayName}</strong> · v{b.currentVersion} ·{" "}
-              {current.active ? "ACTIVE" : "INACTIVE"}
-              <small>
-                {current.genderApplicability} · {b.mapping.mapped}/
-                {b.mapping.total} lines ready to issue
-              </small>
-            </summary>
-            <div>
-              {[...current.lines]
-                .sort((a, z) => a.order - z.order)
-                .map((l) => {
-                  const sizes = projection.inventory.filter(
-                    (item) =>
-                      (l.catalogId && item.catalogId === l.catalogId) ||
-                      item.entityId === l.itemId,
-                  );
-                  return (
-                    <p key={l.lineId}>
-                      <b>{l.displayLabel}</b> ·{" "}
-                      {l.required ? "Required" : "Optional"} ·{" "}
-                      {sizes.length
-                        ? `${sizes.length} size${sizes.length === 1 ? "" : "s"} configured`
-                        : "No sizes configured yet (Inventory → item → Add sizes)"}
-                    </p>
-                  );
-                })}
-              <h4>Version history</h4>
-              {[...b.versions].reverse().map((v) => (
-                <p key={v.version}>
-                  v{v.version}
-                  {v.version === b.currentVersion ? " · CURRENT" : ""} ·{" "}
-                  {v.actorPublicIdentity.startsWith("factory:")
-                    ? "Default preset"
-                    : `${new Date(v.createdAt).toLocaleDateString()} · ${memberName(v.actorPublicIdentity)}`}
-                </p>
-              ))}
-            </div>
-          </details>
-        );
-      })}
-    </Drawer>
   );
 }
 

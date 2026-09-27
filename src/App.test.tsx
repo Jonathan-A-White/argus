@@ -106,9 +106,10 @@ describe('unit onboarding over a (fake) BSV testnet chain', { timeout: 120_000 }
     fireEvent.click(screen.getByRole('button', { name: 'Admit' }))
     const code = (await screen.findByLabelText('Admission code', {}, { timeout: 20_000 }) as HTMLTextAreaElement).value
     expect(code).toMatch(/^ARGUS-ADMIT-1:/)
-    expect(await screen.findByText('view transaction')).toBeInTheDocument()
+    expect(await screen.findByText('view transaction', {}, { timeout: 20_000 })).toBeInTheDocument()
+    // The member list refreshes after the admission code appears, so wait for it rather than reading it synchronously.
     const people = screen.getByRole('list', { name: 'People in this unit' })
-    expect(within(people).getByText(/Jordan/)).toBeInTheDocument()
+    expect(await within(people).findByText(/Jordan/, {}, { timeout: 20_000 })).toBeInTheDocument()
 
     // On the joiner's device: unlock, see the waiting screen with a join code, paste the admission code.
     document.body.innerHTML = ''

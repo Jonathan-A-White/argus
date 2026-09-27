@@ -11,8 +11,8 @@ const NAME = 'Casey Bennett'
 /** Two NS1, one NS3, and two NS4 cadets (one still holding a PT Shorts) plus one inactive NS2. */
 async function roster() {
   const controller = new DistributedAppController()
-  let projection = await controller.initialize()
-  projection = await controller.importCadets([
+  await controller.initialize()
+  let projection = await controller.importCadets([
     { gender: 'Male', nsLevel: 'NS1' },
     { gender: 'Female', nsLevel: 'NS1' },
     { gender: 'Male', nsLevel: 'NS3' },

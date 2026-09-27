@@ -113,7 +113,7 @@ export function RolloverPanel({ projection, controller, can, onProjection, notif
           {NS_LEVELS.map(level => (
             <li key={level} className={level === 'NS4' ? 'rollover-graduate' : undefined}>
               <span>
-                {level} <ArrowRight aria-hidden="true" /> {NEXT_LEVEL_LABEL[level]}
+                {level} <ArrowRight aria-hidden="true" /> <span className="sr-only">to</span> {NEXT_LEVEL_LABEL[level]}
               </span>
               <b>{plural(preview.byLevel[level], 'cadet')}</b>
             </li>

@@ -18,6 +18,10 @@ const fakeStorage = () => {
   return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) } }
 }
 
+// Each wrapped credential runs 600,000 PBKDF2 iterations by design (identity.ts); a Master carries two, so generous
+// timeouts are needed under coverage/CI load, especially for the admission tests below that create several devices.
+const CRYPTO_TIMEOUT = 20_000
+
 describe('device identity persistence', () => {
   it('creates a Master identity, its self-issued MASTER credential, and unlocks a working signer', async () => {
     const storage = fakeStorage()
@@ -31,7 +35,7 @@ describe('device identity persistence', () => {
     expect(unlocked.publicIdentity).toBe(record.applicationCredential.publicIdentity)
     expect(unlocked.authorization).toBeInstanceOf(AuthorizationService)
     expect(() => unlocked.authorization!.require(unlocked.publicIdentity, 'users.authorize')).not.toThrow()
-  })
+  }, CRYPTO_TIMEOUT)
 
   it('never stores unwrapped application or authority key material', async () => {
     const storage = fakeStorage()
@@ -48,7 +52,7 @@ describe('device identity persistence', () => {
     const decodeBase64url = (value: string) => atob(value.replaceAll('-', '+').replaceAll('_', '/').padEnd(value.length + ((4 - (value.length % 4)) % 4), '='))
     expect(() => JSON.parse(decodeBase64url(record.applicationCredential.encryptedPrivateJwk))).toThrow()
     expect(() => JSON.parse(decodeBase64url(record.authorityKey.encryptedPrivateJwk))).toThrow()
-  })
+  }, CRYPTO_TIMEOUT)
 
   it('creates a joining device with only an application key and no authority credential', async () => {
     const storage = fakeStorage()
@@ -59,7 +63,7 @@ describe('device identity persistence', () => {
     const unlocked = await unlockDeviceIdentity(record, 'correct horse battery 7')
     expect(unlocked.role).toBe('PENDING')
     expect(unlocked.authorization).toBeUndefined()
-  })
+  }, CRYPTO_TIMEOUT)
 
   it('rejects a self-issued credential from a different, unrelated authority key', async () => {
     const storage = fakeStorage()
@@ -75,14 +79,14 @@ describe('device identity persistence', () => {
       issuedAt: new Date().toISOString(),
     })
     await expect(authorization.acceptCredential(impostorCredential)).rejects.toThrow('Credential issuer is not authorized.')
-  })
+  }, CRYPTO_TIMEOUT)
 
   it('refuses the wrong passphrase and returns undefined for a missing record', async () => {
     const storage = fakeStorage()
     expect(loadDeviceIdentityRecord(storage)).toBeUndefined()
     const record = await createMasterDeviceIdentity('correct horse battery 7', storage)
     await expect(unlockDeviceIdentity(record, 'wrong passphrase 7')).rejects.toThrow('incorrect or')
-  })
+  }, CRYPTO_TIMEOUT)
 
   it('unlocks a Master device with a usable authority signer for admitting people', async () => {
     const storage = fakeStorage()
@@ -90,7 +94,7 @@ describe('device identity persistence', () => {
     const unlocked = await unlockDeviceIdentity(record, 'correct horse battery 7')
     expect(unlocked.authoritySigner).toBeDefined()
     expect(await unlocked.authoritySigner!.getPublicIdentity()).toBe(record.authorityKey!.publicIdentity)
-  })
+  }, CRYPTO_TIMEOUT)
 })
 
 describe('admission', () => {
@@ -123,7 +127,7 @@ describe('admission', () => {
       expect.objectContaining({ publicIdentity: joining.publicIdentity, role: 'SUPPLY_OFFICER', you: true }),
       expect.objectContaining({ publicIdentity: await master.authoritySigner!.getPublicIdentity(), role: 'MASTER', you: false }),
     ])
-  })
+  }, CRYPTO_TIMEOUT)
 
   it('refuses a credential signed by a different, unrelated authority key', async () => {
     const joiningStorage = fakeStorage()
@@ -140,7 +144,7 @@ describe('admission', () => {
     const forgedCode = await encodeCredentialCode({ ...forgedCredential, issuedBy: 'p256:someone-else' })
 
     await expect(admitDeviceWithCredential(joiningRecord, joining.identity, forgedCode, joiningStorage)).rejects.toThrow('Invalid credential signature.')
-  })
+  }, CRYPTO_TIMEOUT)
 
   it('pins the admitting Master as this device\'s root, and refuses a later valid credential from a different root naming the mismatch', async () => {
     const masterAStorage = fakeStorage()
@@ -162,7 +166,7 @@ describe('admission', () => {
 
     const admittedByB = await admitPerson(masterBRecord, masterB.authoritySigner!, identityCode, 'INSTRUCTOR', undefined, masterBStorage)
     await expect(admitDeviceWithCredential(pinnedRecord, joining.identity, admittedByB.credentialCode, joiningStorage)).rejects.toThrow(await masterA.authoritySigner!.getPublicIdentity())
-  })
+  }, 2 * CRYPTO_TIMEOUT)
 
   it('refuses a tampered credential code', async () => {
     const masterStorage = fakeStorage()
@@ -176,5 +180,5 @@ describe('admission', () => {
     const admitted = await admitPerson(masterRecord, master.authoritySigner!, identityCode, 'SUPPLY_ASSISTANT', undefined, masterStorage)
     const tampered = `${admitted.credentialCode.slice(0, -1)}${admitted.credentialCode.at(-1) === '0' ? '1' : '0'}`
     await expect(admitDeviceWithCredential(joiningRecord, joining.identity, tampered, joiningStorage)).rejects.toThrow('damaged')
-  })
+  }, CRYPTO_TIMEOUT)
 })

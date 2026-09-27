@@ -17,13 +17,13 @@ async function shareOrCopy(text: string, title: string) {
 /** Who is in the unit, and (Master only) admitting and revoking people. */
 export function MembersPanel({ runtime, projection, close, onProjection, notify }: { runtime: UnitRuntime; projection: ArgusAppProjection; close: () => void; onProjection: (projection: ArgusAppProjection) => void; notify: (message: string) => void }) {
   const record = runtime.device.record, isMaster = record.role === 'MASTER'
-  const [joinCode, setJoinCode] = useState(''), [role, setRole] = useState<Exclude<ArgusRole, 'MASTER'>>('SUPPLY_ASSISTANT'), [name, setName] = useState(''), [expires, setExpires] = useState(''), [topUp, setTopUp] = useState(true)
+  const [joinCode, setJoinCode] = useState(''), [role, setRole] = useState<Exclude<ArgusRole, 'MASTER'>>('SUPPLY_ASSISTANT'), [name, setName] = useState(''), [expires, setExpires] = useState(''), [topUp, setTopUp] = useState(true), [topUpAmount, setTopUpAmount] = useState(String(DEFAULT_MEMBER_TOP_UP_SATOSHIS))
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [result, setResult] = useState<{ code: string; name: string; topUpTxid?: string; topUpError?: string }>(), [shared, setShared] = useState('')
   const [revoking, setRevoking] = useState(''), [confirmRevoke, setConfirmRevoke] = useState('')
   const admit = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true); setError(''); setResult(undefined); setShared('')
     try {
-      const admitted = await runtime.admit(joinCode, role, { ...(name.trim() ? { displayName: name.trim() } : {}), ...(expires ? { expiresAt: new Date(expires).toISOString() } : {}), ...(topUp ? { topUpSatoshis: DEFAULT_MEMBER_TOP_UP_SATOSHIS } : {}) })
+      const admitted = await runtime.admit(joinCode, role, { ...(name.trim() ? { displayName: name.trim() } : {}), ...(expires ? { expiresAt: new Date(expires).toISOString() } : {}), ...(topUp && Number(topUpAmount) > 0 ? { topUpSatoshis: Math.floor(Number(topUpAmount)) } : {}) })
       setResult({ code: admitted.admissionCode, name: admitted.displayName, ...(admitted.topUpTxid ? { topUpTxid: admitted.topUpTxid } : {}), ...(admitted.topUpError ? { topUpError: admitted.topUpError } : {}) })
       setJoinCode(''); setName(''); setExpires('')
       onProjection(await runtime.controller.project())
@@ -64,7 +64,8 @@ export function MembersPanel({ runtime, projection, close, onProjection, notify 
           <label className="field">ROLE<select aria-label="Role" value={role} onChange={event => setRole(event.target.value as Exclude<ArgusRole, 'MASTER'>)}><option value="SUPPLY_ASSISTANT">Supply Assistant</option><option value="SUPPLY_OFFICER">Supply Officer</option><option value="INSTRUCTOR">Instructor</option></select></label>
           <label className="field">DISPLAY NAME (OPTIONAL)<input aria-label="Display name" value={name} onChange={event => setName(event.target.value)} maxLength={60} placeholder="Defaults to the name in their join code" /></label>
           <label className="field">ACCESS EXPIRES (OPTIONAL)<input type="date" aria-label="Access expires" value={expires} onChange={event => setExpires(event.target.value)} /></label>
-          <label className="checkbox-field"><input type="checkbox" checked={topUp} onChange={event => setTopUp(event.target.checked)} /> Send them {DEFAULT_MEMBER_TOP_UP_SATOSHIS.toLocaleString()} testnet satoshis from this device&apos;s wallet so they can publish right away</label>
+          <label className="checkbox-field"><input type="checkbox" checked={topUp} onChange={event => setTopUp(event.target.checked)} /> Send them testnet satoshis from this device&apos;s wallet so they can publish right away</label>
+          {topUp && <label className="field">TOP-UP (SATOSHIS)<input aria-label="Top-up satoshis" inputMode="numeric" value={topUpAmount} onChange={event => setTopUpAmount(event.target.value.replace(/[^0-9]/g, ''))} /><small>Each shared change costs about 2–5 satoshis.</small></label>}
           {error && <div className="workflow-error" role="alert">{error}</div>}
           <div className="modal-actions"><button className="primary-button" type="submit" disabled={busy}>{busy ? 'Admitting…' : 'Admit'}</button></div>
           {result && (
@@ -112,7 +113,7 @@ export function WalletPanel({ runtime, status, close, notify }: { runtime: UnitR
       <div className="panel-rows" aria-label="Wallet balance">
         <p><small>SPENDABLE</small><br /><strong>{balance ? `${balance.spendable.toLocaleString()} satoshis` : '—'}</strong></p>
         <p><small>CONFIRMED · UNCONFIRMED</small><br />{balance ? `${balance.confirmed.toLocaleString()} · ${balance.unconfirmed.toLocaleString()}` : '—'}</p>
-        <p><small>ABOUT</small><br />Each shared change costs about 2–5 satoshis; 20,000 satoshis covers thousands of changes.</p>
+        <p><small>ABOUT</small><br />Each shared change costs about 2–5 satoshis; 1,000 satoshis covers a few hundred changes.</p>
       </div>
       <h3>Sync with BSV testnet</h3>
       <div className="panel-rows" aria-label="Sync status">

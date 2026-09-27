@@ -20,8 +20,8 @@ export type UnitRuntimeOptions = {
   storage?: Pick<Storage, 'getItem' | 'setItem'>
 }
 export type UnitStatus = TransportStatus & { unitId: string; unitName: string; role: ArgusRole; displayName: string; walletAddress: string; unreadable: number }
-/** Satoshis the Master sends a newly admitted member so they can publish right away (≈ hundreds of records at 1 sat/kB). */
-export const DEFAULT_MEMBER_TOP_UP_SATOSHIS = 20_000
+/** Default satoshis the Master sends a newly admitted member so they can publish right away (≈ 400+ records at 1 sat/kB). Editable at admission. */
+export const DEFAULT_MEMBER_TOP_UP_SATOSHIS = 2_000
 
 /**
  * Everything one unlocked, admitted device needs to share the unit's data over BSV TESTNET:

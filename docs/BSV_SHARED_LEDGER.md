@@ -84,7 +84,7 @@ Admission uses two **public** codes: the joiner’s `ARGUS-JOIN-1` (signing key,
 wallet address, display name) and the Master’s `ARGUS-ADMIT-1` (Master-signed credential + the unit
 key wrapped with ECDH→HKDF→AES-GCM to the joiner). Neither code is useful to anyone else. The
 Master also publishes an `AUTHORITY_GRANTED` event so every device learns the member’s name, role
-and wallet, and can optionally send the new member 20,000 testnet satoshis.
+and wallet, and can optionally send the new member testnet satoshis (default 2,000, editable).
 
 Every envelope carries its author’s Master-signed credential inside the ciphertext, so any member
 can verify any other member’s role without a directory server. Revocation is an
@@ -102,7 +102,7 @@ which testnet wallets paid for them.
 
 About 1–3 KB per record at 1 sat/kB (the rate proven on testnet by spell-forge) plus the 1-satoshi
 anchor output: roughly **2–5 satoshis per change**. Queued changes are batched (up to 25 per
-transaction). 20,000 satoshis covers thousands of changes. Mainnet is impossible in this build.
+transaction). 1,000 satoshis covers a few hundred changes; 20,000 covers thousands. Mainnet is impossible in this build.
 
 ## Operating it
 
@@ -111,8 +111,7 @@ transaction). 20,000 satoshis covers thousands of changes. Mainnet is impossible
    coins from a BSV testnet faucet.
 2. **Everyone else:** open the app → *Join my unit* → your name, passphrase → send the join code to
    the Master.
-3. **Master:** More → Members & access → paste the join code, choose the role, keep “Send them
-   20,000 testnet satoshis” checked → *Admit* → send back the admission code.
+3. **Master:** More → Members & access → paste the join code, choose the role, keep “Send them testnet satoshis” checked (default 2,000) → *Admit* → send back the admission code.
 4. **Joiner:** paste the admission code → *Join unit*.
 5. Inventory → pick an item → *Add sizes* (presets or custom) → Count → start a shared count →
    everyone adds their tallies → an officer finalizes.
@@ -125,7 +124,7 @@ kept (encrypted) and published when the device is back online and funded.
 
 ```bash
 npm run testnet:keys     # once: creates ~/.config/argus/testnet-keys.json (0600, never committed) and prints an address
-# fund that address with ~100,000 testnet satoshis from a BSV testnet faucet
+# fund that address from a BSV testnet faucet (600+ satoshis is enough for one run)
 npm run test:testnet     # creates a fresh unit, admits two members, A 3 + B 3 = 6, finalizes, rebuilds a fresh device from chain
 ```
 

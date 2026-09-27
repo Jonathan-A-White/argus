@@ -22,6 +22,6 @@ process.stdout.write([
   `  ${keys.master.address}`,
   '',
   `Explorer: https://test.whatsonchain.com/address/${keys.master.address}`,
-  'Send ~0.001 tBSV (100,000 satoshis) from any BSV testnet faucet, then run: npm run test:testnet',
+  'Send at least 1,000 testnet satoshis from any BSV testnet faucet (one run uses well under that), then run: npm run test:testnet',
   '',
 ].join('\n'))

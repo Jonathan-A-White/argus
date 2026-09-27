@@ -11,12 +11,15 @@
  *   6. A brand-new device with an empty local ledger rebuilds the same state from chain alone.
  *
  * Run: npm run testnet:keys (once; fund the printed address) then npm run test:testnet
+ * Dry run (no network, in-memory chain funded with exactly 1,000 satoshis): ARGUS_TESTNET_DRY_RUN=1 npm run test:testnet
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { WhatsOnChainApi } from '../src/chain/woc'
+import { FakeChain } from '../src/chain/fakeChain'
+import type { ChainApi } from '../src/chain/types'
 import { DeviceWallet } from '../src/chain/wallet'
 import { MemoryWalletStateStore } from '../src/chain/walletStore'
 import { GENESIS_CATALOG } from '../src/stage3/domain'
@@ -26,8 +29,12 @@ import { acceptAdmission, createJoiningDevice, createMasterDevice, encodeJoinReq
 
 const KEY_FILE = process.env.ARGUS_TESTNET_KEYS ?? join(homedir(), '.config', 'argus', 'testnet-keys.json')
 const PT_SHORTS = GENESIS_CATALOG.find(item => item.name === 'PT Shorts')!.catalogId
-const MIN_MASTER_SATOSHIS = 12_000
+// Each record costs ~2–5 satoshis at 1 sat/kB; the whole run needs well under 1,000.
+const MIN_MASTER_SATOSHIS = 600
+const MEMBER_TOP_UP_SATOSHIS = 150
 const storage = () => { const values = new Map<string, string>(); return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) } } }
+const DRY_RUN = process.env.ARGUS_TESTNET_DRY_RUN === '1'
+const POLL_MS = DRY_RUN ? 20 : 6_000
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 const log = (line: string) => process.stdout.write(`${new Date().toISOString()}  ${line}\n`)
 
@@ -38,15 +45,16 @@ async function until<T>(label: string, read: () => Promise<T>, ok: (value: T) =>
     const value = await read()
     if (ok(value)) { log(`✓ ${label} (${Math.round((Date.now() - started) / 1000)} s)`); return value }
     if (Date.now() - started > timeoutMs) throw new Error(`Timed out waiting for: ${label}`)
-    await sleep(6_000)
+    await sleep(POLL_MS)
   }
 }
 
-const keys = existsSync(KEY_FILE) ? JSON.parse(readFileSync(KEY_FILE, 'utf8')) as { master: { wif: string; address: string } } : undefined
+const keys = DRY_RUN ? { master: { wif: DeviceWallet.generateWif(), address: '' } } : existsSync(KEY_FILE) ? JSON.parse(readFileSync(KEY_FILE, 'utf8')) as { master: { wif: string; address: string } } : undefined
 
 describe.skipIf(!keys)('LIVE BSV TESTNET: shared count across three devices', () => {
   it('A counts 3 + B counts 3 = 6 on every device, finalizes to on-hand 6, and a fresh device rebuilds it from chain', async () => {
-    const api = new WhatsOnChainApi()
+    let api: ChainApi = new WhatsOnChainApi()
+    if (DRY_RUN) { const chain = new FakeChain(); chain.fund(DeviceWallet.fromWif(keys!.master.wif, chain, new MemoryWalletStateStore()).address, 1_000, { confirmed: true }); api = chain; log('DRY RUN: in-memory chain, master funded with 1,000 satoshis') }
     const funded = await DeviceWallet.fromWif(keys!.master.wif, api, new MemoryWalletStateStore()).refresh()
     log(`Master wallet ${funded.address}: ${funded.spendable} spendable satoshis (${funded.confirmed} confirmed)`)
     if (funded.spendable < MIN_MASTER_SATOSHIS) throw new Error(`Fund ${funded.address} with at least ${MIN_MASTER_SATOSHIS} testnet satoshis from a BSV testnet faucet, then rerun.`)
@@ -58,7 +66,7 @@ describe.skipIf(!keys)('LIVE BSV TESTNET: shared count across three devices', ()
     const members: UnitRuntime[] = []
     for (const [name, role] of [['Officer B', 'SUPPLY_OFFICER'], ['Assistant C', 'SUPPLY_ASSISTANT']] as const) {
       const pending = await createJoiningDevice({ passphrase: 'live testnet check 2', displayName: name }, storage())
-      const admitted = await a.admit(await encodeJoinRequest(pending), role, { topUpSatoshis: 3_000 })
+      const admitted = await a.admit(await encodeJoinRequest(pending), role, { topUpSatoshis: MEMBER_TOP_UP_SATOSHIS })
       if (admitted.topUpError) throw new Error(admitted.topUpError)
       log(`Admitted ${name}; top-up tx ${admitted.topUpTxid}`)
       members.push(await open(await acceptAdmission(pending, admitted.admissionCode, storage())))
@@ -90,8 +98,8 @@ describe.skipIf(!keys)('LIVE BSV TESTNET: shared count across three devices', ()
 
     const txids = [...new Set((await a.controller.project()).events.flatMap(record => record.transactionId ? [record.transactionId] : []))]
     const report = { at: new Date().toISOString(), unitId: masterDevice.record.unit!.unitId, anchor: a.transport.anchorAddress, anchorExplorer: `https://test.whatsonchain.com/address/${a.transport.anchorAddress}`, transactions: txids.map(txid => `https://test.whatsonchain.com/tx/${txid}`), masterBalanceAfter: (await a.balance()).spendable }
-    writeFileSync(join(process.cwd(), 'testnet', 'last-run.json'), JSON.stringify(report, null, 2))
-    log(`Report written to testnet/last-run.json\n${JSON.stringify(report, null, 2)}`)
+    if (!DRY_RUN) writeFileSync(join(process.cwd(), 'testnet', 'last-run.json'), JSON.stringify(report, null, 2))
+    log(`${DRY_RUN ? 'Dry-run report (not saved)' : 'Report written to testnet/last-run.json'}\n${JSON.stringify(report, null, 2)}`)
     expect(txids.length).toBeGreaterThan(0)
   })
 })

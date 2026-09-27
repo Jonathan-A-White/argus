@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { EmbeddedTestnetWallet } from './EmbeddedTestnetWallet'
-import { P2PKH, Transaction } from '@bsv/sdk'
+import { P2PKH, PrivateKey, Transaction } from '@bsv/sdk'
+
+/** The vault's key is a private field; reaching it to assert its exact absence from the persisted JSON needs this cast, since TypeScript privacy is compile-time only. */
+const keyOf = (wallet: EmbeddedTestnetWallet) => (wallet as unknown as { key: PrivateKey }).key
 
 const storage = () => { const values = new Map<string,string>(); return { getItem:(key:string)=>values.get(key)??null, setItem:(key:string,value:string)=>void values.set(key,value), values } }
 
@@ -10,13 +13,16 @@ describe('embedded BSV testnet wallet', () => {
     expect(await wallet.getStatus()).toMatchObject({mode:'EMBEDDED',requiresSetup:true})
     const created = await wallet.create('correct horse battery 7 staple')
     expect(created).toMatchObject({connection:'CONNECTED',balanceSatoshis:0})
+    const generatedKey = keyOf(wallet)
     const persisted = [...local.values.values()][0]
     expect(persisted).not.toContain('correct horse battery 7 staple')
-    expect(persisted).not.toMatch(/(?:K|L|c)[1-9A-HJ-NP-Za-km-z]{50,51}/)
+    expect(persisted).not.toContain(generatedKey.toWif([0xef]))
+    expect(persisted).not.toContain(generatedKey.toHex())
     wallet.lock()
     expect(await wallet.getStatus()).toMatchObject({requiresUnlock:true,receivingAddress:created.receivingAddress})
     await expect(wallet.unlock('wrong password')).rejects.toThrow(/incorrect/)
     expect(await wallet.unlock('correct horse battery 7 staple')).toMatchObject({connection:'CONNECTED'})
+    expect(keyOf(wallet).toWif([0xef])).toBe(generatedKey.toWif([0xef]))
   })
 
   it('requires a strong local wallet password and rejects arbitrary payments', async () => {

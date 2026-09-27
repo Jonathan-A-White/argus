@@ -22,12 +22,13 @@ const buffer = (data: Uint8Array | string): ArrayBuffer => bytes(data).slice().b
 /** Real, non-exportable signing key for enrolled runtime adapters. Persistence belongs in a secure enrollment boundary. */
 export class WebCryptoIdentityProvider implements ArgusIdentityProvider {
   private publicIdentity?: string
-  private constructor(private readonly keyPair: CryptoKeyPair) {}
+  private constructor(private readonly keyPair: CryptoKeyPair, knownPublicIdentity?: string) { this.publicIdentity = knownPublicIdentity }
   static async create() {
     const keyPair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify'])
     return new WebCryptoIdentityProvider(keyPair)
   }
-  static fromKeyPair(keyPair: CryptoKeyPair) { return new WebCryptoIdentityProvider(keyPair) }
+  // The public key of an unlocked credential is imported non-extractable; pass its already-known identity rather than re-exporting it.
+  static fromKeyPair(keyPair: CryptoKeyPair, knownPublicIdentity?: string) { return new WebCryptoIdentityProvider(keyPair, knownPublicIdentity) }
   async getPublicIdentity() {
     if (!this.publicIdentity) this.publicIdentity = `p256:${base64url(new Uint8Array(await crypto.subtle.exportKey('spki', this.keyPair.publicKey)))}`
     return this.publicIdentity
@@ -95,7 +96,7 @@ export async function unlockWrappedApplicationCredential(record: WrappedApplicat
     const clear = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(fromBase64url(record.cipher.nonce)), additionalData: buffer(record.publicIdentity) }, key, buffer(fromBase64url(record.encryptedPrivateJwk)))
     const privateKey = await crypto.subtle.importKey('jwk', JSON.parse(new TextDecoder().decode(clear)) as JsonWebKey, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])
     const publicKey = await crypto.subtle.importKey('spki', fromBase64url(record.publicIdentity.slice(5)), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify'])
-    return WebCryptoIdentityProvider.fromKeyPair({ privateKey, publicKey })
+    return WebCryptoIdentityProvider.fromKeyPair({ privateKey, publicKey }, record.publicIdentity)
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('Use at least')) throw error
     throw new Error('The application credential password is incorrect or the credential is damaged.', { cause: error })

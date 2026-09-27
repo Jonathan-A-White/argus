@@ -34,6 +34,7 @@ import {
 } from "./settings";
 import { resolveBlockchainMode } from "./blockchain/config";
 import { SupplyWorkflow } from "./components/SupplyWorkflow";
+import "./app-shell.css";
 import { Drawer, Summary } from "./components/Drawer";
 import { SharedCountView } from "./features/count/SharedCountView";
 import { InventoryCatalogView } from "./features/inventory/InventoryCatalogView";

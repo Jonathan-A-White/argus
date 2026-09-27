@@ -120,6 +120,7 @@ export function CalendarView({ projection, controller, can, memberName, onProjec
       {past.length > 0 && (
         <details className="calendar-block calendar-past">
           <summary>
+            <ChevronRight className="calendar-past-chevron" aria-hidden="true" />
             Past events <span>{past.length}</span>
           </summary>
           <ol className="calendar-list">{past.map(card)}</ol>

@@ -104,7 +104,7 @@ export function EventDrawer({ event, projection, controller, canWrite, memberNam
       </section>
       {event.notes && <p className="calendar-notes">{event.notes}</p>}
       {!event.active && (
-        <p className="workflow-warning">
+        <p className="workflow-warning calendar-cancelled-note">
           <Ban aria-hidden="true" />
           <span>This event is cancelled. It no longer raises alerts; its history is kept.</span>
         </p>
@@ -241,8 +241,8 @@ function AddTaskForm({ event, controller, onProjection, notify }: Mutations & { 
         <label className="field">
           When
           <select value={direction} onChange={change => setDirection(change.target.value === 'after' ? 'after' : 'before')}>
-            <option value="before">Before the event</option>
-            <option value="after">After the event</option>
+            <option value="before">Before event</option>
+            <option value="after">After event</option>
           </select>
         </label>
       </div>

@@ -2,6 +2,8 @@
 
 **Asset Readiness & Gear Utility System** is a phone-first inventory and uniform-issuance application designed for Bethel Navy NJROTC supply operations.
 
+This repository, [Jonathan-A-White/argus](https://github.com/Jonathan-A-White/argus), is a fork of [lukeaverywhite-alt/Supply-counter-](https://github.com/lukeaverywhite-alt/Supply-counter-), live at <https://jonathan-a-white.github.io/argus/>.
+
 This repository currently contains the first functional front-end prototype. It uses fictional demonstration records only; no uploaded roster names or unverified inventory quantities are included.
 
 ## Current prototype

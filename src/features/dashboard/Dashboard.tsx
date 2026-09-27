@@ -1,0 +1,622 @@
+import { useId, useState, type CSSProperties, type JSX } from 'react'
+import {
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  Boxes,
+  CalendarPlus,
+  CalendarRange,
+  ChevronRight,
+  CircleAlert,
+  CircleCheck,
+  ClipboardCheck,
+  Gauge,
+  History,
+  Info,
+  LayoutGrid,
+  OctagonAlert,
+  ShieldCheck,
+  TriangleAlert,
+  Users,
+  Wifi,
+} from 'lucide-react'
+import { Drawer } from '../../components/Drawer'
+import type { ArgusAppProjection } from '../../distributed/appIntegration'
+import {
+  alerts as supplyAlerts,
+  readiness as supplyReadiness,
+  upcomingEvents,
+  type AlertSeverity,
+  type ReadinessBreakdown,
+  type SupplyAlert,
+} from '../../stage3/readiness'
+import {
+  KIND_LABEL,
+  countdownLabel,
+  dateBlock,
+  daysUntil,
+  eventProgress,
+  formatDate,
+  formatTime,
+  nextSupplyEvent,
+  overdueTasks,
+  systemClock,
+  useClock,
+} from '../calendar/calendarModel'
+import './dashboard.css'
+
+export type DashboardTarget = {
+  tab: 'count' | 'inventory' | 'cadets' | 'activity' | 'calendar' | 'more'
+  panel?: 'conflicts' | 'needed' | 'wallet' | 'diagnostics'
+}
+
+export type DashboardProps = {
+  projection: ArgusAppProjection
+  /** `label` is the ready-made sync text, e.g. "SYNCHRONIZED". */
+  sync: { label: string; needsFunding?: boolean; state?: string; queued?: number }
+  unitName: string
+  navigate: (target: DashboardTarget) => void
+  onQuickAction: (action: 'issue' | 'return' | 'count') => void
+  /** Injectable clock for tests; defaults to the system clock. */
+  now?: () => Date
+}
+
+type Tone = 'ok' | 'attention' | 'critical'
+type NodeId = 'cadets' | 'stock' | 'events' | 'readiness'
+type TreeNode = {
+  id: NodeId
+  label: string
+  value: string
+  caption: string
+  ariaLabel: string
+  tone: Tone
+  activate: () => void
+}
+
+const CLOCK_INTERVAL_MS = 30_000
+const MAX_ALERTS = 5
+
+/* The tree is drawn in a fixed 360 × 330 coordinate space. The SVG scales uniformly and the node
+   buttons are positioned with the same coordinates as percentages, so they stay on their branches
+   at every width. */
+const TREE_WIDTH = 360
+const TREE_HEIGHT = 330
+const NODE_LAYOUT: Record<NodeId, { x: number; y: number; side: 'left' | 'right'; branch: string; delay: number }> = {
+  cadets: { x: 84, y: 80, side: 'left', branch: 'M180 152 C160 140 126 98 84 80', delay: 0.55 },
+  stock: { x: 276, y: 80, side: 'right', branch: 'M180 152 C200 140 234 98 276 80', delay: 0.7 },
+  events: { x: 84, y: 200, side: 'left', branch: 'M180 262 C158 250 122 216 84 200', delay: 0.25 },
+  readiness: { x: 276, y: 200, side: 'right', branch: 'M180 262 C202 250 238 216 276 200', delay: 0.4 },
+}
+const TRUNK_PATH = 'M180 322 C182 292 176 266 180 236 C184 204 176 172 180 142 C183 112 178 80 180 46'
+const ROOT_PATHS = [
+  'M180 316 C166 321 146 325 116 328',
+  'M180 316 C194 321 214 325 244 328',
+  'M180 316 C175 322 167 326 152 330',
+  'M180 316 C185 322 193 326 208 330',
+]
+const TWIG_PATHS = ['M140 120 C134 110 132 102 134 94', 'M220 120 C226 110 228 102 226 94', 'M136 232 C128 226 124 220 124 212', 'M224 232 C232 226 236 220 236 212']
+const SPARKS = [
+  { x: 134, y: 92, delay: 0 },
+  { x: 226, y: 92, delay: 1.1 },
+  { x: 124, y: 210, delay: 0.6 },
+  { x: 236, y: 210, delay: 1.7 },
+  { x: 166, y: 30, delay: 0.9 },
+  { x: 196, y: 56, delay: 2.2 },
+]
+
+const place = (x: number, y: number): CSSProperties => ({
+  left: `${(x / TREE_WIDTH) * 100}%`,
+  top: `${(y / TREE_HEIGHT) * 100}%`,
+})
+const delayStyle = (seconds: number) => ({ '--delay': `${seconds}s` }) as CSSProperties
+const readinessTone = (percent: number): Tone => (percent >= 85 ? 'ok' : percent >= 60 ? 'attention' : 'critical')
+
+const SEVERITY: Record<AlertSeverity, { label: string; icon: typeof Info }> = {
+  critical: { label: 'Critical', icon: OctagonAlert },
+  warning: { label: 'Warning', icon: TriangleAlert },
+  info: { label: 'Info', icon: Info },
+}
+
+/**
+ * Home screen (master spec §5): the command center and navigation surface. Every number comes from
+ * the shared projection through the readiness engine, so all devices agree; every node, alert and
+ * tile is a real button that opens the matching screen.
+ */
+export function Dashboard({ projection, sync, unitName, navigate, onQuickAction, now = systemClock }: DashboardProps): JSX.Element {
+  const current = useClock(now, CLOCK_INTERVAL_MS)
+  const [showReadiness, setShowReadiness] = useState(false)
+  const breakdown = supplyReadiness(projection, current)
+  const alertList = supplyAlerts(projection, { needsFunding: sync.needsFunding, state: sync.state, queued: sync.queued }, current)
+  const next = nextSupplyEvent(projection, current)
+
+  const overdue = upcomingEvents(projection, current).reduce((sum, event) => sum + overdueTasks(event, current).length, 0)
+  const outOfStock = projection.inventory.some(item => item.active && item.onHand === 0 && item.issued > 0)
+  const nodes: TreeNode[] = [
+    {
+      id: 'cadets',
+      label: 'CADETS',
+      value: String(breakdown.cadetsNeedingItems),
+      caption: 'NEED ITEMS',
+      ariaLabel: `Cadets: ${breakdown.cadetsNeedingItems} ${breakdown.cadetsNeedingItems === 1 ? 'needs' : 'need'} items`,
+      tone: breakdown.cadetsNeedingItems ? 'attention' : 'ok',
+      activate: () => navigate({ tab: 'more', panel: 'needed' }),
+    },
+    {
+      id: 'stock',
+      label: 'STOCK',
+      value: String(breakdown.stockNeedingAttention),
+      caption: 'NEED ATTENTION',
+      ariaLabel: `Stock: ${breakdown.stockNeedingAttention} ${breakdown.stockNeedingAttention === 1 ? 'needs' : 'need'} attention`,
+      tone: outOfStock ? 'critical' : breakdown.stockNeedingAttention ? 'attention' : 'ok',
+      activate: () => navigate({ tab: 'inventory' }),
+    },
+    {
+      id: 'events',
+      label: 'EVENTS',
+      value: String(breakdown.activePreparations),
+      caption: breakdown.activePreparations === 1 ? 'ACTIVE PREPARATION' : 'ACTIVE PREPARATIONS',
+      ariaLabel: `Events: ${breakdown.activePreparations} active preparation${breakdown.activePreparations === 1 ? '' : 's'}`,
+      tone: overdue ? 'critical' : 'ok',
+      activate: () => navigate({ tab: 'calendar' }),
+    },
+    {
+      id: 'readiness',
+      label: 'READINESS',
+      value: `${breakdown.overall}%`,
+      caption: 'OVERALL',
+      ariaLabel: `Readiness: ${breakdown.overall}% overall`,
+      tone: readinessTone(breakdown.overall),
+      activate: () => setShowReadiness(true),
+    },
+  ]
+
+  return (
+    <div className="content dashboard">
+      <DashboardHero current={current} unitName={unitName} sync={sync} audit={breakdown.audit} />
+
+      <section className="dash-actions" aria-label="Quick actions">
+        <button type="button" className="dash-action issue" onClick={() => onQuickAction('issue')}>
+          <ArrowUpFromLine aria-hidden="true" />
+          <span>
+            <b>ISSUE</b>
+            <small>Hand out gear</small>
+          </span>
+        </button>
+        <button type="button" className="dash-action return" onClick={() => onQuickAction('return')}>
+          <ArrowDownToLine aria-hidden="true" />
+          <span>
+            <b>RETURN</b>
+            <small>Take gear back</small>
+          </span>
+        </button>
+        <button type="button" className="dash-action count" onClick={() => onQuickAction('count')}>
+          <ClipboardCheck aria-hidden="true" />
+          <span>
+            <b>COUNT</b>
+            <small>Shared count</small>
+          </span>
+        </button>
+      </section>
+
+      <ReadinessTree nodes={nodes} overall={breakdown.overall} openDetails={() => setShowReadiness(true)} />
+
+      <AlertsPanel list={alertList} navigate={navigate} />
+
+      <section className="dash-panel dash-next" aria-labelledby="dash-next-heading">
+        <header className="dash-panel-head">
+          <h3 id="dash-next-heading">Next supply event</h3>
+        </header>
+        {next ? (
+          <NextEvent event={next} current={current} open={() => navigate({ tab: 'calendar' })} />
+        ) : (
+          <div className="dash-empty">
+            <CalendarPlus aria-hidden="true" />
+            <p>
+              <strong>No supply events scheduled</strong>
+              <span>
+                Add NCO, BLT, AMI, Military Ball and End-of-Year dates — each one comes with its preparation checklist.
+              </span>
+            </p>
+            <button type="button" className="secondary-button" onClick={() => navigate({ tab: 'calendar' })}>
+              Open supply calendar
+            </button>
+          </div>
+        )}
+      </section>
+
+      <GettingStarted projection={projection} navigate={navigate} />
+
+      <DashboardTiles projection={projection} current={current} navigate={navigate} />
+
+      {showReadiness && (
+        <ReadinessDrawer
+          projection={projection}
+          breakdown={breakdown}
+          current={current}
+          close={() => setShowReadiness(false)}
+          navigate={target => {
+            setShowReadiness(false)
+            navigate(target)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function DashboardHero({ current, unitName, sync, audit }: { current: Date; unitName: string; sync: DashboardProps['sync']; audit: number }) {
+  const warn = Boolean(sync.needsFunding) || sync.state === 'error'
+  return (
+    <header className="dash-hero">
+      <div>
+        <p className="eyebrow">A.R.G.U.S. COMMAND CENTER</p>
+        <h2>{unitName}</h2>
+        <div className="dash-status">
+          <span className={warn ? 'dash-chip warn' : 'dash-chip'}>
+            <Wifi aria-hidden="true" />
+            <span className="sr-only">Sync status: </span>
+            {sync.label}
+          </span>
+          {Boolean(sync.queued) && <span className="dash-chip">{sync.queued} waiting to publish</span>}
+          <span className="dash-chip">
+            <ShieldCheck aria-hidden="true" />
+            Audit {audit}%
+          </span>
+        </div>
+      </div>
+      <div className="dash-clock">
+        <span className="sr-only">Local time</span>
+        <time dateTime={current.toISOString()}>{current.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</time>
+        <span>{current.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</span>
+      </div>
+    </header>
+  )
+}
+
+function ReadinessTree({ nodes, overall, openDetails }: { nodes: TreeNode[]; overall: number; openDetails: () => void }) {
+  const gradient = `tree-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
+  return (
+    <section className="dash-tree-card" aria-labelledby={`${gradient}-heading`}>
+      <header className="dash-tree-head">
+        <p className="eyebrow">LIVE READINESS</p>
+        <h3 id={`${gradient}-heading`}>Readiness tree</h3>
+      </header>
+      <div className="tree-stage">
+        <svg className="tree-svg" viewBox={`0 0 ${TREE_WIDTH} ${TREE_HEIGHT}`} aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id={`${gradient}-trunk`} x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0" className="tree-stop-gold" />
+              <stop offset="1" className="tree-stop-cyan" />
+            </linearGradient>
+            <radialGradient id={`${gradient}-halo`}>
+              <stop offset="0" className="tree-stop-halo" />
+              <stop offset="1" className="tree-stop-clear" />
+            </radialGradient>
+          </defs>
+          <circle className="tree-halo" cx="180" cy="44" r="54" fill={`url(#${gradient}-halo)`} />
+          {ROOT_PATHS.map(path => (
+            <path key={path} className="tree-root" d={path} pathLength={1} />
+          ))}
+          <path className="tree-trunk" d={TRUNK_PATH} pathLength={1} stroke={`url(#${gradient}-trunk)`} />
+          {TWIG_PATHS.map((path, index) => (
+            <path key={path} className="tree-twig" d={path} pathLength={1} style={delayStyle(0.9 + index * 0.1)} />
+          ))}
+          {nodes.map(node => (
+            <g key={node.id} className={`tree-limb tone-${node.tone}`}>
+              <path className="tree-branch" d={NODE_LAYOUT[node.id].branch} pathLength={1} style={delayStyle(NODE_LAYOUT[node.id].delay)} />
+              <path className="tree-flow" d={NODE_LAYOUT[node.id].branch} pathLength={1} />
+            </g>
+          ))}
+          <path className="tree-flow trunk-flow" d={TRUNK_PATH} pathLength={1} />
+          <path className="tree-crown" d="M180 30 L187 44 L180 58 L173 44 Z" />
+          {SPARKS.map(spark => (
+            <circle key={`${spark.x}-${spark.y}`} className="tree-spark" cx={spark.x} cy={spark.y} r="2.2" style={delayStyle(spark.delay)} />
+          ))}
+        </svg>
+        {nodes.map(node => {
+          const layout = NODE_LAYOUT[node.id]
+          return (
+            <button
+              key={node.id}
+              type="button"
+              className={`tree-node tone-${node.tone} side-${layout.side}`}
+              style={{ ...place(layout.x, layout.y), ...delayStyle(layout.delay + 0.5) }}
+              aria-label={node.ariaLabel}
+              onClick={node.activate}
+            >
+              <span className="tree-node-dot" aria-hidden="true" />
+              <small>{node.label}</small> <strong>{node.value}</strong> <span className="tree-node-caption">{node.caption}</span>
+              {node.id === 'readiness' && <ReadinessRing percent={overall} />}
+            </button>
+          )
+        })}
+        <button
+          type="button"
+          className="tree-trunk-label"
+          style={place(180, 298)}
+          aria-label="A.R.G.U.S. supply readiness details"
+          onClick={openDetails}
+        >
+          A.R.G.U.S.
+        </button>
+      </div>
+    </section>
+  )
+}
+
+function ReadinessRing({ percent }: { percent: number }) {
+  return (
+    <svg className="tree-ring" viewBox="0 0 36 36" aria-hidden="true" focusable="false">
+      <circle className="tree-ring-track" cx="18" cy="18" r="15" pathLength={100} />
+      <circle
+        className="tree-ring-value"
+        cx="18"
+        cy="18"
+        r="15"
+        pathLength={100}
+        strokeDasharray={`${Math.max(0, Math.min(100, percent))} 100`}
+        transform="rotate(-90 18 18)"
+      />
+    </svg>
+  )
+}
+
+function AlertsPanel({ list, navigate }: { list: SupplyAlert[]; navigate: (target: DashboardTarget) => void }) {
+  const [showAll, setShowAll] = useState(false)
+  const visible = showAll ? list : list.slice(0, MAX_ALERTS)
+  const critical = list.filter(alert => alert.severity === 'critical').length
+  return (
+    <section className="dash-panel dash-alerts" aria-labelledby="dash-alerts-heading">
+      <header className="dash-panel-head">
+        <h3 id="dash-alerts-heading">Alerts</h3>
+        {list.length > 0 && (
+          <span className={critical ? 'dash-count critical' : 'dash-count'}>
+            {critical ? `${critical} critical` : `${list.length} open`}
+          </span>
+        )}
+      </header>
+      {list.length ? (
+        <ul className="dash-alert-list">
+          {visible.map(alert => {
+            const Icon = SEVERITY[alert.severity].icon
+            return (
+              <li key={alert.id}>
+                <button type="button" className={`dash-alert ${alert.severity}`} onClick={() => navigate(alert.target)}>
+                  <Icon aria-hidden="true" />
+                  <span>
+                    <span className="sr-only">{SEVERITY[alert.severity].label}: </span>
+                    <strong>{alert.title}</strong>
+                    <small>{alert.detail}</small>
+                  </span>
+                  <ChevronRight aria-hidden="true" />
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      ) : (
+        <p className="dash-all-clear">
+          <CircleCheck aria-hidden="true" />
+          All clear — nothing needs attention right now.
+        </p>
+      )}
+      {list.length > MAX_ALERTS && (
+        <button type="button" className="text-button dash-more" aria-expanded={showAll} onClick={() => setShowAll(value => !value)}>
+          {showAll ? 'Show fewer alerts' : `View all ${list.length} alerts`}
+        </button>
+      )}
+    </section>
+  )
+}
+
+function NextEvent({ event, current, open }: { event: ArgusAppProjection['calendar'][number]; current: Date; open: () => void }) {
+  const progress = eventProgress(event)
+  const leaf = dateBlock(event.startsAt)
+  const days = daysUntil(event.startsAt, current)
+  return (
+    <button type="button" className="dash-next-event" onClick={open}>
+      <span className="dash-leaf" aria-hidden="true">
+        <small>{leaf.month}</small>
+        <b>{leaf.day}</b>
+      </span>
+      <span className="dash-next-body">
+        <em>{KIND_LABEL[event.kind]}</em>
+        <strong>{event.title}</strong>
+        <small>
+          {formatDate(event.startsAt)} · {formatTime(event.startsAt)}
+        </small>
+      </span>
+      <span className={days < 0 ? 'dash-countdown past' : 'dash-countdown'}>{countdownLabel(days)}</span>
+      <span className="dash-next-progress">
+        <span className="dash-meter" aria-hidden="true">
+          <span style={{ width: `${progress.percent}%` }} />
+        </span>
+        <small>
+          {progress.total ? `${progress.done}/${progress.total} tasks done` : 'No preparation tasks'}
+        </small>
+      </span>
+    </button>
+  )
+}
+
+/** Shown to a brand-new unit until its first sizes, cadets and events exist, so an empty dashboard still has a clear next step. */
+function GettingStarted({ projection, navigate }: { projection: ArgusAppProjection; navigate: (target: DashboardTarget) => void }) {
+  const steps: Array<{ done: boolean; title: string; detail: string; target: DashboardTarget }> = [
+    {
+      done: projection.inventory.some(item => item.onHand > 0),
+      title: 'Stock your inventory',
+      detail: 'Add the sizes you carry, then receive or count what is on the shelf.',
+      target: { tab: 'inventory' },
+    },
+    {
+      done: projection.cadets.length > 0,
+      title: 'Add your cadets',
+      detail: 'Cadets are listed by cadet ID; names stay encrypted.',
+      target: { tab: 'cadets' },
+    },
+    {
+      done: projection.calendar.some(event => event.active),
+      title: 'Schedule supply events',
+      detail: 'Enter this year’s NCO, BLT, AMI, Military Ball and End-of-Year dates.',
+      target: { tab: 'calendar' },
+    },
+  ]
+  if (steps.every(step => step.done)) return null
+  return (
+    <section className="dash-panel dash-setup" aria-labelledby="dash-setup-heading">
+      <header className="dash-panel-head">
+        <h3 id="dash-setup-heading">Set up your unit</h3>
+        <span className="dash-count">
+          {steps.filter(step => step.done).length}/{steps.length} done
+        </span>
+      </header>
+      <ol>
+        {steps.map(step => (
+          <li key={step.title}>
+            <button type="button" className={step.done ? 'dash-step done' : 'dash-step'} onClick={() => navigate(step.target)}>
+              {step.done ? <CircleCheck aria-hidden="true" /> : <CircleAlert aria-hidden="true" />}
+              <span>
+                <strong>{step.title}</strong>
+                <small>{step.done ? 'Done' : step.detail}</small>
+              </span>
+              <ChevronRight aria-hidden="true" />
+            </button>
+          </li>
+        ))}
+      </ol>
+    </section>
+  )
+}
+
+function DashboardTiles({ projection, current, navigate }: { projection: ArgusAppProjection; current: Date; navigate: (target: DashboardTarget) => void }) {
+  const stocked = projection.inventory.filter(item => item.active && item.onHand > 0).length
+  const activeCadets = projection.cadets.filter(cadet => cadet.status === 'ACTIVE').length
+  const upcoming = upcomingEvents(projection, current).filter(event => daysUntil(event.startsAt, current) >= 0).length
+  const tiles: Array<{ label: string; detail: string; target: DashboardTarget; icon: typeof Boxes }> = [
+    { label: 'Inventory', detail: `${stocked} size${stocked === 1 ? '' : 's'} in stock`, target: { tab: 'inventory' }, icon: Boxes },
+    { label: 'Cadets', detail: `${activeCadets} active`, target: { tab: 'cadets' }, icon: Users },
+    { label: 'Calendar', detail: `${upcoming} upcoming`, target: { tab: 'calendar' }, icon: CalendarRange },
+    { label: 'Activity', detail: `${projection.events.length} record${projection.events.length === 1 ? '' : 's'}`, target: { tab: 'activity' }, icon: History },
+    { label: 'Command Center', detail: 'Members, wallet, settings', target: { tab: 'more' }, icon: LayoutGrid },
+  ]
+  return (
+    <nav className="dash-tiles" aria-label="Dashboard navigation">
+      {tiles.map(({ label, detail, target, icon: Icon }) => (
+        <button type="button" key={label} className="dash-tile" onClick={() => navigate(target)}>
+          <span className="dash-tile-icon" aria-hidden="true">
+            <Icon />
+          </span>
+          <span>
+            <strong>{label}</strong>
+            <small>{detail}</small>
+          </span>
+        </button>
+      ))}
+    </nav>
+  )
+}
+
+type ReadinessRow = { key: string; label: string; percent: number; explanation: string; link: string; target: DashboardTarget; icon: typeof Users }
+
+function ReadinessDrawer({
+  projection,
+  breakdown,
+  current,
+  close,
+  navigate,
+}: {
+  projection: ArgusAppProjection
+  breakdown: ReadinessBreakdown
+  current: Date
+  close: () => void
+  navigate: (target: DashboardTarget) => void
+}) {
+  const activeCadets = projection.cadets.filter(cadet => cadet.status === 'ACTIVE').length
+  const tracked = projection.inventory.filter(item => item.active && (item.reorderAt !== undefined || item.issued > 0 || item.onHand > 0)).length
+  // Same event the readiness engine scores: the first active event still ahead of now.
+  const scored = upcomingEvents(projection, current).find(event => new Date(event.startsAt).getTime() >= current.getTime())
+  const scoredProgress = scored ? eventProgress(scored) : undefined
+  const synced = projection.events.filter(record => record.syncStatus === 'SYNCHRONIZED').length
+  const rows: ReadinessRow[] = [
+    {
+      key: 'cadets',
+      label: 'Cadets',
+      percent: breakdown.cadets,
+      explanation: activeCadets
+        ? `${activeCadets - breakdown.cadetsNeedingItems} of ${activeCadets} active cadets are fully issued.`
+        : 'No active cadets yet — add your roster to track who is fully issued.',
+      link: 'Open Still Needed',
+      target: { tab: 'more', panel: 'needed' },
+      icon: Users,
+    },
+    {
+      key: 'inventory',
+      label: 'Inventory',
+      percent: breakdown.inventory,
+      explanation: tracked
+        ? `${Math.max(0, tracked - breakdown.stockNeedingAttention)} of ${tracked} stocked sizes are above their low-stock level.`
+        : 'No sizes are stocked or tracked yet.',
+      link: 'Open Inventory',
+      target: { tab: 'inventory' },
+      icon: Boxes,
+    },
+    {
+      key: 'events',
+      label: 'Events',
+      percent: breakdown.events,
+      explanation:
+        scored && scoredProgress
+          ? `${scoredProgress.done} of ${scoredProgress.total} preparation tasks complete for ${scored.title}.`
+          : 'No upcoming supply event — nothing to prepare yet.',
+      link: 'Open Calendar',
+      target: { tab: 'calendar' },
+      icon: CalendarRange,
+    },
+    {
+      key: 'audit',
+      label: 'Audit',
+      percent: breakdown.audit,
+      explanation: projection.events.length
+        ? `${synced} of ${projection.events.length} recorded changes are synchronized and verified.`
+        : 'No changes recorded yet.',
+      link: 'Open Activity',
+      target: { tab: 'activity' },
+      icon: ShieldCheck,
+    },
+  ]
+  return (
+    <Drawer title="Supply readiness" icon={<Gauge />} close={close}>
+      <section className={`readiness-overall tone-${readinessTone(breakdown.overall)}`}>
+        <strong>{breakdown.overall}%</strong>
+        <p>
+          Overall supply readiness: the equal-weighted average of the four categories below, computed the same way on every
+          device from the unit’s shared records.
+        </p>
+      </section>
+      <ul className="readiness-rows">
+        {rows.map(({ key, label, percent, explanation, link, target, icon: Icon }) => (
+          <li key={key} className={`tone-${readinessTone(percent)}`}>
+            <div className="readiness-row-head">
+              <Icon aria-hidden="true" />
+              <strong>{label}</strong>
+              <b>{percent}%</b>
+            </div>
+            <div
+              className="dash-meter"
+              role="progressbar"
+              aria-label={`${label} readiness`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={percent}
+            >
+              <span style={{ width: `${percent}%` }} />
+            </div>
+            <p>{explanation}</p>
+            <button type="button" className="text-button" onClick={() => navigate(target)}>
+              {link} <ChevronRight aria-hidden="true" />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </Drawer>
+  )
+}

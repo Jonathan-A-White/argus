@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { Activity, Eye, EyeOff, Lock, PackageMinus, PackagePlus, Pencil, UserRound } from 'lucide-react'
+import { Activity, Eye, EyeOff, Lock, PackageMinus, PackagePlus, Pencil, Ruler, UserRound } from 'lucide-react'
 import { Drawer, Summary } from '../../components/Drawer'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
-import type { ArgusPermission, SupplyTransaction } from '../../distributed/types'
+import type { ArgusPermission, PropertyCorrection, SupplyTransaction } from '../../distributed/types'
 import { cadetLabel } from '../../stage3/domain'
 import { CadetForm } from './CadetForm'
-import { cadetMonogram } from './cadetDisplay'
+import { SizeCorrectionForm } from './SizeCorrectionForm'
+import { cadetMonogram, memberLabel } from './cadetDisplay'
 import './cadets.css'
 
 type Cadet = ArgusAppProjection['cadets'][number]
@@ -33,6 +34,11 @@ const describeLines = (transaction: SupplyTransaction) => {
   if (!moved.length) return missing ? `Nothing issued · ${missing} added to Still Needed` : 'No items'
   return missing ? `${moved.join(', ')} · ${missing} added to Still Needed` : moved.join(', ')
 }
+const describeCorrection = (projection: ArgusAppProjection, correction: PropertyCorrection) => {
+  const from = projection.inventory.find(item => item.entityId === correction.fromItemId)
+  const to = projection.inventory.find(item => item.entityId === correction.toItemId)
+  return `${from?.name ?? to?.name ?? 'Issued item'}: ${from?.variant ?? 'unknown size'} → ${to?.variant ?? 'unknown size'}`
+}
 
 /**
  * One cadet's property record. The drawer is titled by cadet ID; the encrypted name is rendered only
@@ -42,15 +48,20 @@ const describeLines = (transaction: SupplyTransaction) => {
 export function CadetDrawer({ cadet, projection, controller, can, onProjection, notify, onIssue, onReturn, close }: CadetDrawerProps) {
   const [nameRevealed, setNameRevealed] = useState(false)
   const [editing, setEditing] = useState(false)
+  const [correctingId, setCorrectingId] = useState<string>()
   const code = cadetLabel(cadet)
   const canReveal = can('cadets.read') || can('cadets.manage')
   const canManage = can('cadets.manage')
+  const canCorrect = can('inventory.adjust')
   const canIssue = can('inventory.issue') && cadet.status === 'ACTIVE'
   const canReturn = can('inventory.return') && cadet.currentProperty.length > 0
   const needs = projection.stillNeeded.filter(need => need.cadetId === cadet.cadetId)
   const history = projection.transactions
     .filter(transaction => transaction.cadetId === cadet.cadetId)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  const corrections = projection.corrections
+    .filter(correction => correction.cadetId === cadet.cadetId)
+    .sort((a, b) => b.at.localeCompare(a.at))
   const ready = cadet.readiness.status === 'READY'
 
   if (editing && canManage) {
@@ -130,15 +141,44 @@ export function CadetDrawer({ cadet, projection, controller, can, onProjection, 
       <h3>Current property</h3>
       <div className="cadet-record-rows">
         {cadet.currentProperty.length ? (
-          cadet.currentProperty.map(property => (
-            <div className="needed-row" key={property.propertyId}>
-              <span>
-                <strong>{property.label}</strong>
-                <small>{property.variant} · Qty {property.quantity} · Issued {formatDate(property.issuedAt)}</small>
-              </span>
-              <b>{property.quantity}</b>
-            </div>
-          ))
+          cadet.currentProperty.map(property => {
+            const correcting = canCorrect && correctingId === property.propertyId
+            return (
+              <div className="cadet-property" key={property.propertyId}>
+                <div className={canCorrect ? 'needed-row cadet-property-row' : 'needed-row'}>
+                  <span>
+                    <strong>{property.label}</strong>
+                    <small>{property.variant} · Qty {property.quantity} · Issued {formatDate(property.issuedAt)}</small>
+                  </span>
+                  <b>{property.quantity}</b>
+                  {canCorrect && !correcting && (
+                    <button
+                      type="button"
+                      className="secondary-button cadet-correct-button"
+                      aria-label={`Correct size of ${property.label} · ${property.variant}`}
+                      onClick={() => setCorrectingId(property.propertyId)}
+                    >
+                      <Ruler aria-hidden="true" /> Correct size
+                    </button>
+                  )}
+                </div>
+                {correcting && (
+                  <SizeCorrectionForm
+                    cadetId={cadet.cadetId}
+                    property={property}
+                    projection={projection}
+                    controller={controller}
+                    onCancel={() => setCorrectingId(undefined)}
+                    onCorrected={(next, correction) => {
+                      setCorrectingId(undefined)
+                      onProjection(next)
+                      notify(`Size corrected for ${code}: ${correction.label} ${correction.from} → ${correction.to}.`)
+                    }}
+                  />
+                )}
+              </div>
+            )
+          })
         ) : (
           <p className="empty-state">No current property.</p>
         )}
@@ -175,6 +215,24 @@ export function CadetDrawer({ cadet, projection, controller, can, onProjection, 
           ))
         ) : (
           <p className="empty-state">No issues or returns yet.</p>
+        )}
+      </div>
+
+      <h3>Size corrections</h3>
+      <div className="cadet-record-rows">
+        {corrections.length ? (
+          corrections.map(correction => (
+            <div className="needed-row cadet-history-row" key={correction.correctionId}>
+              <span>
+                <strong>{describeCorrection(projection, correction)}</strong>
+                <small className="cadet-correction-reason">{correction.reason}</small>
+                <small>{formatDate(correction.at)} · {memberLabel(projection, correction.actor)}</small>
+              </span>
+              <em className="status-badge warning">× {correction.quantity}</em>
+            </div>
+          ))
+        ) : (
+          <p className="empty-state">No size corrections.</p>
         )}
       </div>
 

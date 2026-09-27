@@ -133,6 +133,70 @@
   font-size: 11px;
 }
 
+/* ---------- size correction ---------- */
+.cadet-property {
+  display: grid;
+  gap: 8px;
+}
+.cadet-property-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+.cadet-correct-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 12px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.cadet-correct-button svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+.cadet-correction {
+  padding: 4px 14px 14px;
+  border: 1px solid var(--color-accent-gold);
+  border-radius: 12px;
+  background: var(--color-bg-surface-raised);
+}
+.cadet-correction .field {
+  margin: 12px 0;
+}
+.cadet-correction .field select,
+.cadet-correction .field input,
+.cadet-correction .field textarea {
+  min-height: 44px;
+  font-size: 16px;
+  background: var(--color-bg-input);
+  color: var(--color-text-primary);
+}
+.cadet-correction .field-hint {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.cadet-correction .field input[aria-invalid='true'] {
+  border-color: var(--color-warning);
+}
+.cadet-correction .modal-actions {
+  margin-top: 14px;
+}
+.cadet-correction-intro {
+  margin: 10px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.cadet-record-rows .cadet-correction-reason {
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
 /* ---------- add / edit form ---------- */
 .cadet-form .field-hint {
   color: var(--color-text-muted);
@@ -221,5 +285,12 @@
   .cadet-name-panel {
     align-items: flex-start;
     flex-direction: column;
+  }
+  .cadet-property-row .cadet-correct-button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+  .cadet-correction .modal-actions > button {
+    flex: 1;
   }
 }

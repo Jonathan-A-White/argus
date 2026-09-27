@@ -1,0 +1,275 @@
+/* Admin workflows (src/features/admin): roster import and annual rollover. Builds on the global drawer, field and notice classes. */
+
+.admin-intro {
+  margin: 0 0 16px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.admin-section {
+  margin: 18px 0;
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 13px;
+  background: var(--color-bg-surface-raised);
+}
+.admin-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font: 19px Marcellus, serif;
+}
+.admin-section h3 svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--color-accent-gold);
+}
+.admin-section > p {
+  margin: 0 0 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.admin-section code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--color-bg-surface-hover);
+  color: var(--color-text-primary);
+  font-size: 11px;
+}
+.admin-section .field,
+.admin-year-field {
+  margin: 12px 0;
+}
+.admin-section .field input,
+.admin-section .field textarea,
+.admin-year-field input {
+  min-height: 44px;
+  font-size: 16px;
+  background: var(--color-bg-input);
+  color: var(--color-text-primary);
+}
+.admin-section .field textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+}
+.admin-section .field input[aria-invalid='true'],
+.admin-year-field input[aria-invalid='true'] {
+  border-color: var(--color-warning);
+}
+.admin-hint,
+.admin-field-error {
+  display: block;
+  margin: 6px 0 0;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.admin-field-error {
+  color: var(--color-warning);
+  font-weight: 700;
+}
+.admin-count-grid {
+  grid-template-columns: 1fr 1fr;
+}
+.admin-count {
+  margin: 10px 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+.admin-count strong {
+  color: var(--color-text-primary);
+}
+.admin-count-bad {
+  color: var(--color-warning);
+  font-weight: 700;
+}
+.admin-muted {
+  color: var(--color-text-muted);
+}
+.admin-result {
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+.admin-result > svg,
+.admin-locked svg {
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+.admin-result p {
+  margin: 4px 0 0;
+}
+.admin-result summary {
+  margin-top: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+.admin-codes {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
+  overflow-wrap: anywhere;
+}
+.admin-locked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+.admin-import-button,
+.admin-wide {
+  min-height: 48px;
+  margin-top: 12px;
+}
+
+/* ---------- import preview ---------- */
+.admin-table-wrap {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-surface);
+}
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.admin-table th,
+.admin-table td {
+  padding: 9px 8px;
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+  white-space: nowrap;
+}
+.admin-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--color-bg-surface-hover);
+  color: var(--color-text-secondary);
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.admin-table tbody th {
+  color: var(--color-text-muted);
+  font-weight: 700;
+}
+.admin-row-bad th,
+.admin-row-bad td {
+  border-bottom: 0;
+  background: var(--color-warning-bg);
+}
+.admin-row-errors td {
+  padding-top: 0;
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  font-size: 11px;
+  white-space: normal;
+}
+.admin-row-errors svg {
+  width: 13px;
+  height: 13px;
+  vertical-align: -2px;
+}
+
+/* ---------- rollover ---------- */
+.rollover-preview {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 0;
+  list-style: none;
+}
+.rollover-preview li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-surface);
+}
+.rollover-preview li span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+}
+.rollover-preview li svg {
+  width: 15px;
+  height: 15px;
+  color: var(--color-accent-gold);
+}
+.rollover-preview b {
+  font-variant-numeric: tabular-nums;
+}
+.rollover-preview .rollover-graduate {
+  border-color: color-mix(in srgb, var(--color-accent-gold) 55%, var(--color-border));
+}
+.admin-section .workflow-warning p {
+  margin: 4px 0 0;
+}
+.rollover-confirm {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--color-warning);
+  border-radius: 12px;
+  background: var(--color-warning-bg);
+}
+.rollover-confirm > p {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.rollover-confirm .field input {
+  min-height: 44px;
+  font-size: 16px;
+  background: var(--color-bg-input);
+  color: var(--color-text-primary);
+}
+.admin-history {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.admin-history li {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-surface);
+}
+.admin-history strong {
+  display: block;
+}
+.admin-history small {
+  display: block;
+  margin-top: 3px;
+  color: var(--color-text-muted);
+  line-height: 1.4;
+}
+
+/* ---------- phone ---------- */
+@media (max-width: 680px) {
+  .admin-section {
+    padding: 12px;
+  }
+  .admin-count-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .rollover-confirm .modal-actions > button {
+    flex: 1;
+  }
+}

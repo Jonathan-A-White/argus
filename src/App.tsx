@@ -43,6 +43,13 @@ import {
   type TestnetWalletStatusProvider,
 } from "./blockchain/ArgusWalletAdapter";
 import { SupplyWorkflow } from "./components/SupplyWorkflow";
+import { IdentityGate } from "./identity/screens/IdentityGate";
+import { PendingAdmissionScreen } from "./identity/screens/PendingAdmissionScreen";
+import {
+  buildAuthenticatedController,
+  identityGateRequired,
+} from "./identity/runtime";
+import type { UnlockedDeviceIdentity } from "./identity/deviceIdentity";
 
 export type Tab = "count" | "inventory" | "cadets" | "activity" | "more";
 type Panel =
@@ -120,17 +127,68 @@ type Props = {
   walletStatusProvider?: TestnetWalletStatusProvider;
 };
 
-export default function App({
-  controller: supplied,
+export default function App({ controller: supplied, ...rest }: Props) {
+  return supplied ? (
+    <AuthenticatedApp controller={supplied} {...rest} />
+  ) : (
+    <IdentityGatedApp {...rest} />
+  );
+}
+
+/** Shows the first-run/unlock screens outside mock-development; mock-development keeps today's single-tap demo boot. */
+function IdentityGatedApp(props: Omit<Props, "controller">) {
+  const [unlocked, setUnlocked] = useState<UnlockedDeviceIdentity>();
+  const controller = useMemo(() => {
+    if (!identityGateRequired()) return new DistributedAppController();
+    if (unlocked?.authorization)
+      return buildAuthenticatedController({
+        ...unlocked,
+        authorization: unlocked.authorization,
+      });
+    return undefined;
+  }, [unlocked]);
+  const lock = () => setUnlocked(undefined);
+  if (!controller) {
+    if (unlocked)
+      return (
+        <PendingAdmissionScreen
+          publicIdentity={unlocked.publicIdentity}
+          onLock={lock}
+        />
+      );
+    return <IdentityGate onUnlock={setUnlocked} />;
+  }
+  return (
+    <AuthenticatedApp
+      controller={controller}
+      identity={
+        unlocked && {
+          publicIdentity: unlocked.publicIdentity,
+          role: unlocked.role,
+        }
+      }
+      onLock={identityGateRequired() ? lock : undefined}
+      {...props}
+    />
+  );
+}
+
+type AuthenticatedAppProps = Omit<Props, "controller"> & {
+  controller: DistributedAppController;
+  identity?: { publicIdentity: string; role: "MASTER" | "PENDING" };
+  onLock?: () => void;
+};
+
+function AuthenticatedApp({
+  controller,
   settingsStorage: suppliedSettings,
   walletStatusProvider,
-}: Props) {
-  const [controller] = useState(
-      () => supplied ?? new DistributedAppController(),
-    ),
-    [settingsStorage] = useState(
-      () => suppliedSettings ?? new LocalSettingsStorage(),
-    );
+  identity,
+  onLock,
+}: AuthenticatedAppProps) {
+  const [settingsStorage] = useState(
+    () => suppliedSettings ?? new LocalSettingsStorage(),
+  );
   const [preferences, setPreferences] = useState<UserSettings>(() =>
       settingsStorage.load(),
     ),
@@ -387,6 +445,7 @@ export default function App({
           <CommandCenter
             open={setPanel}
             settings={() => setSettingsOpen(true)}
+            lock={onLock}
           />
         )}
       </main>
@@ -495,6 +554,9 @@ export default function App({
       )}{" "}
       {panel === "needed" && (
         <NeededPanel projection={projection} close={() => setPanel(null)} />
+      )}{" "}
+      {panel === "roles" && (
+        <RolesPanel identity={identity} close={() => setPanel(null)} />
       )}{" "}
       {panel && isComingPanel(panel) && (
         <ComingPanel
@@ -1077,9 +1139,11 @@ function ActivityView({
 function CommandCenter({
   open,
   settings,
+  lock,
 }: {
   open: (p: Panel) => void;
   settings: () => void;
+  lock?: () => void;
 }) {
   const actions = [
     [
@@ -1137,6 +1201,18 @@ function CommandCenter({
           </div>
           <ArrowRight />
         </button>
+        {lock && (
+          <button onClick={lock}>
+            <span>
+              <KeyRound />
+            </span>
+            <div>
+              <strong>Lock this device</strong>
+              <p>Return to the passphrase unlock screen</p>
+            </div>
+            <ArrowRight />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -1463,10 +1539,46 @@ function NeededPanel({
 }
 function isComingPanel(
   panel: Panel,
-): panel is "roster" | "import" | "roles" | "rollover" | "diagnostics" {
+): panel is "roster" | "import" | "rollover" | "diagnostics" {
   return (
     panel !== null &&
-    ["roster", "import", "roles", "rollover", "diagnostics"].includes(panel)
+    ["roster", "import", "rollover", "diagnostics"].includes(panel)
+  );
+}
+function RolesPanel({
+  identity,
+  close,
+}: {
+  identity?: { publicIdentity: string; role: "MASTER" | "PENDING" };
+  close: () => void;
+}) {
+  return (
+    <Drawer title="Roles & access" icon={<KeyRound />} close={close}>
+      {identity ? (
+        <div className="panel-rows">
+          <p>
+            <small>IDENTITY</small>
+            <br />
+            {identity.publicIdentity}
+          </p>
+          <p>
+            <small>ROLE</small>
+            <br />
+            {identity.role}
+          </p>
+        </div>
+      ) : (
+        <div className="notice">
+          <Activity />
+          <span>
+            <strong>Coming Later</strong>
+            <br />
+            This workflow remains visible but disabled until it can use the
+            authoritative repository command model.
+          </span>
+        </div>
+      )}
+    </Drawer>
   );
 }
 function ComingPanel({
@@ -1476,7 +1588,14 @@ function ComingPanel({
 }: {
   panel: Exclude<
     Panel,
-    null | "review" | "cadet" | "issue" | "return" | "bundles" | "needed"
+    | null
+    | "review"
+    | "cadet"
+    | "issue"
+    | "return"
+    | "bundles"
+    | "needed"
+    | "roles"
   >;
   projection: ArgusAppProjection;
   close: () => void;
@@ -1484,7 +1603,6 @@ function ComingPanel({
   const title = {
     roster: "Cadet roster",
     import: "Import 24 cadets",
-    roles: "Roles & access",
     rollover: "Annual rollover preview",
     diagnostics: "Repository diagnostics",
   }[panel];

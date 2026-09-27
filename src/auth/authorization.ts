@@ -25,7 +25,7 @@ export async function issueRevocation(issuer: ArgusIdentityProvider, credential:
 export class AuthorizationService {
   private credentials = new Map<string, AuthorityCredential>()
   private revocations = new Map<string, AuthorityRevocation>()
-  constructor(private readonly rootIdentity: string, private readonly verifier: ArgusIdentityProvider) {}
+  constructor(readonly rootIdentity: string, private readonly verifier: ArgusIdentityProvider) {}
 
   private credentialActiveAt(credential: AuthorityCredential, at: string) {
     const revocation = this.revocations.get(credential.credentialId)

@@ -273,7 +273,17 @@ export class ArgusReplica {
     for (const record of before.outbox) {
       const event = before.events.find(e => e.event.eventId === record.eventId)!.event
       try { await this.provider.publish(event); await this.repository.transaction(s => { s.outbox = s.outbox.filter(o => o.eventId !== event.eventId); const stored = s.events.find(e => e.event.eventId === event.eventId); if (stored) stored.syncStatus = 'SYNCHRONIZED' }) }
-      catch (error) { await this.repository.transaction(s => { const out = s.outbox.find(o => o.eventId === event.eventId); if (out) { out.status = 'FAILED'; out.attempts++; out.lastError = error instanceof Error ? error.message : 'Sync failed' }; const stored = s.events.find(e => e.event.eventId === event.eventId); if (stored) stored.syncStatus = 'FAILED' }) }
+      catch (error) {
+        // An unfunded wallet is not a delivery failure: the event stays QUEUED so the next
+        // synchronization retries it as soon as the device is funded, instead of surfacing as FAILED.
+        const unfunded = error instanceof Error && error.name === 'InsufficientFundsError' && 'address' in error && typeof error.address === 'string' ? error.address : undefined
+        await this.repository.transaction(s => {
+          const out = s.outbox.find(o => o.eventId === event.eventId)
+          if (out) { if (unfunded !== undefined) out.lastError = `unfunded: ${unfunded}`; else { out.status = 'FAILED'; out.attempts++; out.lastError = error instanceof Error ? error.message : 'Sync failed' } }
+          const stored = s.events.find(e => e.event.eventId === event.eventId)
+          if (stored && unfunded === undefined) stored.syncStatus = 'FAILED'
+        })
+      }
     }
     let pending = await this.provider.pull()
     let progress = true

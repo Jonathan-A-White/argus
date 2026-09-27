@@ -43,7 +43,6 @@ import {
   type TestnetWalletStatusProvider,
 } from "./blockchain/ArgusWalletAdapter";
 import { SupplyWorkflow } from "./components/SupplyWorkflow";
-import { loadSyncEnrollment, saveSyncEnrollment } from "./private-sync/runtime";
 
 export type Tab = "count" | "inventory" | "cadets" | "activity" | "more";
 type Panel =
@@ -515,7 +514,7 @@ export default function App({
               () => controller.sync(),
               projection.sync.mode === "remote"
                 ? "Shared history synchronized."
-                : "Local repository checked; enroll this device to enable sharing.",
+                : "Local repository checked; shared synchronization is not configured on this device.",
             )
           }
           close={() => setSettingsOpen(false)}
@@ -1546,30 +1545,7 @@ function SettingsPanel({
 }) {
   const set = <K extends keyof UserSettings>(k: K, v: UserSettings[K]) =>
     change({ ...value, [k]: v });
-  const report = projection.integrity,
-    existing = loadSyncEnrollment();
-  const [endpoint, setEndpoint] = useState(existing?.endpoint ?? ""),
-    [organizationId, setOrganizationId] = useState(
-      existing?.organizationId ?? "",
-    ),
-    [accessToken, setAccessToken] = useState(existing?.accessToken ?? ""),
-    [enrollmentError, setEnrollmentError] = useState("");
-  const enroll = () => {
-    try {
-      saveSyncEnrollment({
-        endpoint: endpoint.trim(),
-        organizationId: organizationId.trim(),
-        accessToken,
-      });
-      location.reload();
-    } catch (error) {
-      setEnrollmentError(
-        error instanceof Error
-          ? error.message
-          : "Enrollment could not be saved.",
-      );
-    }
-  };
+  const report = projection.integrity;
   return (
     <Drawer title="Settings" icon={<Settings />} close={close}>
       <h3>Appearance</h3>
@@ -1649,8 +1625,8 @@ function SettingsPanel({
         <div>
           <strong>
             {projection.sync.mode === "remote"
-              ? "ENCRYPTED RELAY · CONNECTED"
-              : "LOCAL ONLY · ENROLL THIS DEVICE"}
+              ? "SHARED SYNC · CONNECTED"
+              : "LOCAL ONLY"}
           </strong>
           <p>
             Pending: {projection.sync.outbox} · Conflicts:{" "}
@@ -1658,33 +1634,6 @@ function SettingsPanel({
           </p>
         </div>
       </div>
-      <label className="field">
-        RELAY URL
-        <input
-          value={endpoint}
-          onChange={(event) => setEndpoint(event.target.value)}
-          placeholder="https://sync.example.org"
-        />
-      </label>
-      <label className="field">
-        ORGANIZATION ID
-        <input
-          value={organizationId}
-          onChange={(event) => setOrganizationId(event.target.value)}
-          autoComplete="off"
-        />
-      </label>
-      <label className="field">
-        ENROLLMENT SECRET
-        <input
-          type="password"
-          value={accessToken}
-          onChange={(event) => setAccessToken(event.target.value)}
-          autoComplete="new-password"
-        />
-      </label>
-      {enrollmentError && <p role="alert">{enrollmentError}</p>}
-      <button onClick={enroll}>Save enrollment &amp; reconnect</button>
       <button onClick={() => void syncNow()}>Sync now</button>
       <h3>BSV testnet</h3>
       <button onClick={wallet}>Open Testnet Wallet Status</button>
@@ -2030,8 +1979,8 @@ function WalletStatusPanel({
           </div>
           <h3>Encrypted recovery package</h3>
           <p>
-            The package never contains plaintext WIF, mnemonic, password, or
-            relay token. A.R.G.U.S. cannot recover a forgotten backup password.
+            The package never contains a plaintext WIF, mnemonic, or password.
+            A.R.G.U.S. cannot recover a forgotten backup password.
           </p>
           <label className="field">
             BACKUP PASSWORD

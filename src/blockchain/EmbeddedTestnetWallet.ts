@@ -37,10 +37,10 @@ export class EmbeddedTestnetWallet implements TestnetWalletStatusProvider {
 
   async getNetwork() { return { network: 'testnet' as const } }
 
-  /** BRC-100-compatible subset consumed by EncryptedEventTestnetAdapter. */
+  /** BRC-100-compatible subset consumed by EncryptedEventTestnetAdapter and ChainPrivateHistoryProvider: one data output, plus an optional second (the unit anchor). */
   async createAction(args: { outputs: Array<{ lockingScript: string; satoshis: number }> }) {
-    if (args.outputs.length !== 1 || args.outputs[0].satoshis !== 1) throw new Error('The embedded wallet only publishes one-satoshi A.R.G.U.S. data outputs.')
-    const result = await this.createDataTransaction(args.outputs[0].lockingScript)
+    if (!args.outputs.length || args.outputs.length > 2 || args.outputs.some(output => output.satoshis !== 1)) throw new Error('The embedded wallet only publishes one-satoshi A.R.G.U.S. data outputs.')
+    const result = await this.createDataTransaction(args.outputs.map(output => output.lockingScript))
     return { txid: result.transactionId, tx: result.tx }
   }
 
@@ -136,18 +136,18 @@ export class EmbeddedTestnetWallet implements TestnetWalletStatusProvider {
     }
   }
 
-  /** Builds, signs, and broadcasts one data output using faucet-funded P2PKH UTXOs. */
-  async createDataTransaction(lockingScriptHex: string) {
+  /** Builds, signs, and broadcasts one or two data outputs using faucet-funded P2PKH UTXOs. */
+  async createDataTransaction(lockingScriptHex: string | string[]) {
     if (this.operation) throw new Error('Another wallet transaction is already in progress.')
-    const operation = this.buildAndBroadcast(lockingScriptHex)
+    const operation = this.buildAndBroadcast(Array.isArray(lockingScriptHex) ? lockingScriptHex : [lockingScriptHex])
     this.operation = operation
     try { return await operation } finally { this.operation = undefined }
   }
 
-  private async buildAndBroadcast(lockingScriptHex: string) {
+  private async buildAndBroadcast(lockingScriptHexes: string[]) {
     const privateKey = this.key
     if (!privateKey) throw new Error('Unlock the testnet wallet before publishing data.')
-    if (!/^(?:[0-9a-f]{2})+$/i.test(lockingScriptHex)) throw new Error('Data locking script must be hexadecimal.')
+    for (const hex of lockingScriptHexes) if (!/^(?:[0-9a-f]{2})+$/i.test(hex)) throw new Error('Data locking script must be hexadecimal.')
     const address = privateKey.toAddress('testnet'), utxos = await this.utxos(address)
     if (!utxos.length) throw new Error('This wallet has no spendable testnet coins. Fund its faucet address first.')
     const transaction = new Transaction()
@@ -156,7 +156,7 @@ export class EmbeddedTestnetWallet implements TestnetWalletStatusProvider {
       if (!response.ok) throw new Error(`Could not load funding transaction (${response.status}).`)
       transaction.addInput({ sourceTransaction: Transaction.fromHex(await response.text()), sourceOutputIndex: output.tx_pos, unlockingScriptTemplate: new P2PKH().unlock(privateKey) })
     }
-    transaction.addOutput({ satoshis: 1, lockingScript: (await import('@bsv/sdk')).LockingScript.fromHex(lockingScriptHex) })
+    for (const hex of lockingScriptHexes) transaction.addOutput({ satoshis: 1, lockingScript: (await import('@bsv/sdk')).LockingScript.fromHex(hex) })
     transaction.addOutput({ change: true, lockingScript: new P2PKH().lock(address) })
     // A deterministic fee model avoids an unrelated mainnet policy lookup and
     // keeps every network request on the explicitly configured testnet API.

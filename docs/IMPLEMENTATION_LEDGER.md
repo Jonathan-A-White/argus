@@ -1,5 +1,7 @@
 # A.R.G.U.S. implementation ledger
 
+> **Superseded (2026-09-27):** see [BSV_SHARED_LEDGER.md](BSV_SHARED_LEDGER.md) and [ADR 010](adr/010-bsv-shared-ledger.md) for the current design. Kept for history.
+
 Last updated: 2026-09-26. Baseline inspected: `109d568187f00d4980f2ff30552d22a2d0fae09b` on local branch `work`. No Git remote is configured in this checkout, so open/merged PR comparison and default-branch verification are externally blocked.
 
 This ledger is deliberately an evidence record, not a claim that “FIX IT ALL” is complete. `VERIFIED LIVE` is reserved for an actual controlled environment; no production deployment, real student data, external identity service, or blockchain transaction was used.

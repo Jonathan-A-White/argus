@@ -1,5 +1,7 @@
 # Shared counting milestone — 2026-09-26
 
+> **Superseded (2026-09-27):** see [BSV_SHARED_LEDGER.md](BSV_SHARED_LEDGER.md) and [ADR 010](adr/010-bsv-shared-ledger.md) for the current design. Kept for history.
+
 ## Baseline and repair record
 
 Baseline: branch `work`, HEAD `18ead73`; no default-branch ref or remote was configured in this checkout. The required runtime is Node 24 or newer (`package.json`); the available Node 20 runtime can build but cannot start jsdom/Vitest 5 workers. The supply-manual PDFs were present, but no inventory-policy interpretation was needed for this event/transport milestone.

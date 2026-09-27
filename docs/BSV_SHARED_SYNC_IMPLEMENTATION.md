@@ -1,5 +1,7 @@
 # BSV shared-sync implementation record (2026-09-26)
 
+> **Superseded (2026-09-27):** see [BSV_SHARED_LEDGER.md](BSV_SHARED_LEDGER.md) and [ADR 010](adr/010-bsv-shared-ledger.md) for the current design. Kept for history.
+
 ## Decision and architecture map
 
 This change deliberately does **not** call the application BSV-backed. The runtime path today is:

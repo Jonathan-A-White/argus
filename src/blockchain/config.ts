@@ -7,3 +7,8 @@ export function resolveBlockchainMode(value: string | undefined): BlockchainMode
   if (mode === 'mock-development' && import.meta.env.PROD) throw new Error('Mock wallets cannot be used in a production build.')
   return mode as BlockchainMode
 }
+
+/** Every chain code path calls this before touching a network: there is no mainnet adapter at all. */
+export function assertTestnetOnly(network: string): asserts network is 'TESTNET' {
+  if (network !== 'TESTNET') throw new Error('Only BSV TESTNET is permitted; mainnet is disabled and has no adapter.')
+}

@@ -6,37 +6,33 @@ This repository, [Jonathan-A-White/argus](https://github.com/Jonathan-A-White/ar
 
 This repository currently contains the first functional front-end prototype. It uses fictional demonstration records only; no uploaded roster names or unverified inventory quantities are included.
 
-## Current prototype
+## What it does now
 
-- Installable PWA shell with an A.R.G.U.S. home-screen icon
-- Fast physical counting with 1, 5, 10, and custom increments
-- Persisted local draft counts that remain separate from official inventory until submission
-- Signed physical-count events retain a unique session identifier and the operator's optional note
-- Functional local count submission, item creation, issue, return, and annual rollover actions
-- Local audit events for every inventory-changing action
-- Privacy-filtered, SHA-256 audit commitments with an offline mock blockchain provider
-- Search by item name, category, size, or normalized CDMIS NIIN
-- Inventory, cadet, activity, and administration views
-- Fictional data for safe interface review
-- Responsive phone, tablet, and desktop layouts
+- **One shared, encrypted data pool on BSV testnet — no server, no database.** Every change is a signed event, encrypted with the unit key and written to BSV testnet; every device reads everyone's records back from the chain and computes identical state. See [the shared ledger design](docs/BSV_SHARED_LEDGER.md).
+- **Each person has their own key.** The first device creates the unit and becomes its Master; everyone else joins with a public join code and is admitted with a public admission code. No key is ever copied between people.
+- **Shared counting:** A counts 3 PT Shorts, B counts 3 PT Shorts → every device shows 6. An officer finalizes the count and on-hand becomes 6 everywhere.
+- **Zeroed catalog, real sizes:** a new unit starts with the 25 items from the master specification's bundles at zero on hand and no sizes; staff add sizes from Supply Manual presets (34R, 7 1/4, S–3XL…) or custom labels.
+- **Cadets by ID:** cadets are shown as short IDs (e.g. `C-4F7K`); names are optional, encrypted, and revealed only on tap.
+- Issue/return with gender-aware bundles and per-line sizes, Still Needed tracking, receive stock, append-only corrections, visible conflict resolution, activity log with signature verification, offline queueing.
 
 ## Local development
 
 ```bash
 npm install
-npm run dev
+npm run dev                                           # real app: BSV testnet via WhatsOnChain
+VITE_ARGUS_BLOCKCHAIN_MODE=mock-development npm run dev   # single-device demo, no network
 ```
-
-GitHub Pages hosts the A.R.G.U.S. client only. Devices share one history through the BSV testnet chain (the next epic); mock sync never leaves one device.
 
 ## Checks
 
 ```bash
-npm test
+npm test                 # all unit/integration tests (in-memory fake chain; no network)
 npm run test:coverage
-npm run lint
+npm run lint && npm run lint:css
 npm run build
 npm run test:deploy
+npm run testnet:keys     # once: create a testnet key outside the repo and print its address to fund
+npm run test:testnet     # LIVE: two admitted members, 3 + 3 = 6 on BSV testnet, fresh-device rebuild
 ```
 
 ## GitHub Pages deployment
@@ -57,55 +53,4 @@ The build uses relative asset paths so the installed app, manifest, icon, and se
 
 ## Product boundary
 
-Authentication, normal-runtime encrypted synchronization, production roster imports, backend account persistence, and authoritative audit storage require the next operational phase. The current local prototype intentionally does not claim to provide those security guarantees. The separately tested encrypted transport protocol is not an account service and not proof that the normal application is operationally ready.
-
-## BSV integration status
-
-**Current environment:** Development
-
-- **Supported:** local mock blockchain provider, deterministic audit hashing, mock signing/verification, retry and duplicate protection
-- **Implemented boundary:** the browser connects to an installed BRC-100 wallet when `VITE_ARGUS_BLOCKCHAIN_MODE=testnet`, verifies that wallet is on testnet, derives a public testnet faucet address, and reads A.R.G.U.S.-labelled transaction history. Complete encrypted-event testnet outputs use that same BRC-100 `createAction` boundary; deterministic contract tests cover encoding, retry lookup, and mainnet rejection.
-- **Not yet demonstrated live:** no funded wallet/overlay/header verifier was supplied, so no real transaction or TXID is claimed
-- **Not enabled:** BSV mainnet; selecting it causes an explicit startup error
-- **Production funds:** never used
-
-The mock provider makes no network requests and every simulated transaction ID starts with `MOCK_TX_`. A.R.G.U.S. continues to use off-chain local application state for fast inventory and roster queries. Read-only actions do not create audit transactions.
-
-See [the shared-counting milestone](docs/SHARED_COUNTING_MILESTONE.md), [the BSV architecture](docs/BSV_ARCHITECTURE.md), and [security model](docs/SECURITY_MODEL.md) before changing network or signing behavior.
-
-### Connect and fund a testnet wallet
-
-1. Install and unlock a BRC-100-compatible browser wallet and select **BSV testnet** in the wallet.
-2. Copy `.env.example` to `.env.local`, set `VITE_ARGUS_BLOCKCHAIN_MODE=testnet`, and restart Vite.
-3. Open **Settings → Open Testnet Wallet Status**, approve the wallet capability request, and copy the displayed **Public testnet faucet address**.
-4. Send only faucet testnet coins to that address. Never send mainnet BSV; the app rejects a mainnet wallet.
-
-The app never stores a seed phrase or private key. The wallet remains the signing/spending authority. Future password authentication should issue per-user application credentials and encrypted synchronization grants, not become wallet custody: operational data already uses the repository/event/encrypted-transport boundaries described above. A faucet payment is not automatically proof that an injected wallet has indexed the output; confirm the test balance in the wallet before publishing a data transaction.
-
-## Stage 2 distributed proof
-
-Stage 2 adds permission-enforced mock identities and signed authority chains, append-only replica/event/outbox abstractions, IndexedDB and memory repositories, idempotent mock multi-client synchronization, explicit inventory conflicts, and correction events. It does **not** claim production key custody, encrypted private-history replication, an operational overlay, or a completed testnet transaction. See [the distributed architecture](docs/DISTRIBUTED_ARCHITECTURE.md), [offline sync](docs/OFFLINE_SYNC.md), [identity model](docs/IDENTITY_MODEL.md), and [testnet result](docs/BSV_TESTNET.md).
-
-## Stage 2.5 distributed integration
-
-The normal issue, return, and count-submit controls now use permission-checked signed events and a schema-versioned IndexedDB projection. A non-destructive, idempotent migration copies legacy inventory as genesis state. The Activity view separates local/private-sync and BSV-audit status.
-
-## Stage 3A cadets, bundles, and readiness
-
-Stage 3A adds signed, permission-checked cadet records, immutable editable bundle versions, exact idempotent factory presets, and lifecycle-preserving Still Needed requirements to the existing IndexedDB replica. Availability and readiness are derived from live projections; concurrent cadet or bundle edits become explicit reconciliation conflicts. See [the Stage 3A architecture](docs/STAGE_3A_CADETS_AND_BUNDLES.md) and [ADR 004](docs/adr/004-stage-3a-cadets-bundles.md).
-
-Stage 2.5 also provides an AES-256-GCM private-envelope protocol, mock epoch rotation/key grants, untrusted private-history provider interfaces, redundant-provider recovery tests, and a fail-closed external testnet-wallet boundary. No real BSV transaction or overlay was run, no TXID exists, and mainnet remains impossible. See [Stage 2.5 architecture](docs/STAGE_2_5_ARCHITECTURE.md), [private encryption](docs/PRIVATE_EVENT_ENCRYPTION.md), [private sync](docs/PRIVATE_HISTORY_SYNC.md), [device recovery](docs/DEVICE_RECOVERY.md), [storage migration](docs/STORAGE_MIGRATION.md), and [dependency review](docs/BSV_DEPENDENCY_REVIEW.md).
-
-## Stage 3A.5 consolidation
-
-Operational screens now read one `ArgusAppProjection` backed by `RepositoryState`. Inventory creation and count submission use one authorized signed-event path; cadets, bundles, Still Needed, activity, conflicts, and integrity diagnostics come directly from repository projections. Legacy `AppData` remains migration input only. See [the consolidation guide](docs/STAGE_3A_5_CONSOLIDATION.md) and [ADR 005](docs/adr/005-stage-3a-5-application-consolidation.md).
-
-## Stage 3B issue and return
-
-Stage 3B adds atomic multi-SKU Issue and Return transactions, exact bundle mappings and snapshots, variant-safe property records, partial Issue/Still Needed integration, inactive-cadet returns, offline durability, and inventory-keyed conflict quarantine. See [the Stage 3B guide](docs/STAGE_3B_ISSUE_RETURN.md) and [ADR 006](docs/adr/006-stage-3b-issue-return.md).
-
-## Stage 3C.5 stabilization status
-
-Stage 3C.5 added failure-safe repository transaction serialization, persistent **development-only** epoch enrollment, hardened transport validation/storage behavior, expanded integrity diagnostics, structural CSS validation, and safer service-worker navigation/asset/update handling. That stage's synchronization transport was separately deployed, single-instance development/small-unit infrastructure, since removed by decision of Luke (2026-09-27) in favor of the BSV testnet chain; its bearer token was only a transport-access credential and was not an encryption key, signing identity, or production account.
-
-A real HTTP integration test proved that two independently constructed, explicitly enrolled clients could publish and decrypt multiple ciphertext event types without transport plaintext. This did **not** make the normal React controller production-ready: its remote runtime selection/enrollment UI and distinct-actor credential distribution were not complete. Browser visual/PWA regression coverage and the complete offline final-unit conflict gate also remain open. Accordingly, this repository is **NOT READY FOR STAGE 4A**. See [the Stage 3C.5 report](docs/STAGE_3C_5_STABILIZATION.md) and [ADR 008](docs/adr/008-stage-3c-5-application-stabilization.md).
+Testnet only; mainnet is impossible in this build. Live testnet operation depends on WhatsOnChain's public API for discovery and broadcast. Key rotation after revoking a member, SPV inclusion proofs, the dashboard readiness tree, the supply calendar, alerts, roster import and annual rollover are not built yet. Encrypted records on a public chain are permanent; obtain school/command approval before entering real cadet data. See [known limits](docs/BSV_SHARED_LEDGER.md#known-limits-and-open-decisions) and [ADR 010](docs/adr/010-bsv-shared-ledger.md).

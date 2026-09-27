@@ -11,6 +11,13 @@ import { createJoiningDevice, encodeJoinRequest, loadDeviceVault } from './unit/
 
 const memoryStorage = () => { const values = new Map<string, string>(); return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => void values.set(key, value), removeItem: (key: string) => void values.delete(key), values } }
 const PASS = 'supply closet 42'
+/** Home is the dashboard (no taskbar, spec §5); elsewhere the primary navigation is shown. */
+async function goTo(label: 'Count' | 'Inventory' | 'Cadets' | 'Calendar' | 'Activity' | 'More') {
+  const primary = screen.queryByRole('navigation', { name: 'Primary navigation' })
+  if (primary) { fireEvent.click(within(primary).getByRole('button', { name: label })); return }
+  const tiles = await screen.findByRole('navigation', { name: 'Dashboard navigation' })
+  fireEvent.click(within(tiles).getByRole('button', { name: new RegExp(label === 'More' ? 'Command Center' : label) }))
+}
 const runtimeOptions = (chain: FakeChain) => ({ api: chain, ledger: new MemoryLedgerStore(), walletStore: new MemoryWalletStateStore() })
 
 async function createUnitThroughUi(chain: FakeChain, storage = memoryStorage()) {
@@ -36,17 +43,31 @@ describe('application shell', { timeout: 60_000 }, () => {
     expect(screen.getAllByText('MOCK · THIS DEVICE ONLY').length).toBeGreaterThan(0)
   })
 
-  it('provides desktop and mobile navigation for every section', async () => {
+  it('lands on the dashboard without a taskbar, and shows full navigation everywhere else', async () => {
     render(<App controller={new DistributedAppController(new MemoryRepository())} settingsStorage={new LocalSettingsStorage(memoryStorage())} />)
-    await screen.findByText('MOCK BLOCKCHAIN')
-    for (const label of ['Count', 'Inventory', 'Cadets', 'Activity', 'More']) {
-      expect(within(screen.getByRole('navigation', { name: 'Primary navigation' })).getByRole('button', { name: label })).toBeInTheDocument()
-      expect(within(screen.getByRole('navigation', { name: 'Mobile navigation' })).getByRole('button', { name: label })).toBeInTheDocument()
-    }
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'Mobile navigation' })).getByRole('button', { name: 'More' }))
+    expect(await screen.findByRole('heading', { name: 'Home', level: 1 })).toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: 'Primary navigation' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Quick actions' })).toBeInTheDocument()
+    await goTo('Inventory')
+    expect(await screen.findByRole('heading', { name: 'Inventory', level: 1 })).toBeInTheDocument()
+    for (const label of ['Home', 'Count', 'Inventory', 'Cadets', 'Calendar', 'Activity', 'More']) expect(within(screen.getByRole('navigation', { name: 'Primary navigation' })).getByRole('button', { name: label })).toBeInTheDocument()
+    for (const label of ['Home', 'Count', 'Inventory', 'Cadets', 'More']) expect(within(screen.getByRole('navigation', { name: 'Mobile navigation' })).getByRole('button', { name: label })).toBeInTheDocument()
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Primary navigation' })).getByRole('button', { name: 'Calendar' }))
+    expect(await screen.findByRole('heading', { name: 'Supply Calendar', level: 1 })).toBeInTheDocument()
+    await goTo('More')
     expect(await screen.findByRole('heading', { name: 'Command Center', level: 1 })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }))
     expect(await screen.findByText('Data integrity healthy')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Close panel' }))
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Mobile navigation' })).getByRole('button', { name: 'Home' }))
+    expect(await screen.findByRole('navigation', { name: 'Dashboard navigation' })).toBeInTheDocument()
+  })
+
+  it('opens the issue workflow straight from the dashboard quick action', async () => {
+    render(<App controller={new DistributedAppController(new MemoryRepository())} settingsStorage={new LocalSettingsStorage(memoryStorage())} />)
+    const actions = await screen.findByRole('region', { name: 'Quick actions' })
+    fireEvent.click(within(actions).getByRole('button', { name: /issue/i }))
+    expect(await screen.findByRole('dialog', { name: 'Issue property' })).toBeInTheDocument()
   })
 
   it('persists personal preferences and applies the theme immediately', async () => {
@@ -67,7 +88,7 @@ describe('application shell', { timeout: 60_000 }, () => {
     await controller.initialize()
     const projection = await controller.createCadet({ gender: 'Female', nsLevel: 'NS1', status: 'ACTIVE', fullName: 'Very Private Name' })
     render(<App controller={controller} settingsStorage={new LocalSettingsStorage(memoryStorage())} />)
-    fireEvent.click(within(await screen.findByRole('navigation', { name: 'Primary navigation' })).getByRole('button', { name: 'Activity' }))
+    await goTo('Activity')
     expect(await screen.findByText(`Added cadet ${projection.cadets[0].cadetCode}`)).toBeInTheDocument()
     expect(screen.queryByText(/Very Private Name/)).not.toBeInTheDocument()
   })
@@ -99,7 +120,7 @@ describe('unit onboarding over a (fake) BSV testnet chain', { timeout: 120_000 }
     // The joiner's device (created with the same code the UI's Join flow uses).
     const joinerStorage = memoryStorage()
     const joiner = await createJoiningDevice({ passphrase: 'another pass 77', displayName: 'Jordan' }, joinerStorage)
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'Primary navigation' })).getByRole('button', { name: 'More' }))
+    await goTo('More')
     fireEvent.click(await screen.findByRole('button', { name: /Members & access/ }))
     fireEvent.change(screen.getByLabelText('Join code'), { target: { value: await encodeJoinRequest(joiner) } })
     fireEvent.change(screen.getByLabelText('Role'), { target: { value: 'SUPPLY_OFFICER' } })
@@ -116,7 +137,9 @@ describe('unit onboarding over a (fake) BSV testnet chain', { timeout: 120_000 }
     render(<App runtimeOptions={runtimeOptions(chain)} storage={joinerStorage} settingsStorage={new LocalSettingsStorage(memoryStorage())} />)
     fireEvent.change(await screen.findByLabelText('Passphrase'), { target: { value: 'another pass 77' } })
     fireEvent.click(screen.getByRole('button', { name: 'Unlock' }))
-    expect((await screen.findByLabelText('Your join code', {}, { timeout: 20_000 }) as HTMLTextAreaElement).value).toMatch(/^ARGUS-JOIN-1:/)
+    // The code is derived asynchronously after the screen appears; wait for it rather than reading the empty box.
+    const joinCodeBox = await screen.findByLabelText('Your join code', {}, { timeout: 20_000 }) as HTMLTextAreaElement
+    await waitFor(() => expect(joinCodeBox.value).toMatch(/^ARGUS-JOIN-1:/), { timeout: 20_000 })
     fireEvent.change(screen.getByLabelText('Admission code'), { target: { value: code } })
     fireEvent.click(screen.getByRole('button', { name: 'Join unit' }))
     expect(await screen.findByText('BSV TESTNET', {}, { timeout: 20_000 })).toBeInTheDocument()
@@ -127,7 +150,7 @@ describe('unit onboarding over a (fake) BSV testnet chain', { timeout: 120_000 }
   it('locks back to the unlock screen and rejects a wrong passphrase', async () => {
     const chain = new FakeChain()
     await createUnitThroughUi(chain)
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'Primary navigation' })).getByRole('button', { name: 'More' }))
+    await goTo('More')
     fireEvent.click(await screen.findByRole('button', { name: /Lock this device/ }))
     fireEvent.change(await screen.findByLabelText('Passphrase'), { target: { value: 'wrong passphrase 9' } })
     fireEvent.click(screen.getByRole('button', { name: 'Unlock' }))

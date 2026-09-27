@@ -8,6 +8,7 @@ import {
   ClipboardCheck,
   ExternalLink,
   History,
+  Home,
   KeyRound,
   LayoutGrid,
   Settings,
@@ -42,6 +43,8 @@ import { SharedCountView } from "./features/count/SharedCountView";
 import { InventoryCatalogView } from "./features/inventory/InventoryCatalogView";
 import { CadetsView } from "./features/cadets/CadetsView";
 import { ConflictsPanel } from "./features/conflicts/ConflictsPanel";
+import { Dashboard } from "./features/dashboard";
+import { CalendarView } from "./features/calendar";
 import { BundleEditorPanel } from "./features/bundles";
 import { RolloverPanel, RosterImportPanel } from "./features/admin";
 import { cadetLabel } from "./stage3/domain";
@@ -54,7 +57,14 @@ import type {
   UnitStatus,
 } from "./unit/runtime";
 
-export type Tab = "count" | "inventory" | "cadets" | "activity" | "more";
+export type Tab =
+  | "home"
+  | "count"
+  | "inventory"
+  | "cadets"
+  | "calendar"
+  | "activity"
+  | "more";
 type Panel =
   | "cadet-issue"
   | "cadet-return"
@@ -68,17 +78,25 @@ type Panel =
   | "rollover"
   | null;
 const nav: Array<{ id: Tab; label: string; icon: typeof Activity }> = [
+  { id: "home", label: "Home", icon: Home },
   { id: "count", label: "Count", icon: ClipboardCheck },
   { id: "inventory", label: "Inventory", icon: Boxes },
   { id: "cadets", label: "Cadets", icon: Users },
+  { id: "calendar", label: "Calendar", icon: CalendarRange },
   { id: "activity", label: "Activity", icon: History },
   { id: "more", label: "More", icon: LayoutGrid },
 ];
+/** Phones get the five most-used sections; Calendar and Activity are one tap away from Home. */
+const mobileNav = nav.filter((item) =>
+  ["home", "count", "inventory", "cadets", "more"].includes(item.id),
+);
 const pageTitle = (tab: Tab) =>
   ({
+    home: "Home",
     count: "Shared Count",
     inventory: "Inventory",
     cadets: "Cadets",
+    calendar: "Supply Calendar",
     activity: "Activity",
     more: "Command Center",
   })[tab];
@@ -254,43 +272,47 @@ function AuthenticatedApp({
     setWorkflowCadetId(cadetId);
     setPanel(kind);
   };
+  // Master spec §5: the dashboard is itself the navigation surface, so the normal taskbar is hidden there.
+  const onDashboard = tab === "home";
   return (
-    <div className="app-shell">
+    <div className={onDashboard ? "app-shell dashboard-mode" : "app-shell"}>
       <div className="aether-field" aria-hidden="true">
         <span />
         <span />
         <span />
       </div>
-      <aside className="sidebar">
-        <Brand />
-        <nav aria-label="Primary navigation">
-          {nav.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              className={tab === id ? "nav-item active" : "nav-item"}
-              onClick={() => setTab(id)}
-            >
-              <Icon size={19} />
-              <span>{label}</span>
-            </button>
-          ))}
-        </nav>
-        <div className="system-card">
-          <span className="pulse" />
-          <strong>
-            {runtime ? runtime.device.record.unit?.unitName : "Demo unit"}
-          </strong>
-          <p>{syncText}</p>
-        </div>
-        <button className="profile" onClick={() => setSettingsOpen(true)}>
-          <span className="avatar">{initialsOf}</span>
-          <span>
-            <strong>{who}</strong>
-            <small>{roleLabel(role)}</small>
-          </span>
-          <ChevronDown size={16} />
-        </button>
-      </aside>
+      {!onDashboard && (
+        <aside className="sidebar">
+          <Brand />
+          <nav aria-label="Primary navigation">
+            {nav.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                className={tab === id ? "nav-item active" : "nav-item"}
+                onClick={() => setTab(id)}
+              >
+                <Icon size={19} />
+                <span>{label}</span>
+              </button>
+            ))}
+          </nav>
+          <div className="system-card">
+            <span className="pulse" />
+            <strong>
+              {runtime ? runtime.device.record.unit?.unitName : "Demo unit"}
+            </strong>
+            <p>{syncText}</p>
+          </div>
+          <button className="profile" onClick={() => setSettingsOpen(true)}>
+            <span className="avatar">{initialsOf}</span>
+            <span>
+              <strong>{who}</strong>
+              <small>{roleLabel(role)}</small>
+            </span>
+            <ChevronDown size={16} />
+          </button>
+        </aside>
+      )}
       <main className="main-stage">
         <div className={`environment-banner ${mode}`} role="note">
           <strong>{mode === "testnet" ? "BSV TESTNET" : "MOCK BLOCKCHAIN"}</strong>
@@ -328,13 +350,58 @@ function AuthenticatedApp({
             >
               <Settings size={20} />
             </button>
-            <span className="top-avatar">{initialsOf}</span>
+            <button
+              className="top-identity"
+              onClick={() => setSettingsOpen(true)}
+              aria-label={`Signed in as ${who}, ${roleLabel(role)}`}
+            >
+              <b aria-hidden="true">{initialsOf}</b>
+              <span>
+                <span>{who}</span>
+                <small>{roleLabel(role)}</small>
+              </span>
+            </button>
           </div>
         </header>
         {notice && (
           <div className="app-notice" role="status">
             {notice}
           </div>
+        )}
+        {tab === "home" && (
+          <Dashboard
+            projection={projection}
+            sync={{
+              label: syncText,
+              needsFunding: Boolean(status?.needsFunding),
+              state: status?.state,
+              queued: status?.queued ?? projection.sync.outbox,
+            }}
+            unitName={
+              runtime?.device.record.unit?.unitName ?? "A.R.G.U.S. demo"
+            }
+            navigate={({ tab: next, panel: nextPanel }) => {
+              setTab(next);
+              setPanel(nextPanel ?? null);
+            }}
+            onQuickAction={(action) => {
+              if (action === "count") setTab("count");
+              else {
+                setWorkflowCadetId(undefined);
+                setPanel(action === "issue" ? "cadet-issue" : "cadet-return");
+              }
+            }}
+          />
+        )}
+        {tab === "calendar" && (
+          <CalendarView
+            projection={projection}
+            controller={controller}
+            can={can}
+            memberName={memberName}
+            onProjection={setProjection}
+            notify={notify}
+          />
         )}
         {tab === "count" && (
           <SharedCountView
@@ -391,18 +458,20 @@ function AuthenticatedApp({
           />
         )}
       </main>
-      <nav className="mobile-nav" aria-label="Mobile navigation">
-        {nav.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            className={tab === id ? "active" : ""}
-            onClick={() => setTab(id)}
-          >
-            <Icon size={21} />
-            <span>{label}</span>
-          </button>
-        ))}
-      </nav>
+      {!onDashboard && (
+        <nav className="mobile-nav" aria-label="Mobile navigation">
+          {mobileNav.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              className={tab === id ? "active" : ""}
+              onClick={() => setTab(id)}
+            >
+              <Icon size={21} />
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
+      )}
       {(panel === "cadet-issue" || panel === "cadet-return") && (
         <SupplyWorkflow
           mode={panel === "cadet-issue" ? "ISSUE" : "RETURN"}

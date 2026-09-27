@@ -8,3 +8,12 @@
   .top-actions .sync { display: flex; max-width: 52vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; padding: 6px 10px; }
 }
 .unit-gate-choices button { justify-items: start; text-align: left; }
+/* Home dashboard (spec §5): no sidebar or taskbar; the dashboard navigates. */
+.app-shell.dashboard-mode { grid-template-columns: 1fr; padding-bottom: 0; }
+/* Who is signed in, on every screen and every device size. */
+.top-identity { display: flex; align-items: center; gap: 8px; background: transparent; border: 1px solid var(--color-border); border-radius: 999px; padding: 4px 12px 4px 4px; min-height: 40px; cursor: pointer; font: inherit; color: var(--color-text-primary); text-align: left; }
+.top-identity b { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: var(--color-bg-sidebar); color: var(--color-accent-gold); font-size: 12px; }
+.top-identity > span { display: grid; line-height: 1.15; }
+.top-identity > span > span { font-size: 13px; font-weight: 600; }
+.top-identity small { font-size: 11px; color: var(--color-text-secondary); }
+@media (max-width: 680px) { .top-identity { padding-right: 8px; } .top-identity > span > span { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } }

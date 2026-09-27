@@ -135,7 +135,7 @@ function Pending({ device, accept, lock }: { device: UnlockedDevice; accept: (ad
       <form className="modal" aria-label="Waiting for admission" onSubmit={onSubmit}>
         <h2>Waiting for admission</h2>
         <p><strong>1.</strong> Send this join code to your unit&apos;s Master (text, email or AirDrop are all fine — it contains no secret).</p>
-        <label className="field">YOUR JOIN CODE<textarea readOnly aria-label="Your join code" value={joinCode} rows={4} /></label>
+        <label className="field">YOUR JOIN CODE<textarea readOnly aria-label="Your join code" value={joinCode} rows={4} placeholder="Preparing your join code…" /></label>
         <div className="modal-actions"><button type="button" onClick={() => void share()} disabled={!joinCode}>{copied ? 'Join code copied ✓' : 'Share or copy join code'}</button></div>
         <p><strong>2.</strong> Paste the admission code the Master sends back.</p>
         <label className="field">ADMISSION CODE<textarea aria-label="Admission code" value={admissionCode} onChange={event => setAdmissionCode(event.target.value)} rows={4} required /></label>

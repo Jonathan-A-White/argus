@@ -13,10 +13,7 @@
     "lint:css": "node scripts/check-css.mjs",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:deploy": "node scripts/deployment-smoke.mjs",
-    "relay:dev": "node relay/server.mjs",
-    "relay:test": "node --test relay/server.test.mjs",
-    "test:sync-integration": "vitest run src/private-sync/syncIntegration.test.ts"
+    "test:deploy": "node scripts/deployment-smoke.mjs"
   },
   "dependencies": {
     "@bsv/sdk": "^2.8.8",

@@ -29,7 +29,7 @@ import {
   DistributedAppController,
   type ArgusAppProjection,
 } from "./distributed/appIntegration";
-import type { InventoryProjection } from "./distributed/types";
+import type { ArgusRole, InventoryProjection } from "./distributed/types";
 import { matchesSearch } from "./domain";
 import {
   LocalSettingsStorage,
@@ -49,7 +49,14 @@ import {
   buildAuthenticatedController,
   identityGateRequired,
 } from "./identity/runtime";
-import type { UnlockedDeviceIdentity } from "./identity/deviceIdentity";
+import {
+  admitPerson,
+  knownPeople,
+  type DeviceIdentityRecord,
+  type DeviceRole,
+  type KnownPerson,
+  type UnlockedDeviceIdentity,
+} from "./identity/deviceIdentity";
 
 export type Tab = "count" | "inventory" | "cadets" | "activity" | "more";
 type Panel =
@@ -138,6 +145,7 @@ export default function App({ controller: supplied, ...rest }: Props) {
 /** Shows the first-run/unlock screens outside mock-development; mock-development keeps today's single-tap demo boot. */
 function IdentityGatedApp(props: Omit<Props, "controller">) {
   const [unlocked, setUnlocked] = useState<UnlockedDeviceIdentity>();
+  const [record, setRecord] = useState<DeviceIdentityRecord>();
   const controller = useMemo(() => {
     if (!identityGateRequired()) return new DistributedAppController();
     if (unlocked?.authorization)
@@ -147,17 +155,58 @@ function IdentityGatedApp(props: Omit<Props, "controller">) {
       });
     return undefined;
   }, [unlocked]);
-  const lock = () => setUnlocked(undefined);
+  const lock = () => {
+    setUnlocked(undefined);
+    setRecord(undefined);
+  };
   if (!controller) {
-    if (unlocked)
+    if (unlocked && record)
       return (
         <PendingAdmissionScreen
           publicIdentity={unlocked.publicIdentity}
+          identity={unlocked.identity}
+          record={record}
+          onAdmitted={(updatedRecord, authorization) => {
+            setRecord(updatedRecord);
+            setUnlocked(
+              (current) =>
+                current && {
+                  ...current,
+                  role: updatedRecord.role,
+                  authorization,
+                },
+            );
+          }}
           onLock={lock}
         />
       );
-    return <IdentityGate onUnlock={setUnlocked} />;
+    return (
+      <IdentityGate
+        onUnlock={(unlockedIdentity, loadedRecord) => {
+          setUnlocked(unlockedIdentity);
+          setRecord(loadedRecord);
+        }}
+      />
+    );
   }
+  const admit =
+    unlocked?.authoritySigner && record
+      ? async (
+          identityCode: string,
+          role: Exclude<ArgusRole, "MASTER">,
+          expiresAt?: string,
+        ) => {
+          const result = await admitPerson(
+            record,
+            unlocked.authoritySigner!,
+            identityCode,
+            role,
+            expiresAt,
+          );
+          setRecord(result.record);
+          return result.credentialCode;
+        }
+      : undefined;
   return (
     <AuthenticatedApp
       controller={controller}
@@ -165,6 +214,8 @@ function IdentityGatedApp(props: Omit<Props, "controller">) {
         unlocked && {
           publicIdentity: unlocked.publicIdentity,
           role: unlocked.role,
+          people: record ? knownPeople(record) : [],
+          admit,
         }
       }
       onLock={identityGateRequired() ? lock : undefined}
@@ -175,7 +226,16 @@ function IdentityGatedApp(props: Omit<Props, "controller">) {
 
 type AuthenticatedAppProps = Omit<Props, "controller"> & {
   controller: DistributedAppController;
-  identity?: { publicIdentity: string; role: "MASTER" | "PENDING" };
+  identity?: {
+    publicIdentity: string;
+    role: DeviceRole;
+    people: KnownPerson[];
+    admit?: (
+      identityCode: string,
+      role: Exclude<ArgusRole, "MASTER">,
+      expiresAt?: string,
+    ) => Promise<string>;
+  };
   onLock?: () => void;
 };
 
@@ -1549,24 +1609,40 @@ function RolesPanel({
   identity,
   close,
 }: {
-  identity?: { publicIdentity: string; role: "MASTER" | "PENDING" };
+  identity?: {
+    publicIdentity: string;
+    role: DeviceRole;
+    people: KnownPerson[];
+    admit?: (
+      identityCode: string,
+      role: Exclude<ArgusRole, "MASTER">,
+      expiresAt?: string,
+    ) => Promise<string>;
+  };
   close: () => void;
 }) {
   return (
     <Drawer title="Roles & access" icon={<KeyRound />} close={close}>
       {identity ? (
-        <div className="panel-rows">
-          <p>
-            <small>IDENTITY</small>
-            <br />
-            {identity.publicIdentity}
-          </p>
-          <p>
-            <small>ROLE</small>
-            <br />
-            {identity.role}
-          </p>
-        </div>
+        <>
+          <div className="panel-rows">
+            <p>
+              <small>IDENTITY</small>
+              <br />
+              {identity.publicIdentity}
+            </p>
+            <p>
+              <small>ROLE</small>
+              <br />
+              {identity.role}
+            </p>
+          </div>
+          <PeopleList
+            people={identity.people}
+            isMaster={identity.role === "MASTER"}
+          />
+          {identity.admit && <AdmitPersonForm admit={identity.admit} />}
+        </>
       ) : (
         <div className="notice">
           <Activity />
@@ -1579,6 +1655,161 @@ function RolesPanel({
         </div>
       )}
     </Drawer>
+  );
+}
+
+function PeopleList({
+  people,
+  isMaster,
+}: {
+  people: KnownPerson[];
+  isMaster: boolean;
+}) {
+  return (
+    <div className="panel-rows">
+      <p>
+        <small>PEOPLE THIS DEVICE KNOWS</small>
+      </p>
+      <ul aria-label="People this device knows">
+        {people.map((person) => (
+          <li key={person.publicIdentity}>
+            <p>
+              {person.you && <strong>You · </strong>}
+              <span>{person.role}</span>
+              {person.issuedAt &&
+                ` · admitted ${new Date(person.issuedAt).toLocaleDateString()}`}
+              <br />
+              <small>{person.publicIdentity}</small>
+            </p>
+          </li>
+        ))}
+      </ul>
+      {!isMaster && (
+        <p>
+          Other devices this unit has admitted are learned through the chain in
+          a later epic; for now this device knows only itself and the Master
+          that admitted it.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function AdmitPersonForm({
+  admit,
+}: {
+  admit: (
+    identityCode: string,
+    role: Exclude<ArgusRole, "MASTER">,
+    expiresAt?: string,
+  ) => Promise<string>;
+}) {
+  const [identityCode, setIdentityCode] = useState("");
+  const [role, setRole] =
+    useState<Exclude<ArgusRole, "MASTER">>("SUPPLY_OFFICER");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [credentialCode, setCredentialCode] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    setCredentialCode("");
+    setCopied(false);
+    try {
+      const code = await admit(
+        identityCode,
+        role,
+        expiresAt ? new Date(expiresAt).toISOString() : undefined,
+      );
+      setCredentialCode(code);
+      setIdentityCode("");
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "This person could not be admitted.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async () => {
+    await navigator.clipboard.writeText(credentialCode);
+    setCopied(true);
+  };
+
+  return (
+    <form className="panel-rows" aria-label="Admit a person" onSubmit={submit}>
+      <p>
+        <small>ADMIT A PERSON</small>
+      </p>
+      <label className="field">
+        IDENTITY CODE
+        <textarea
+          aria-label="Identity code"
+          value={identityCode}
+          onChange={(event) => setIdentityCode(event.target.value)}
+          rows={3}
+          required
+        />
+      </label>
+      <label className="field">
+        ROLE
+        <select
+          aria-label="Role"
+          value={role}
+          onChange={(event) =>
+            setRole(event.target.value as Exclude<ArgusRole, "MASTER">)
+          }
+        >
+          <option value="INSTRUCTOR">Instructor</option>
+          <option value="SUPPLY_OFFICER">Supply Officer</option>
+          <option value="SUPPLY_ASSISTANT">Supply Assistant</option>
+        </select>
+      </label>
+      <label className="field">
+        EXPIRES (OPTIONAL)
+        <input
+          type="date"
+          aria-label="Expires"
+          value={expiresAt}
+          onChange={(event) => setExpiresAt(event.target.value)}
+        />
+      </label>
+      {error && (
+        <div className="workflow-error" role="alert">
+          {error}
+        </div>
+      )}
+      <div className="modal-actions">
+        <button className="primary-button" type="submit" disabled={busy}>
+          Admit
+        </button>
+      </div>
+      {credentialCode && (
+        <>
+          <label className="field">
+            CREDENTIAL CODE FOR THIS PERSON
+            <textarea
+              readOnly
+              aria-label="Credential code"
+              value={credentialCode}
+              rows={3}
+            />
+          </label>
+          <div className="modal-actions">
+            <button type="button" onClick={() => void copy()}>
+              {copied ? "Credential code copied ✓" : "Copy credential code"}
+            </button>
+          </div>
+        </>
+      )}
+    </form>
   );
 }
 function ComingPanel({

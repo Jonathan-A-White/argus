@@ -1,0 +1,225 @@
+/* Cadet records (src/features/cadets). Builds on the global page, drawer and form classes in src/styles.css. */
+
+/* ---------- list tools ---------- */
+.cadet-tools {
+  flex-wrap: wrap;
+  align-items: center;
+}
+.cadet-search-clear {
+  display: grid;
+  place-items: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+}
+.cadet-search-clear svg {
+  width: 16px;
+  height: 16px;
+}
+.cadet-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cadet-filters button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 6px 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+.cadet-filters button span {
+  color: var(--color-text-muted);
+  font-size: 10px;
+}
+.cadet-filters button[aria-pressed='true'] {
+  border-color: var(--color-bg-sidebar);
+  background: var(--color-bg-sidebar);
+  color: var(--color-text-inverse);
+}
+.cadet-filters button[aria-pressed='true'] span {
+  color: inherit;
+}
+
+/* ---------- list rows ---------- */
+.cadet-card .cadet-card-compact {
+  display: none;
+}
+.cadet-card strong {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.5px;
+}
+
+/* ---------- record drawer ---------- */
+.cadet-edit-button,
+.cadet-name-panel .secondary-button,
+.cadet-name-locked .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 14px;
+  white-space: nowrap;
+}
+.cadet-edit-button svg,
+.cadet-name-panel svg,
+.cadet-name-locked svg,
+.cadet-split-actions svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.cadet-name-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-bg-surface-raised);
+}
+.cadet-name-panel > span {
+  min-width: 0;
+}
+.cadet-name-panel small {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.cadet-name-panel strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+.cadet-name-panel .cadet-name-missing {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+.cadet-record-rows {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 18px;
+}
+.cadet-record-rows small {
+  overflow-wrap: anywhere;
+}
+.cadet-split-actions > button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.cadet-action-note {
+  margin: 10px 0 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+/* ---------- add / edit form ---------- */
+.cadet-form .field-hint {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.cadet-form .field input[aria-invalid='true'] {
+  border-color: var(--color-warning);
+}
+.cadet-form-id {
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-bg-surface-raised);
+}
+.cadet-form-id small {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.cadet-form-id strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 18px;
+  letter-spacing: 0.5px;
+}
+.cadet-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0 12px;
+}
+.cadet-name-locked {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 9px;
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+.cadet-name-locked > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.cadet-sizes {
+  margin: 18px 0 0;
+  padding: 12px 14px 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+.cadet-sizes legend {
+  padding: 0 6px;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 800;
+}
+.cadet-sizes > p {
+  margin: 2px 0 8px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+/* ---------- phone ---------- */
+@media (max-width: 680px) {
+  .cadet-tools .inline-search {
+    flex: 1 1 100%;
+  }
+  /* The global phone layout hides the readiness badge; readiness matters most on the phone, so keep it. */
+  .cadet-grid .cadet-card {
+    grid-template-columns: 42px minmax(0, 1fr) auto 20px;
+  }
+  .cadet-grid .cadet-card em {
+    display: block;
+  }
+  .cadet-grid .cadet-card .cadet-card-compact {
+    display: block;
+  }
+  .cadet-name-panel {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

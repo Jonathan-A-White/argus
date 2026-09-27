@@ -1,91 +1,2657 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Activity, ArrowRight, Boxes, CalendarRange, Check, ChevronDown, ClipboardCheck, Cloud, FileUp, History, KeyRound, LayoutGrid, Minus, PackagePlus, Plus, RotateCcw, Search, Settings, ShieldCheck, Shirt, UserRound, Users, Wifi, X } from 'lucide-react'
-import { DistributedAppController, type ArgusAppProjection } from './distributed/appIntegration'
-import type { InventoryProjection } from './distributed/types'
-import { matchesSearch } from './domain'
-import { LocalSettingsStorage, type SettingsStorage, type UserSettings } from './settings'
-import { resolveBlockchainMode } from './blockchain/config'
-import { UnconfiguredTestnetWalletStatusProvider, type TestnetWalletStatus, type TestnetWalletStatusProvider } from './blockchain/ArgusWalletAdapter'
-import { SupplyWorkflow } from './components/SupplyWorkflow'
-import { loadSyncEnrollment, saveSyncEnrollment } from './private-sync/runtime'
+import { useEffect, useMemo, useState } from "react";
+import {
+  Activity,
+  ArrowRight,
+  Boxes,
+  CalendarRange,
+  Check,
+  ChevronDown,
+  ClipboardCheck,
+  Cloud,
+  FileUp,
+  History,
+  KeyRound,
+  LayoutGrid,
+  Minus,
+  PackagePlus,
+  Plus,
+  RotateCcw,
+  Search,
+  Settings,
+  ShieldCheck,
+  Shirt,
+  UserRound,
+  Users,
+  Wifi,
+  X,
+} from "lucide-react";
+import {
+  DistributedAppController,
+  type ArgusAppProjection,
+} from "./distributed/appIntegration";
+import type { ArgusRole, InventoryProjection } from "./distributed/types";
+import { matchesSearch } from "./domain";
+import {
+  LocalSettingsStorage,
+  type SettingsStorage,
+  type UserSettings,
+} from "./settings";
+import { resolveBlockchainMode } from "./blockchain/config";
+import {
+  UnconfiguredTestnetWalletStatusProvider,
+  type TestnetWalletStatus,
+  type TestnetWalletStatusProvider,
+} from "./blockchain/ArgusWalletAdapter";
+import { SupplyWorkflow } from "./components/SupplyWorkflow";
+import { IdentityGate } from "./identity/screens/IdentityGate";
+import { PendingAdmissionScreen } from "./identity/screens/PendingAdmissionScreen";
+import {
+  buildAuthenticatedController,
+  identityGateRequired,
+} from "./identity/runtime";
+import {
+  admitPerson,
+  knownPeople,
+  type DeviceIdentityRecord,
+  type DeviceRole,
+  type KnownPerson,
+  type UnlockedDeviceIdentity,
+} from "./identity/deviceIdentity";
 
-export type Tab = 'count'|'inventory'|'cadets'|'activity'|'more'
-type Panel = 'review'|'cadet'|'issue'|'return'|'bundles'|'needed'|'roster'|'import'|'roles'|'rollover'|'diagnostics'|null
-const nav: Array<{id:Tab;label:string;icon:typeof Activity}> = [{id:'count',label:'Count',icon:ClipboardCheck},{id:'inventory',label:'Inventory',icon:Boxes},{id:'cadets',label:'Cadets',icon:Users},{id:'activity',label:'Activity',icon:History},{id:'more',label:'More',icon:LayoutGrid}]
-const pageTitle=(tab:Tab)=>({count:'Physical Count',inventory:'Inventory',cadets:'Cadets',activity:'Activity',more:'Command Center'}[tab])
-const initials=(name:string)=>name.split(/\s+/).map(p=>p[0]).join('').slice(0,2).toUpperCase()
-const eventLabel=(type:string)=>({CADET_CREATED:'Cadet Created',CADET_UPDATED:'Cadet Updated',BUNDLE_UPDATED:'Bundle Updated',STILL_NEEDED_ADDED:'Still Needed Added',INVENTORY_COUNT_SUBMITTED:'Physical Count Submitted',INVENTORY_ITEM_CREATED:'Inventory Item Created',INVENTORY_ITEM_UPDATED:'Inventory Item Updated',ITEM_ISSUED:'Issue',ITEM_RETURNED:'Return'}[type]??type.replaceAll('_',' ').toLowerCase())
-const activityLabel=(projection:ArgusAppProjection,eventId:string,type:string)=>{const transaction=projection.transactions.find(candidate=>candidate.eventId===eventId);if(!transaction)return eventLabel(type);const cadet=projection.cadets.find(candidate=>candidate.cadetId===transaction.cadetId);const quantity=transaction.lines.reduce((sum,line)=>sum+line.quantity,0);return `${transaction.transactionType==='ISSUE'?'Issued':'Returned'} ${quantity} item${quantity===1?'':'s'} ${transaction.transactionType==='ISSUE'?'to':'from'} ${cadet?.fullName??'cadet'}`}
-type Props={controller?:DistributedAppController;settingsStorage?:SettingsStorage;walletStatusProvider?:TestnetWalletStatusProvider}
+export type Tab = "count" | "inventory" | "cadets" | "activity" | "more";
+type Panel =
+  | "review"
+  | "cadet"
+  | "issue"
+  | "return"
+  | "bundles"
+  | "needed"
+  | "roster"
+  | "import"
+  | "roles"
+  | "rollover"
+  | "diagnostics"
+  | null;
+const nav: Array<{ id: Tab; label: string; icon: typeof Activity }> = [
+  { id: "count", label: "Count", icon: ClipboardCheck },
+  { id: "inventory", label: "Inventory", icon: Boxes },
+  { id: "cadets", label: "Cadets", icon: Users },
+  { id: "activity", label: "Activity", icon: History },
+  { id: "more", label: "More", icon: LayoutGrid },
+];
+const pageTitle = (tab: Tab) =>
+  ({
+    count: "Physical Count",
+    inventory: "Inventory",
+    cadets: "Cadets",
+    activity: "Activity",
+    more: "Command Center",
+  })[tab];
+const initials = (name: string) =>
+  name
+    .split(/\s+/)
+    .map((p) => p[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+const eventLabel = (type: string) =>
+  ({
+    CADET_CREATED: "Cadet Created",
+    CADET_UPDATED: "Cadet Updated",
+    BUNDLE_UPDATED: "Bundle Updated",
+    STILL_NEEDED_ADDED: "Still Needed Added",
+    INVENTORY_COUNT_SUBMITTED: "Physical Count Submitted",
+    INVENTORY_ITEM_CREATED: "Inventory Item Created",
+    INVENTORY_ITEM_UPDATED: "Inventory Item Updated",
+    ITEM_ISSUED: "Issue",
+    ITEM_RETURNED: "Return",
+  })[type] ?? type.replaceAll("_", " ").toLowerCase();
+const activityLabel = (
+  projection: ArgusAppProjection,
+  eventId: string,
+  type: string,
+) => {
+  const transaction = projection.transactions.find(
+    (candidate) => candidate.eventId === eventId,
+  );
+  if (!transaction) return eventLabel(type);
+  const cadet = projection.cadets.find(
+    (candidate) => candidate.cadetId === transaction.cadetId,
+  );
+  const quantity = transaction.lines.reduce(
+    (sum, line) => sum + line.quantity,
+    0,
+  );
+  const isIssue = transaction.transactionType === "ISSUE";
+  const verb = isIssue ? "Issued" : "Returned";
+  const preposition = isIssue ? "to" : "from";
+  const plural = quantity === 1 ? "" : "s";
+  return `${verb} ${quantity} item${plural} ${preposition} ${cadet?.fullName ?? "cadet"}`;
+};
+type Props = {
+  controller?: DistributedAppController;
+  settingsStorage?: SettingsStorage;
+  walletStatusProvider?: TestnetWalletStatusProvider;
+};
 
-export default function App({controller:supplied,settingsStorage:suppliedSettings,walletStatusProvider}:Props){
- const [controller]=useState(()=>supplied??new DistributedAppController()),[settingsStorage]=useState(()=>suppliedSettings??new LocalSettingsStorage())
- const [preferences,setPreferences]=useState<UserSettings>(()=>settingsStorage.load()),[projection,setProjection]=useState<ArgusAppProjection>()
- const [tab,setTab]=useState<Tab>(preferences.defaultSection),[panel,setPanel]=useState<Panel>(null),[settingsOpen,setSettingsOpen]=useState(false),[walletOpen,setWalletOpen]=useState(false),[addOpen,setAddOpen]=useState(false)
- const [walletProvider]=useState<TestnetWalletStatusProvider>(()=>walletStatusProvider??new UnconfiguredTestnetWalletStatusProvider())
- const [selectedId,setSelectedId]=useState(''),[selectedCadetId,setSelectedCadetId]=useState(''),[count,setCount]=useState(0),[step,setStep]=useState(1),[countNote,setCountNote]=useState('')
- const [query,setQuery]=useState(''),[cadetQuery,setCadetQuery]=useState(''),[notice,setNotice]=useState(''),[history,setHistory]=useState<Array<{itemId:string;name:string;from:number;to:number}>>([])
- useEffect(()=>{let active=true,stopSync:undefined|(()=>void);controller.initialize().then(p=>{if(!active)return;setProjection(p);if(p.inventory[0]){setSelectedId(p.inventory[0].entityId);setCount(p.inventory[0].onHand);setStep(p.inventory[0].countIncrement)}stopSync=controller.startAutoSync(next=>{if(active)setProjection(next)})}).catch(e=>setNotice(e instanceof Error?e.message:'Local data could not be loaded.'));return()=>{active=false;stopSync?.()}},[controller])
- useEffect(()=>{settingsStorage.save(preferences);Object.assign(document.documentElement.dataset,{theme:preferences.theme,density:preferences.density,motion:preferences.motion,textSize:preferences.textSize})},[preferences,settingsStorage])
- useEffect(()=>{if(!notice)return;const timer=setTimeout(()=>setNotice(''),5000);return()=>clearTimeout(timer)},[notice])
- const selected=projection?.inventory.find(i=>i.entityId===selectedId)??projection?.inventory[0]
- const filtered=useMemo(()=>projection?.inventory.filter(i=>matchesSearch(query,i.name,i.category,i.variant,i.niin))??[],[projection,query])
- const choose=(item:InventoryProjection)=>{setSelectedId(item.entityId);setCount(item.onHand);setStep(item.countIncrement);setQuery('')}
- const updateCount=(next:number)=>{if(!selected)return;const safe=Math.max(0,next);if(safe===count)return;setHistory(h=>[...h,{itemId:selected.entityId,name:`${selected.name} · ${selected.variant}`,from:count,to:safe}]);setCount(safe)}
- const undo=()=>{const last=history.at(-1);if(!last||!projection)return;const item=projection.inventory.find(i=>i.entityId===last.itemId);if(!item)return;setSelectedId(item.entityId);setCount(last.from);setStep(item.countIncrement);setHistory(h=>h.slice(0,-1));setNotice(`Undid ${last.name}: ${last.to} → ${last.from}.`)}
- const command=async(operation:()=>Promise<ArgusAppProjection>,success:string)=>{try{setProjection(await operation());setNotice(success)}catch(e){setNotice(e instanceof Error?e.message:'The signed operation could not be completed.')}}
- if(!projection)return <main className="loading-state" aria-live="polite"><strong>Loading A.R.G.U.S. local data…</strong>{notice&&<p role="alert">{notice}</p>}</main>
- const cadet=projection.cadets.find(c=>c.cadetId===selectedCadetId)
- const sync=projection.sync.openConflicts?'CONFLICT · ACTION REQUIRED':projection.sync.mode==='remote'?(projection.sync.outbox?`SHARED SYNC · ${projection.sync.outbox} QUEUED`:'SHARED SYNC · CONNECTED'):(projection.sync.outbox?`LOCAL · ${projection.sync.outbox} CHANGES QUEUED`:'LOCAL · THIS DEVICE ONLY')
- return <div className="app-shell"><div className="aether-field" aria-hidden="true"><span/><span/><span/></div>
-  <aside className="sidebar"><Brand/><nav aria-label="Primary navigation">{nav.map(({id,label,icon:Icon})=><button key={id} className={tab===id?'nav-item active':'nav-item'} onClick={()=>setTab(id)}><Icon size={19}/><span>{label}</span>{id==='count'&&<span className="nav-dot"/>}</button>)}</nav><div className="system-card"><span className="pulse"/><strong>Prototype mode</strong><p>Repository-backed · local preview</p></div><button className="profile" onClick={()=>setSettingsOpen(true)}><span className="avatar">SO</span><span><strong>Development User</strong><small>Supply Officer</small></span><ChevronDown size={16}/></button></aside>
-  <main className="main-stage"><div className={`environment-banner ${resolveBlockchainMode(import.meta.env.VITE_ARGUS_BLOCKCHAIN_MODE)}`}><strong>BSV TESTNET</strong><span>Mainnet disabled</span></div><header className="topbar"><div><p className="eyebrow">BETHEL NJROTC SUPPLY</p><h1>{pageTitle(tab)}</h1></div><div className="top-actions"><span className="sync"><Wifi size={15}/>{sync}</span><button aria-label="Settings" className="icon-button" onClick={()=>setSettingsOpen(true)}><Settings size={20}/></button><span className="top-avatar">SO</span></div></header>
-  {notice&&<div className="app-notice" role="status">{notice}</div>}
-  {tab==='count'&&selected&&<CountView selected={selected} count={count} step={step} query={query} filtered={filtered} last={history.at(-1)} setQuery={setQuery} setStep={setStep} setCount={updateCount} choose={choose} undo={undo} review={()=>setPanel('review')}/>}
-  {tab==='inventory'&&<InventoryView items={filtered} all={projection.inventory} query={query} setQuery={setQuery} onAdd={()=>setAddOpen(true)} choose={i=>{choose(i);setTab('count')}}/>}
-  {tab==='cadets'&&<CadetsView projection={projection} query={cadetQuery} setQuery={setCadetQuery} open={id=>{setSelectedCadetId(id);setPanel('cadet')}}/>}
-  {tab==='activity'&&<ActivityView projection={projection} wallet={()=>setWalletOpen(true)}/>} {tab==='more'&&<CommandCenter open={setPanel} settings={()=>setSettingsOpen(true)}/>}</main>
-  <nav className="mobile-nav" aria-label="Mobile navigation">{nav.map(({id,label,icon:Icon})=><button key={id} className={tab===id?'active':''} onClick={()=>setTab(id)}><Icon size={21}/><span>{label}</span></button>)}</nav>
-  {panel==='review'&&selected&&<Drawer title="Review physical count" icon={<ClipboardCheck/>} close={()=>setPanel(null)}><div className="review-hero"><div><small>OFFICIAL</small><strong>{selected.onHand}</strong></div><ArrowRight/><div><small>PHYSICAL</small><strong>{count}</strong></div></div><div className={count===selected.onHand?'validation':'notice'}><Activity/><div><strong>{count-selected.onHand>0?'+':''}{count-selected.onHand} units</strong><p>{count===selected.onHand?'Inventory matches the official record.':'Discrepancy will be recorded for review.'}</p></div></div><label className="field">OPTIONAL NOTE<textarea maxLength={500} value={countNote} onChange={event=>setCountNote(event.target.value)} placeholder="Add context for this count…"/></label><p className="safe-note"><ShieldCheck size={14}/> A signed event is created only when submitted.</p><button className="primary-button" onClick={()=>{const sessionId=`count_${crypto.randomUUID()}`,note=countNote;setPanel(null);setCountNote('');void command(()=>controller.submitCount(selected.entityId,count,sessionId,note),'Physical count submitted.')}}>Submit count <Check/></button></Drawer>}
-  {panel==='cadet'&&cadet&&<CadetDrawer cadet={cadet} needs={projection.stillNeeded.filter(n=>n.cadetId===cadet.cadetId)} close={()=>setPanel(null)} issue={()=>setPanel('issue')} returnItems={()=>setPanel('return')}/>}
-  {(panel==='issue'||panel==='return')&&<SupplyWorkflow mode={panel==='issue'?'ISSUE':'RETURN'} projection={projection} controller={controller} selectedCadetId={selectedCadetId||undefined} onClose={()=>setPanel(null)} onChanged={setProjection}/>}
-  {panel==='bundles'&&<BundlesPanel projection={projection} close={()=>setPanel(null)}/>} {panel==='needed'&&<NeededPanel projection={projection} close={()=>setPanel(null)}/>} {panel&&isComingPanel(panel)&&<ComingPanel panel={panel} projection={projection} close={()=>setPanel(null)}/>}
-  {settingsOpen&&<SettingsPanel value={preferences} projection={projection} change={setPreferences} wallet={()=>setWalletOpen(true)} syncNow={()=>command(()=>controller.sync(),projection.sync.mode==='remote'?'Shared history synchronized.':'Local repository checked; enroll this device to enable sharing.')} close={()=>setSettingsOpen(false)}/>} {walletOpen&&<WalletStatusPanel provider={walletProvider} close={()=>setWalletOpen(false)}/>} {addOpen&&<AddItem inventory={projection.inventory} close={()=>setAddOpen(false)} save={input=>{setAddOpen(false);void command(()=>controller.createInventoryItem(input),`${input.name} was added.`)}}/>}
- </div>
+export default function App({ controller: supplied, ...rest }: Props) {
+  return supplied ? (
+    <AuthenticatedApp controller={supplied} {...rest} />
+  ) : (
+    <IdentityGatedApp {...rest} />
+  );
 }
 
-function Brand(){return <div className="brand"><img src={`${import.meta.env.BASE_URL}argus-mark.svg`} alt=""/><div><strong>A.R.G.U.S.</strong><span>ASSET READINESS SYSTEM</span></div></div>}
-function CountView({selected,count,step,query,filtered,last,setQuery,setStep,setCount,choose,undo,review}:{selected:InventoryProjection;count:number;step:number;query:string;filtered:InventoryProjection[];last?:{name:string;from:number;to:number};setQuery:(s:string)=>void;setStep:(n:number)=>void;setCount:(n:number)=>void;choose:(i:InventoryProjection)=>void;undo:()=>void;review:()=>void}){const difference=count-selected.onHand;const custom=()=>{const n=Number.parseInt(prompt('Enter a count increment greater than zero',String(step))??'',10);if(Number.isInteger(n)&&n>0)setStep(n)};return <div className="content count-page"><section className="hero-row"><div><div className="section-kicker"><span/><b>ACTIVE SESSION</b><span/></div><h2>Count with confidence.</h2><p>Every tap stays in this local draft. Official inventory changes only after review.</p></div><div className="session-chip"><span className="pulse"/><div><small>DRAFT</small><strong>Physical inventory</strong></div><ChevronDown size={16}/></div></section><div className="search-wrap"><Search/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search item name or CDMIS NIIN…" aria-label="Search inventory"/><kbd>⌘ K</kbd>{query&&<div className="search-results">{filtered.length?filtered.map(i=><button key={i.entityId} onClick={()=>choose(i)}><span><strong>{i.name}</strong><small>{i.category} · {i.niin}</small></span><b>{i.variant}</b></button>):<p>No inventory matches that search.</p>}</div>}</div><div className="count-layout"><section className="count-card marble-card"><div className="item-heading"><div className="item-icon"><Boxes/></div><div><span>{selected.category.toUpperCase()}</span><h3>{selected.name}</h3><p>Size: <strong>{selected.variant}</strong> · {selected.niin}</p></div></div><div className="count-display"><small>YOUR PHYSICAL COUNT</small><strong>{count}</strong><span>UNITS COUNTED</span></div><div className="step-label"><span>COUNT BY</span><div>{[1,5,10].map(n=><button key={n} className={step===n?'active':''} onClick={()=>setStep(n)}>{n}</button>)}<button className={![1,5,10].includes(step)?'active':''} onClick={custom}>{![1,5,10].includes(step)?step:'Custom'}</button></div></div><div className="counter-actions"><button className="stone-button minus" onClick={()=>setCount(count-step)}><Minus/><span>Subtract {step}</span></button><button className="stone-button plus" onClick={()=>setCount(count+step)}><Plus/><span>Add {step}</span></button></div><button className="undo-button" disabled={!last} onClick={undo}><RotateCcw size={16}/>{last?`Undo ${last.name}: ${last.to} → ${last.from}`:'Nothing to undo'}</button></section><aside className="review-card"><div className="card-title"><span><ClipboardCheck/></span><div><small>LIVE COMPARISON</small><h3>Count review</h3></div></div><div className="stat-row"><span>Official on hand<small>Before this count</small></span><strong>{selected.onHand}</strong></div><div className="stat-row"><span>Physical count<small>Local draft</small></span><strong>{count}</strong></div><div className={difference===0?'difference match':'difference warning'}><span>{difference===0?<ShieldCheck/>:<Activity/>}</span><div><small>DIFFERENCE</small><strong>{difference>0?'+':''}{difference} units</strong><p>{difference===0?'Inventory matches the record.':'Administrator review required.'}</p></div></div><div className="contributors"><p><strong>Local counting session</strong><br/>Draft saved in this view</p><Cloud/></div><button className="primary-button" onClick={review}>Review &amp; submit <ArrowRight/></button><p className="safe-note"><ShieldCheck/>Draft only—official inventory is unchanged</p></aside></div></div>}
-
-function Summary({label,value,detail,accent=false}:{label:string;value:string;detail:string;accent?:boolean}){return <div className={accent?'summary-card accent':'summary-card'}><small>{label.toUpperCase()}</small><strong>{value}</strong><p>{detail}</p></div>}
-function InventoryView({items,all,query,setQuery,onAdd,choose}:{items:InventoryProjection[];all:InventoryProjection[];query:string;setQuery:(s:string)=>void;onAdd:()=>void;choose:(i:InventoryProjection)=>void}){const health=(i:InventoryProjection)=>i.reorderAt!==undefined&&i.onHand<=i.reorderAt?'Low stock':i.active?'Healthy':'Inactive';return <div className="content"><section className="page-intro"><div><p className="eyebrow">SERVICEABLE INVENTORY</p><h2>Every asset, accounted for.</h2><p>Search by item, size, category, or CDMIS NIIN.</p></div><button className="gold-button" onClick={onAdd}><PackagePlus/>Add item</button></section><div className="summary-grid"><Summary label="On hand" value={String(all.reduce((s,i)=>s+i.onHand,0))} detail={`${all.length} tracked variants`}/><Summary label="Issued" value={String(all.reduce((s,i)=>s+i.issued,0))} detail="Across active cadets"/><Summary label="Needs attention" value={String(all.filter(i=>health(i)!=='Healthy').length)} detail="Low stock or inactive" accent/></div><div className="table-card"><div className="table-tools"><div className="inline-search"><Search/><input aria-label="Search inventory table" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search inventory…"/></div><button><Settings/>Filters</button></div><div className="inventory-list">{items.length?items.map(i=><button className="inventory-row" key={i.entityId} onClick={()=>choose(i)}><span className="category-mark">{i.name.slice(0,2).toUpperCase()}</span><span className="item-name"><strong>{i.name}</strong><small>{i.category} · {i.niin}</small></span><span><small>SIZE</small><b>{i.variant}</b></span><span><small>ON HAND</small><b>{i.onHand}</b></span><span><small>ISSUED</small><b>{i.issued}</b></span><em className={health(i)==='Healthy'?'ready':'attention'}>{health(i)}</em><ArrowRight/></button>):<p className="empty-state">No inventory matches that search.</p>}</div></div></div>}
-function CadetsView({projection,query,setQuery,open}:{projection:ArgusAppProjection;query:string;setQuery:(s:string)=>void;open:(id:string)=>void}){const visible=projection.cadets.filter(c=>matchesSearch(query,c.fullName,c.nsLevel,c.gender,c.status));return <div className="content"><section className="page-intro"><div><p className="eyebrow">PERSONNEL ACCOUNTABILITY</p><h2>Cadet property records.</h2><p>Readiness is derived from current property and Still Needed requirements.</p></div><button className="gold-button" disabled title="Coming Later"><UserRound/>Add cadet · Coming Later</button></section><div className="table-card"><div className="table-tools"><div className="inline-search"><Search/><input aria-label="Search cadets" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search cadet name…"/></div></div><div className="cadet-grid">{visible.map(c=><button className="cadet-card" key={c.cadetId} onClick={()=>open(c.cadetId)}><span className="large-avatar">{initials(c.fullName)}</span><span><strong>{c.fullName}</strong><small>{c.nsLevel} · {c.gender} · {c.status}</small></span><div><b>{c.propertyCount}</b><small>Current property</small></div><em className={c.readiness.status==='READY'?'ready':'attention'}>{c.readiness.status} · {c.stillNeededCount} needed</em><ArrowRight/></button>)}</div></div></div>}
-function ActivityView({projection,wallet}:{projection:ArgusAppProjection;wallet:()=>void}){return <div className="content"><section className="page-intro"><div><p className="eyebrow">AUDIT TRAIL</p><h2>Nothing changes silently.</h2><p>Operational details remain private; public audit state is reported separately and truthfully.</p></div><button onClick={wallet}>Testnet wallet status</button></section><section className="distributed-panel" aria-label="A.R.G.U.S. distributed system"><strong>DISTRIBUTED SYSTEM · LOCAL DEVELOPMENT</strong><div><span><small>IDENTITY</small>supply-officer-development</span><span><small>AUTHORIZATION</small>SUPPLY OFFICER</span><span><small>LOCAL STORE</small>IndexedDB v4</span><span><small>EVENTS</small>{projection.events.length}</span><span><small>OUTBOX</small>{projection.sync.outbox}</span><span><small>CONFLICTS</small>{projection.sync.openConflicts}</span><span><small>PRIVATE SYNC</small>{projection.sync.outbox?'QUEUED':'LOCAL ONLY'}</span><span><small>AUDIT TARGET</small>TESTNET / MOCK</span></div></section><div className="timeline">{projection.events.length?projection.events.map(r=><div className="event" key={r.event.eventId}><span className="event-icon"><Activity/></span><div><strong>{activityLabel(projection,r.event.eventId,r.event.eventType)}</strong><p>{r.event.eventType} · {r.event.entityId}</p><div className="audit-metadata"><span><b>Actor</b>{r.event.actorPublicIdentity}</span><span><b>Local</b>Persisted</span><span><b>Private sync</b>{r.syncStatus}</span><span><b>BSV audit</b>{r.auditStatus}</span></div></div><span className="event-user">SO</span><time>{new Date(r.event.timestamp).toLocaleString()}</time></div>):<p className="empty-state">No signed operational events yet.</p>}</div></div>}
-function CommandCenter({open,settings}:{open:(p:Panel)=>void;settings:()=>void}){const actions=[['bundles','Issue bundles','Configure exact uniform bundle mappings',Shirt],['needed','Still needed','Track unfulfilled cadet requirements',ClipboardCheck],['roster','Roster administration','Manage cadet lifecycle',Users],['import','Import preview','Review roster imports safely',FileUp],['roles','Roles & access','Authorization and credentials',KeyRound],['rollover','Annual rollover','Preview lifecycle changes',CalendarRange],['diagnostics','Diagnostics','Repository health and migration warnings',ShieldCheck]] as const;return <div className="content"><section className="page-intro"><div><p className="eyebrow">OPERATIONS</p><h2>Command Center</h2><p>Administration, readiness, and system controls in one place.</p></div></section><div className="command-grid">{actions.map(([id,title,detail,Icon])=><button key={id} onClick={()=>open(id)}><span><Icon/></span><div><strong>{title}</strong><p>{detail}</p></div><ArrowRight/></button>)}<button onClick={settings}><span><Settings/></span><div><strong>Settings</strong><p>Appearance, behavior, and diagnostics</p></div><ArrowRight/></button></div></div>}
-function Drawer({title,icon,close,children}:{title:string;icon:React.ReactNode;close:()=>void;children:React.ReactNode}){useEffect(()=>{const dismiss=(event:KeyboardEvent)=>{if(event.key==='Escape')close()};document.addEventListener('keydown',dismiss);return()=>document.removeEventListener('keydown',dismiss)},[close]);return <div className="drawer-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)close()}}><aside className="demo-drawer" role="dialog" aria-modal="true" aria-label={title}><header><span className="drawer-icon">{icon}</span><div><small>A.R.G.U.S. COMMAND PANEL</small><h2>{title}</h2></div><button className="drawer-close" aria-label="Close panel" onClick={close}><X/></button></header>{children}</aside></div>}
-function CadetDrawer({cadet,needs,close,issue,returnItems}:{cadet:ArgusAppProjection['cadets'][number];needs:ArgusAppProjection['stillNeeded'];close:()=>void;issue:()=>void;returnItems:()=>void}){return <Drawer title={cadet.fullName} icon={<UserRound/>} close={close}><div className="record-hero"><span className="large-avatar">{initials(cadet.fullName)}</span><div><strong>{cadet.nsLevel} · {cadet.gender}</strong><p>{cadet.status} personnel record</p></div><em className={cadet.readiness.status==='READY'?'ready':'attention'}>{cadet.readiness.status}</em></div>{cadet.profileNeedsReview&&<div className="notice" role="alert"><Activity/><span><strong>Profile review required</strong><br/>Migrated profile information could not be fully verified.</span></div>}<div className="record-stats"><Summary label="Property" value={String(cadet.propertyCount)} detail="Items currently held"/><Summary label="Readiness" value={`${cadet.readiness.percent}%`} detail={`${cadet.stillNeededCount} still needed`}/></div><h3>Current Property</h3><div className="panel-rows">{cadet.currentProperty.length?cadet.currentProperty.map(p=><div className="needed-row" key={p.propertyId}><span><strong>{p.label}</strong><small>{p.variant} · quantity {p.quantity}</small></span></div>):<p className="empty-state">No current property.</p>}</div><h3>Still Needed</h3>{needs.length?needs.map(n=><div className="needed-row" key={n.requirementId}><span><strong>{n.displayLabel}</strong><small>{n.size??'No variant'} · {n.status}</small></span><b>{n.quantityNeeded-n.quantityFulfilled}</b></div>):<p>No open requirements.</p>}<div className="split-actions"><button onClick={returnItems}>Return Items</button><button className="primary-button" disabled={cadet.status!=='ACTIVE'} onClick={issue}>Issue Items</button></div></Drawer>}
-function BundlesPanel({projection,close}:{projection:ArgusAppProjection;close:()=>void}){return <Drawer title="Bundle selection" icon={<Shirt/>} close={close}>{projection.bundles.map(b=>{const current=b.versions.find(v=>v.version===b.currentVersion)!;return <details className="panel-rows" key={b.bundleId}><summary><strong>{current.displayName}</strong> · v{b.currentVersion} · {current.active?'ACTIVE':'INACTIVE'}<small>{current.genderApplicability} · {b.mapping.mapped}/{b.mapping.total} mapped</small></summary><div>{current.lines.sort((a,z)=>a.order-z.order).map(l=><p key={l.lineId}><b>{l.displayLabel}</b> · {l.required?'Required':'Optional'} · {l.itemId?'Mapped':'Inventory item not configured'}</p>)}<h4>Version history</h4>{[...b.versions].reverse().map(v=><p key={v.version}>v{v.version}{v.version===b.currentVersion?' · CURRENT':''} · {new Date(v.createdAt).toLocaleDateString()} · {v.actorPublicIdentity}</p>)}</div></details>})}</Drawer>}
-function NeededPanel({projection,close}:{projection:ArgusAppProjection;close:()=>void}){const requirements=projection.stillNeeded,remaining=requirements.reduce((sum,item)=>sum+Math.max(0,item.quantityNeeded-item.quantityFulfilled),0),ready=requirements.filter(item=>item.availability.available).length;return <Drawer title="Still Needed" icon={<ClipboardCheck/>} close={close}><section className="needed-overview" aria-label="Requirement overview"><div><small>OPEN REQUIREMENTS</small><strong>{requirements.length}</strong><span>Across {new Set(requirements.map(item=>item.cadetId)).size} cadets</span></div><div><small>UNITS REMAINING</small><strong>{remaining}</strong><span>{ready} ready to issue</span></div></section><div className="needed-section-heading"><div><p className="operational-label">READINESS QUEUE</p><h3>Unfulfilled equipment</h3></div><span>{requirements.length} records</span></div><div className="needed-list">{requirements.length?requirements.map(n=>{const count=Math.max(0,n.quantityNeeded-n.quantityFulfilled),status=!n.availability.configured?'Not configured':n.availability.available?`${n.availability.onHand} available`:'Awaiting stock';return <article className="needed-card" key={n.requirementId}><div className="needed-card-main"><span className="needed-initials" aria-hidden="true">{initials(projection.cadets.find(c=>c.cadetId===n.cadetId)?.fullName??'?')}</span><div><strong>{projection.cadets.find(c=>c.cadetId===n.cadetId)?.fullName??'Missing cadet'}</strong><p>{n.displayLabel}<span>·</span>{n.size??'No size'}</p></div><b className="needed-quantity" aria-label={`${count} remaining`}>{count}<small>REMAINING</small></b></div><div className="needed-card-meta"><span><CalendarRange/>First needed <time dateTime={n.firstNeededAt}>{new Date(n.firstNeededAt).toLocaleDateString()}</time></span><em className={n.availability.available?'needed-status ready':'needed-status attention'}><span/>{status}</em></div><div className="needed-progress" aria-label={`${n.quantityFulfilled} of ${n.quantityNeeded} fulfilled`}><span style={{width:`${Math.min(100,n.quantityNeeded?100*n.quantityFulfilled/n.quantityNeeded:100)}%`}}/><small>{n.quantityFulfilled} of {n.quantityNeeded} fulfilled</small></div></article>}):<p className="empty-state"><strong>All requirements fulfilled</strong><span>No equipment is currently waiting to be issued.</span></p>}</div></Drawer>}
-function isComingPanel(panel:Panel):panel is 'roster'|'import'|'roles'|'rollover'|'diagnostics'{return panel!==null&&['roster','import','roles','rollover','diagnostics'].includes(panel)}
-function ComingPanel({panel,projection,close}:{panel:Exclude<Panel,null|'review'|'cadet'|'issue'|'return'|'bundles'|'needed'>;projection:ArgusAppProjection;close:()=>void}){const title={roster:'Cadet roster',import:'Import 24 cadets',roles:'Roles & access',rollover:'Annual rollover preview',diagnostics:'Repository diagnostics'}[panel];return <Drawer title={title} icon={<ShieldCheck/>} close={close}>{panel==='diagnostics'?<><div className={projection.integrity.healthy?'validation':'notice'}><ShieldCheck/><div><strong>{projection.integrity.healthy?'Repository healthy':'Attention required'}</strong><p>{projection.integrity.issues.length} issues detected non-destructively.</p></div></div><div className="panel-rows"><p>Orphan references: {projection.integrity.orphanReferences}</p><p>Projection errors: {projection.integrity.projectionErrors}</p><p>Migration warnings: {projection.integrity.migrationWarnings}</p></div></>:<div className="notice"><Activity/><span><strong>Coming Later</strong><br/>This workflow remains visible but disabled until it can use the authoritative repository command model.</span></div>}</Drawer>}
-function SettingsPanel({value,projection,change,wallet,syncNow,close}:{value:UserSettings;projection:ArgusAppProjection;change:(v:UserSettings)=>void;wallet:()=>void;syncNow:()=>Promise<void>;close:()=>void}){const set=<K extends keyof UserSettings>(k:K,v:UserSettings[K])=>change({...value,[k]:v});const report=projection.integrity,existing=loadSyncEnrollment();const [endpoint,setEndpoint]=useState(existing?.endpoint??''),[organizationId,setOrganizationId]=useState(existing?.organizationId??''),[accessToken,setAccessToken]=useState(existing?.accessToken??''),[enrollmentError,setEnrollmentError]=useState('');const enroll=()=>{try{saveSyncEnrollment({endpoint:endpoint.trim(),organizationId:organizationId.trim(),accessToken});location.reload()}catch(error){setEnrollmentError(error instanceof Error?error.message:'Enrollment could not be saved.')}};return <Drawer title="Settings" icon={<Settings/>} close={close}><h3>Appearance</h3><label className="field">THEME<select aria-label="Appearance" value={value.theme} onChange={e=>set('theme',e.target.value as UserSettings['theme'])}><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></select></label><label className="field">DENSITY<select aria-label="Density" value={value.density} onChange={e=>set('density',e.target.value as UserSettings['density'])}><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label className="field">MOTION<select aria-label="Motion" value={value.motion} onChange={e=>set('motion',e.target.value as UserSettings['motion'])}><option value="full">Full</option><option value="reduced">Reduced</option></select></label><label className="field">TEXT SIZE<select aria-label="Text size" value={value.textSize} onChange={e=>set('textSize',e.target.value as UserSettings['textSize'])}><option value="standard">Standard</option><option value="large">Large</option></select></label><label className="field">DEFAULT SECTION<select aria-label="Default section" value={value.defaultSection} onChange={e=>set('defaultSection',e.target.value as Tab)}>{nav.map(n=><option key={n.id} value={n.id}>{pageTitle(n.id)}</option>)}</select></label><h3>Shared Synchronization</h3><div className={projection.sync.mode==='remote'?'validation':'notice'} role="status"><Wifi/><div><strong>{projection.sync.mode==='remote'?'ENCRYPTED RELAY · CONNECTED':'LOCAL ONLY · ENROLL THIS DEVICE'}</strong><p>Pending: {projection.sync.outbox} · Conflicts: {projection.sync.openConflicts}</p></div></div><label className="field">RELAY URL<input value={endpoint} onChange={event=>setEndpoint(event.target.value)} placeholder="https://sync.example.org"/></label><label className="field">ORGANIZATION ID<input value={organizationId} onChange={event=>setOrganizationId(event.target.value)} autoComplete="off"/></label><label className="field">ENROLLMENT SECRET<input type="password" value={accessToken} onChange={event=>setAccessToken(event.target.value)} autoComplete="new-password"/></label>{enrollmentError&&<p role="alert">{enrollmentError}</p>}<button onClick={enroll}>Save enrollment &amp; reconnect</button><button onClick={()=>void syncNow()}>Sync now</button><h3>BSV testnet</h3><button onClick={wallet}>Open Testnet Wallet Status</button><h3>Diagnostics</h3><div className={report.healthy?'validation':'notice'}><ShieldCheck/><div><strong>DATA INTEGRITY · {report.healthy?'Healthy':'Action required'}</strong><p>{report.orphanReferences} orphans · {report.projectionErrors} projection errors · {report.migrationWarnings} migration warnings</p></div></div><p>A.R.G.U.S. version {__APP_VERSION__}</p><button disabled>Replay Tutorial — Coming Later</button></Drawer>}
-function WalletStatusPanel({provider,close}:{provider:TestnetWalletStatusProvider;close:()=>void}){
- const [status,setStatus]=useState<TestnetWalletStatus>(),[error,setError]=useState(''),[copied,setCopied]=useState(false),[loading,setLoading]=useState(true),[password,setPassword]=useState(''),[confirm,setConfirm]=useState(''),[failures,setFailures]=useState(0),[backupPassword,setBackupPassword]=useState(''),[recoveryFile,setRecoveryFile]=useState(''),[recoveryPassword,setRecoveryPassword]=useState(''),[recoveryAddress,setRecoveryAddress]=useState(''),[recoveryDetails,setRecoveryDetails]=useState<{address:string;currentAddress?:string;rollbackWarning:boolean}>(),[replaceConfirmed,setReplaceConfirmed]=useState(false),[rollbackConfirmed,setRollbackConfirmed]=useState(false)
- const refresh=()=>{setLoading(true);setError('');provider.getStatus().then(setStatus).catch(reason=>setError(reason instanceof Error?reason.message:'Wallet status is unavailable.')).finally(()=>setLoading(false))}
- useEffect(()=>{let active=true;provider.getStatus().then(value=>{if(active)setStatus(value)}).catch(reason=>{if(active)setError(reason instanceof Error?reason.message:'Wallet status is unavailable.')}).finally(()=>{if(active)setLoading(false)});return()=>{active=false}},[provider])
- const attempt=async(kind:'create'|'unlock')=>{if(failures>=5){setError('Too many failed unlock attempts. Wait and reopen the wallet panel.');return}const entered=password;setPassword('');setConfirm('');setLoading(true);try{if(kind==='create'&&entered!==confirm)throw new Error('Wallet passwords do not match.');const next=await provider[kind]?.(entered);if(!next)throw new Error('This wallet provider does not support that lifecycle operation.');setStatus(next);setFailures(0);setError('')}catch(reason){setFailures(value=>value+1);setError(reason instanceof Error?reason.message:'Wallet operation failed.')}finally{setLoading(false)}}
- const copy=async()=>{if(!status?.receivingAddress)return;await navigator.clipboard.writeText(status.receivingAddress);setCopied(true)}
- const backup=async()=>{try{if(!provider.exportBackup)throw new Error('Backup is unavailable for this wallet provider.');const contents=await provider.exportBackup(backupPassword);setBackupPassword('');const url=URL.createObjectURL(new Blob([contents],{type:'application/vnd.argus.wallet+json'})),link=document.createElement('a');link.href=url;link.download=`argus-testnet-wallet-${new Date().toISOString().slice(0,10)}.argus-wallet`;link.click();URL.revokeObjectURL(url);setError('Recovery package downloaded. Store it securely; A.R.G.U.S. cannot recover its password.')}catch(reason){setBackupPassword('');setError(reason instanceof Error?reason.message:'Backup failed.')}}
- const inspectRecovery=async()=>{try{if(!provider.inspectBackup)throw new Error('Recovery is unavailable for this wallet provider.');const details=await provider.inspectBackup(recoveryFile,recoveryPassword);setRecoveryDetails(details);setRecoveryAddress('');setError('Recovery package authenticated. Confirm the recovered address before installing it.')}catch(reason){setRecoveryDetails(undefined);setError(reason instanceof Error?reason.message:'Recovery package could not be inspected.')}}
- const installRecovery=async()=>{try{if(!provider.recoverBackup||!recoveryDetails)throw new Error('Inspect the recovery package first.');const next=await provider.recoverBackup(recoveryFile,recoveryPassword,{address:recoveryAddress,replaceExisting:Boolean(recoveryDetails.currentAddress),currentWalletBackedUp:replaceConfirmed,allowRollback:rollbackConfirmed});setRecoveryPassword('');setRecoveryFile('');setRecoveryDetails(undefined);setStatus(next);setError('Organization testnet wallet recovered successfully.')}catch(reason){setRecoveryPassword('');setError(reason instanceof Error?reason.message:'Wallet recovery failed.')}}
- const address=status?.receivingAddress
- return <Drawer title="Organization Testnet Wallet" icon={<KeyRound/>} close={close}><div className="notice" role="status"><ShieldCheck/><span><strong>BSV TESTNET · MAINNET IMPOSSIBLE</strong><br/>{status?.mode==='EMBEDDED'?'Encrypted organization wallet':status?.mode==='LIVE'?'External BRC-100 testnet wallet':status?.mode==='MOCK'?'MOCK TEST DATA':'Wallet unconfigured'}</span></div>{error&&<p role={error.includes('downloaded')?'status':'alert'}>{error}</p>}
- {status?.requiresSetup&&<section className="wallet-lifecycle"><h3>Create organization testnet wallet</h3><p>This creates a testnet-only spending key for audit publication. It is separate from user passwords and signing credentials.</p><div className="notice"><ShieldCheck/><span>Before creation, choose a unique strong password and plan secure recovery-package storage. Forgotten passwords cannot be recovered.</span></div><label className="field">WALLET PASSWORD<input type="password" autoComplete="new-password" value={password} onChange={e=>setPassword(e.target.value)}/></label><label className="field">CONFIRM PASSWORD<input type="password" autoComplete="new-password" value={confirm} onChange={e=>setConfirm(e.target.value)}/></label><button className="primary-button" disabled={loading} onClick={()=>void attempt('create')}>{loading?'Creating…':'Create encrypted testnet wallet'}</button></section>}
- {status?.requiresUnlock&&<section className="wallet-lifecycle"><h3>Wallet locked</h3><p>Known public address</p><code>{address}</code><label className="field">WALLET PASSWORD<input type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)}/></label><button className="primary-button" disabled={loading||failures>=5} onClick={()=>void attempt('unlock')}>{loading?'Unlocking…':'Unlock wallet'}</button><small>{Math.max(0,5-failures)} attempts remaining in this panel.</small></section>}
- {status?.connection==='ERROR'&&<section><h3>Testnet service unavailable</h3><p>The known wallet address is preserved. This is separate from a password or vault failure.</p>{address&&<code>{address}</code>}<button disabled={loading} onClick={refresh}>Retry network</button></section>}
- {status?.connection==='CONNECTED'&&address&&<section className="wallet-lifecycle"><h3>Connected</h3><label className="field">PUBLIC TESTNET FAUCET ADDRESS<input readOnly value={address}/></label><p><strong>Full testnet address</strong><br/><code>{address}</code><br/><small>{address.slice(0,8)}…{address.slice(-8)}</small></p><button onClick={()=>void copy()}>{copied?'Address copied ✓':'Copy address'}</button><div className="record-stats"><Summary label="Confirmed balance" value={`${(status.balanceSatoshis??0).toLocaleString()} sat`} detail="Spendable testnet balance"/><Summary label="Unconfirmed" value={status.unconfirmedBalanceSatoshis===undefined?'Unavailable':`${status.unconfirmedBalanceSatoshis.toLocaleString()} sat`} detail={status.unconfirmedBalanceSatoshis===undefined?'Provider does not separate it':'Seen but not yet confirmed'}/></div><div className="split-actions"><button onClick={refresh}>Refresh</button><button onClick={()=>{provider.lock?.();refresh()}}>Lock</button></div><h3>Encrypted recovery package</h3><p>The package never contains plaintext WIF, mnemonic, password, or relay token. A.R.G.U.S. cannot recover a forgotten backup password.</p><label className="field">BACKUP PASSWORD<input type="password" autoComplete="new-password" value={backupPassword} onChange={e=>setBackupPassword(e.target.value)}/></label><button onClick={()=>void backup()}>Download .argus-wallet backup</button></section>}
- {!status?.requiresSetup&&!status?.requiresUnlock&&status?.connection!=='CONNECTED'&&status?.connection!=='ERROR'&&<><h3>No wallet connected</h3><p>Choose an explicit embedded-testnet or external-brc100-testnet mode. No mock fallback will be used.</p><button disabled={loading} onClick={refresh}>{loading?'Checking…':'Retry'}</button></>}
- {provider.inspectBackup&&provider.recoverBackup&&<details className="panel-rows"><summary><strong>Import recovery package</strong><small>For an empty device or explicit wallet replacement</small></summary><label className="field">RECOVERY FILE<input type="file" accept=".argus-wallet,application/json" onChange={event=>{const file=event.target.files?.[0];if(file)void file.text().then(setRecoveryFile)}}/></label><label className="field">RECOVERY PASSWORD<input type="password" autoComplete="off" value={recoveryPassword} onChange={event=>setRecoveryPassword(event.target.value)}/></label><button disabled={!recoveryFile||!recoveryPassword} onClick={()=>void inspectRecovery()}>Inspect recovery package</button>{recoveryDetails&&<div className="notice" role="status"><ShieldCheck/><span><strong>Recovered address</strong><br/><code>{recoveryDetails.address}</code>{recoveryDetails.currentAddress&&<><br/><strong>Current address</strong><br/><code>{recoveryDetails.currentAddress}</code></>}{recoveryDetails.rollbackWarning&&<><br/><strong>WARNING: this backup is older than the local wallet.</strong></>}</span></div>}{recoveryDetails&&<><label className="field">TYPE RECOVERED ADDRESS<input value={recoveryAddress} onChange={event=>setRecoveryAddress(event.target.value)} autoComplete="off"/></label>{recoveryDetails.currentAddress&&<label className="threshold-toggle"><input type="checkbox" checked={replaceConfirmed} onChange={event=>setReplaceConfirmed(event.target.checked)}/>I exported or accept losing access to the current wallet and explicitly authorize replacement.</label>}{recoveryDetails.rollbackWarning&&<label className="threshold-toggle"><input type="checkbox" checked={rollbackConfirmed} onChange={event=>setRollbackConfirmed(event.target.checked)}/>I understand this is an older backup and explicitly authorize rollback.</label>}<button className="primary-button" disabled={recoveryAddress!==recoveryDetails.address||Boolean(recoveryDetails.currentAddress&&!replaceConfirmed)||Boolean(recoveryDetails.rollbackWarning&&!rollbackConfirmed)} onClick={()=>void installRecovery()}>Recover organization wallet</button></>}</details>}
- <h3>Recent A.R.G.U.S. transactions</h3>{status?.recentTransactions.length?status.recentTransactions.map(transaction=><p key={transaction.transactionId}><a href={`https://test.whatsonchain.com/tx/${transaction.transactionId}`} target="_blank" rel="noreferrer"><code>{transaction.transactionId}</code></a><br/>{transaction.status}{transaction.timestamp&&<> · <time dateTime={transaction.timestamp}>{new Date(transaction.timestamp).toLocaleString()}</time></>}</p>):<p>No wallet transactions reported.</p>}<p className="safe-note"><ShieldCheck/>Audit publication is successful only after the broadcaster returns a real 64-character TXID.</p></Drawer>
+/** Shows the first-run/unlock screens outside mock-development; mock-development keeps today's single-tap demo boot. */
+function IdentityGatedApp(props: Omit<Props, "controller">) {
+  const [unlocked, setUnlocked] = useState<UnlockedDeviceIdentity>();
+  const [record, setRecord] = useState<DeviceIdentityRecord>();
+  const controller = useMemo(() => {
+    if (!identityGateRequired()) return new DistributedAppController();
+    if (unlocked?.authorization)
+      return buildAuthenticatedController({
+        ...unlocked,
+        authorization: unlocked.authorization,
+      });
+    return undefined;
+  }, [unlocked]);
+  const lock = () => {
+    setUnlocked(undefined);
+    setRecord(undefined);
+  };
+  if (!controller) {
+    if (unlocked && record)
+      return (
+        <PendingAdmissionScreen
+          publicIdentity={unlocked.publicIdentity}
+          identity={unlocked.identity}
+          record={record}
+          onAdmitted={(updatedRecord, authorization) => {
+            setRecord(updatedRecord);
+            setUnlocked(
+              (current) =>
+                current && {
+                  ...current,
+                  role: updatedRecord.role,
+                  authorization,
+                },
+            );
+          }}
+          onLock={lock}
+        />
+      );
+    return (
+      <IdentityGate
+        onUnlock={(unlockedIdentity, loadedRecord) => {
+          setUnlocked(unlockedIdentity);
+          setRecord(loadedRecord);
+        }}
+      />
+    );
+  }
+  const admit =
+    unlocked?.authoritySigner && record
+      ? async (
+          identityCode: string,
+          role: Exclude<ArgusRole, "MASTER">,
+          expiresAt?: string,
+        ) => {
+          const result = await admitPerson(
+            record,
+            unlocked.authoritySigner!,
+            identityCode,
+            role,
+            expiresAt,
+          );
+          setRecord(result.record);
+          return result.credentialCode;
+        }
+      : undefined;
+  return (
+    <AuthenticatedApp
+      controller={controller}
+      identity={
+        unlocked && {
+          publicIdentity: unlocked.publicIdentity,
+          role: unlocked.role,
+          people: record ? knownPeople(record) : [],
+          admit,
+        }
+      }
+      onLock={identityGateRequired() ? lock : undefined}
+      {...props}
+    />
+  );
 }
-function AddItem({inventory,close,save}:{inventory:InventoryProjection[];close:()=>void;save:(v:Omit<InventoryProjection,'entityId'|'version'|'appliedEventIds'|'issued'>)=>void}){const [name,setName]=useState(''),[category,setCategory]=useState(''),[variant,setVariant]=useState('No variant'),[niin,setNiin]=useState('Not assigned'),[onHand,setOnHand]=useState(0),[threshold,setThreshold]=useState(false),[reorderAt,setReorderAt]=useState(0),[countIncrement,setIncrement]=useState(1);const duplicate=inventory.find(i=>matchesSearch(name,i.name)&&name.trim().toLowerCase()===i.name.trim().toLowerCase()||niin!=='Not assigned'&&niin.replace(/\W/g,'').toLowerCase()===i.niin.replace(/\W/g,'').toLowerCase());return <div className="modal-backdrop"><form className="modal" aria-label="Add inventory item" onSubmit={e=>{e.preventDefault();save({name:name.trim(),category:category.trim(),variant:variant.trim(),niin:niin.trim(),onHand,reorderAt:threshold?reorderAt:undefined,countIncrement,active:true})}}><div className="modal-heading"><div><p className="eyebrow">INVENTORY CONTROL</p><h2>Add a new item</h2></div><button type="button" aria-label="Close add item" onClick={close}><X/></button></div><p>Create an authoritative inventory variant with a signed event.</p>{duplicate&&<div className="duplicate-warning" role="alert"><strong>Possible duplicate</strong><span>{duplicate.name} · {duplicate.variant} · {duplicate.niin}</span></div>}<div className="form-grid"><label>Item name<input required value={name} onChange={e=>setName(e.target.value)}/></label><label>Category<input required value={category} onChange={e=>setCategory(e.target.value)}/></label><label>Size or variant<input value={variant} onChange={e=>setVariant(e.target.value)}/></label><label>CDMIS NIIN<input value={niin} onChange={e=>setNiin(e.target.value)}/></label><label>Initial on hand<input type="number" min="0" value={onHand} onChange={e=>setOnHand(Number(e.target.value))}/></label><label>Count increment<input type="number" min="1" value={countIncrement} onChange={e=>setIncrement(Math.max(1,Number(e.target.value)))}/></label><label className="threshold-toggle"><input type="checkbox" aria-label="Enable low-stock warning" checked={threshold} onChange={e=>setThreshold(e.target.checked)}/>Enable low-stock warning</label>{threshold&&<label>Low-stock threshold<input aria-label="Low-stock threshold" type="number" min="0" value={reorderAt} onChange={e=>setReorderAt(Number(e.target.value))}/></label>}</div><div className="modal-actions"><button type="button" onClick={close}>Cancel</button><button className="primary-button" type="submit">Add item</button></div></form></div>}
+
+type AuthenticatedAppProps = Omit<Props, "controller"> & {
+  controller: DistributedAppController;
+  identity?: {
+    publicIdentity: string;
+    role: DeviceRole;
+    people: KnownPerson[];
+    admit?: (
+      identityCode: string,
+      role: Exclude<ArgusRole, "MASTER">,
+      expiresAt?: string,
+    ) => Promise<string>;
+  };
+  onLock?: () => void;
+};
+
+function AuthenticatedApp({
+  controller,
+  settingsStorage: suppliedSettings,
+  walletStatusProvider,
+  identity,
+  onLock,
+}: AuthenticatedAppProps) {
+  const [settingsStorage] = useState(
+    () => suppliedSettings ?? new LocalSettingsStorage(),
+  );
+  const [preferences, setPreferences] = useState<UserSettings>(() =>
+      settingsStorage.load(),
+    ),
+    [projection, setProjection] = useState<ArgusAppProjection>();
+  const [tab, setTab] = useState<Tab>(preferences.defaultSection),
+    [panel, setPanel] = useState<Panel>(null),
+    [settingsOpen, setSettingsOpen] = useState(false),
+    [walletOpen, setWalletOpen] = useState(false),
+    [addOpen, setAddOpen] = useState(false);
+  const [walletProvider] = useState<TestnetWalletStatusProvider>(
+    () => walletStatusProvider ?? new UnconfiguredTestnetWalletStatusProvider(),
+  );
+  const [selectedId, setSelectedId] = useState(""),
+    [selectedCadetId, setSelectedCadetId] = useState(""),
+    [count, setCount] = useState(0),
+    [step, setStep] = useState(1),
+    [countNote, setCountNote] = useState("");
+  const [query, setQuery] = useState(""),
+    [cadetQuery, setCadetQuery] = useState(""),
+    [notice, setNotice] = useState(""),
+    [history, setHistory] = useState<
+      Array<{ itemId: string; name: string; from: number; to: number }>
+    >([]);
+  useEffect(() => {
+    let active = true,
+      stopSync: undefined | (() => void);
+    controller
+      .initialize()
+      .then((p) => {
+        if (!active) return;
+        setProjection(p);
+        if (p.inventory[0]) {
+          setSelectedId(p.inventory[0].entityId);
+          setCount(p.inventory[0].onHand);
+          setStep(p.inventory[0].countIncrement);
+        }
+        stopSync = controller.startAutoSync((next) => {
+          if (active) setProjection(next);
+        });
+      })
+      .catch((e) =>
+        setNotice(
+          e instanceof Error ? e.message : "Local data could not be loaded.",
+        ),
+      );
+    return () => {
+      active = false;
+      stopSync?.();
+    };
+  }, [controller]);
+  useEffect(() => {
+    settingsStorage.save(preferences);
+    Object.assign(document.documentElement.dataset, {
+      theme: preferences.theme,
+      density: preferences.density,
+      motion: preferences.motion,
+      textSize: preferences.textSize,
+    });
+  }, [preferences, settingsStorage]);
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(""), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
+  const selected =
+    projection?.inventory.find((i) => i.entityId === selectedId) ??
+    projection?.inventory[0];
+  const filtered = useMemo(
+    () =>
+      projection?.inventory.filter((i) =>
+        matchesSearch(query, i.name, i.category, i.variant, i.niin),
+      ) ?? [],
+    [projection, query],
+  );
+  const choose = (item: InventoryProjection) => {
+    setSelectedId(item.entityId);
+    setCount(item.onHand);
+    setStep(item.countIncrement);
+    setQuery("");
+  };
+  const updateCount = (next: number) => {
+    if (!selected) return;
+    const safe = Math.max(0, next);
+    if (safe === count) return;
+    setHistory((h) => [
+      ...h,
+      {
+        itemId: selected.entityId,
+        name: `${selected.name} · ${selected.variant}`,
+        from: count,
+        to: safe,
+      },
+    ]);
+    setCount(safe);
+  };
+  const undo = () => {
+    const last = history.at(-1);
+    if (!last || !projection) return;
+    const item = projection.inventory.find((i) => i.entityId === last.itemId);
+    if (!item) return;
+    setSelectedId(item.entityId);
+    setCount(last.from);
+    setStep(item.countIncrement);
+    setHistory((h) => h.slice(0, -1));
+    setNotice(`Undid ${last.name}: ${last.to} → ${last.from}.`);
+  };
+  const command = async (
+    operation: () => Promise<ArgusAppProjection>,
+    success: string,
+  ) => {
+    try {
+      setProjection(await operation());
+      setNotice(success);
+    } catch (e) {
+      setNotice(
+        e instanceof Error
+          ? e.message
+          : "The signed operation could not be completed.",
+      );
+    }
+  };
+  if (!projection)
+    return (
+      <main className="loading-state" aria-live="polite">
+        <strong>Loading A.R.G.U.S. local data…</strong>
+        {notice && <p role="alert">{notice}</p>}
+      </main>
+    );
+  const cadet = projection.cadets.find((c) => c.cadetId === selectedCadetId);
+  const sync = projection.sync.openConflicts
+    ? "CONFLICT · ACTION REQUIRED"
+    : projection.sync.mode === "remote"
+      ? projection.sync.outbox
+        ? `SHARED SYNC · ${projection.sync.outbox} QUEUED`
+        : "SHARED SYNC · CONNECTED"
+      : projection.sync.outbox
+        ? `LOCAL · ${projection.sync.outbox} CHANGES QUEUED`
+        : "LOCAL · THIS DEVICE ONLY";
+  return (
+    <div className="app-shell">
+      <div className="aether-field" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </div>
+      <aside className="sidebar">
+        <Brand />
+        <nav aria-label="Primary navigation">
+          {nav.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              className={tab === id ? "nav-item active" : "nav-item"}
+              onClick={() => setTab(id)}
+            >
+              <Icon size={19} />
+              <span>{label}</span>
+              {id === "count" && <span className="nav-dot" />}
+            </button>
+          ))}
+        </nav>
+        <div className="system-card">
+          <span className="pulse" />
+          <strong>Prototype mode</strong>
+          <p>Repository-backed · local preview</p>
+        </div>
+        <button className="profile" onClick={() => setSettingsOpen(true)}>
+          <span className="avatar">SO</span>
+          <span>
+            <strong>Development User</strong>
+            <small>Supply Officer</small>
+          </span>
+          <ChevronDown size={16} />
+        </button>
+      </aside>
+      <main className="main-stage">
+        <div
+          className={`environment-banner ${resolveBlockchainMode(import.meta.env.VITE_ARGUS_BLOCKCHAIN_MODE)}`}
+        >
+          <strong>BSV TESTNET</strong>
+          <span>Mainnet disabled</span>
+        </div>
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">BETHEL NJROTC SUPPLY</p>
+            <h1>{pageTitle(tab)}</h1>
+          </div>
+          <div className="top-actions">
+            <span className="sync">
+              <Wifi size={15} />
+              {sync}
+            </span>
+            <button
+              aria-label="Settings"
+              className="icon-button"
+              onClick={() => setSettingsOpen(true)}
+            >
+              <Settings size={20} />
+            </button>
+            <span className="top-avatar">SO</span>
+          </div>
+        </header>
+        {notice && (
+          <div className="app-notice" role="status">
+            {notice}
+          </div>
+        )}
+        {tab === "count" && selected && (
+          <CountView
+            selected={selected}
+            count={count}
+            step={step}
+            query={query}
+            filtered={filtered}
+            last={history.at(-1)}
+            setQuery={setQuery}
+            setStep={setStep}
+            setCount={updateCount}
+            choose={choose}
+            undo={undo}
+            review={() => setPanel("review")}
+          />
+        )}
+        {tab === "inventory" && (
+          <InventoryView
+            items={filtered}
+            all={projection.inventory}
+            query={query}
+            setQuery={setQuery}
+            onAdd={() => setAddOpen(true)}
+            choose={(i) => {
+              choose(i);
+              setTab("count");
+            }}
+          />
+        )}
+        {tab === "cadets" && (
+          <CadetsView
+            projection={projection}
+            query={cadetQuery}
+            setQuery={setCadetQuery}
+            open={(id) => {
+              setSelectedCadetId(id);
+              setPanel("cadet");
+            }}
+          />
+        )}
+        {tab === "activity" && (
+          <ActivityView
+            projection={projection}
+            wallet={() => setWalletOpen(true)}
+          />
+        )}{" "}
+        {tab === "more" && (
+          <CommandCenter
+            open={setPanel}
+            settings={() => setSettingsOpen(true)}
+            lock={onLock}
+          />
+        )}
+      </main>
+      <nav className="mobile-nav" aria-label="Mobile navigation">
+        {nav.map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            className={tab === id ? "active" : ""}
+            onClick={() => setTab(id)}
+          >
+            <Icon size={21} />
+            <span>{label}</span>
+          </button>
+        ))}
+      </nav>
+      {panel === "review" && selected && (
+        <Drawer
+          title="Review physical count"
+          icon={<ClipboardCheck />}
+          close={() => setPanel(null)}
+        >
+          <div className="review-hero">
+            <div>
+              <small>OFFICIAL</small>
+              <strong>{selected.onHand}</strong>
+            </div>
+            <ArrowRight />
+            <div>
+              <small>PHYSICAL</small>
+              <strong>{count}</strong>
+            </div>
+          </div>
+          <div className={count === selected.onHand ? "validation" : "notice"}>
+            <Activity />
+            <div>
+              <strong>
+                {count - selected.onHand > 0 ? "+" : ""}
+                {count - selected.onHand} units
+              </strong>
+              <p>
+                {count === selected.onHand
+                  ? "Inventory matches the official record."
+                  : "Discrepancy will be recorded for review."}
+              </p>
+            </div>
+          </div>
+          <label className="field">
+            OPTIONAL NOTE
+            <textarea
+              maxLength={500}
+              value={countNote}
+              onChange={(event) => setCountNote(event.target.value)}
+              placeholder="Add context for this count…"
+            />
+          </label>
+          <p className="safe-note">
+            <ShieldCheck size={14} /> A signed event is created only when
+            submitted.
+          </p>
+          <button
+            className="primary-button"
+            onClick={() => {
+              const sessionId = `count_${crypto.randomUUID()}`,
+                note = countNote;
+              setPanel(null);
+              setCountNote("");
+              void command(
+                () =>
+                  controller.submitCount(
+                    selected.entityId,
+                    count,
+                    sessionId,
+                    note,
+                  ),
+                "Physical count submitted.",
+              );
+            }}
+          >
+            Submit count <Check />
+          </button>
+        </Drawer>
+      )}
+      {panel === "cadet" && cadet && (
+        <CadetDrawer
+          cadet={cadet}
+          needs={projection.stillNeeded.filter(
+            (n) => n.cadetId === cadet.cadetId,
+          )}
+          close={() => setPanel(null)}
+          issue={() => setPanel("issue")}
+          returnItems={() => setPanel("return")}
+        />
+      )}
+      {(panel === "issue" || panel === "return") && (
+        <SupplyWorkflow
+          mode={panel === "issue" ? "ISSUE" : "RETURN"}
+          projection={projection}
+          controller={controller}
+          selectedCadetId={selectedCadetId || undefined}
+          onClose={() => setPanel(null)}
+          onChanged={setProjection}
+        />
+      )}
+      {panel === "bundles" && (
+        <BundlesPanel projection={projection} close={() => setPanel(null)} />
+      )}{" "}
+      {panel === "needed" && (
+        <NeededPanel projection={projection} close={() => setPanel(null)} />
+      )}{" "}
+      {panel === "roles" && (
+        <RolesPanel identity={identity} close={() => setPanel(null)} />
+      )}{" "}
+      {panel && isComingPanel(panel) && (
+        <ComingPanel
+          panel={panel}
+          projection={projection}
+          close={() => setPanel(null)}
+        />
+      )}
+      {settingsOpen && (
+        <SettingsPanel
+          value={preferences}
+          projection={projection}
+          change={setPreferences}
+          wallet={() => setWalletOpen(true)}
+          syncNow={() =>
+            command(
+              () => controller.sync(),
+              projection.sync.mode === "remote"
+                ? "Shared history synchronized."
+                : "Local repository checked; shared synchronization is not configured on this device.",
+            )
+          }
+          close={() => setSettingsOpen(false)}
+        />
+      )}{" "}
+      {walletOpen && (
+        <WalletStatusPanel
+          provider={walletProvider}
+          close={() => setWalletOpen(false)}
+        />
+      )}{" "}
+      {addOpen && (
+        <AddItem
+          inventory={projection.inventory}
+          close={() => setAddOpen(false)}
+          save={(input) => {
+            setAddOpen(false);
+            void command(
+              () => controller.createInventoryItem(input),
+              `${input.name} was added.`,
+            );
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function Brand() {
+  return (
+    <div className="brand">
+      <img src={`${import.meta.env.BASE_URL}argus-mark.svg`} alt="" />
+      <div>
+        <strong>A.R.G.U.S.</strong>
+        <span>ASSET READINESS SYSTEM</span>
+      </div>
+    </div>
+  );
+}
+function CountView({
+  selected,
+  count,
+  step,
+  query,
+  filtered,
+  last,
+  setQuery,
+  setStep,
+  setCount,
+  choose,
+  undo,
+  review,
+}: {
+  selected: InventoryProjection;
+  count: number;
+  step: number;
+  query: string;
+  filtered: InventoryProjection[];
+  last?: { name: string; from: number; to: number };
+  setQuery: (s: string) => void;
+  setStep: (n: number) => void;
+  setCount: (n: number) => void;
+  choose: (i: InventoryProjection) => void;
+  undo: () => void;
+  review: () => void;
+}) {
+  const difference = count - selected.onHand;
+  const custom = () => {
+    const n = Number.parseInt(
+      prompt("Enter a count increment greater than zero", String(step)) ?? "",
+      10,
+    );
+    if (Number.isInteger(n) && n > 0) setStep(n);
+  };
+  return (
+    <div className="content count-page">
+      <section className="hero-row">
+        <div>
+          <div className="section-kicker">
+            <span />
+            <b>ACTIVE SESSION</b>
+            <span />
+          </div>
+          <h2>Count with confidence.</h2>
+          <p>
+            Every tap stays in this local draft. Official inventory changes only
+            after review.
+          </p>
+        </div>
+        <div className="session-chip">
+          <span className="pulse" />
+          <div>
+            <small>DRAFT</small>
+            <strong>Physical inventory</strong>
+          </div>
+          <ChevronDown size={16} />
+        </div>
+      </section>
+      <div className="search-wrap">
+        <Search />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search item name or CDMIS NIIN…"
+          aria-label="Search inventory"
+        />
+        <kbd>⌘ K</kbd>
+        {query && (
+          <div className="search-results">
+            {filtered.length ? (
+              filtered.map((i) => (
+                <button key={i.entityId} onClick={() => choose(i)}>
+                  <span>
+                    <strong>{i.name}</strong>
+                    <small>
+                      {i.category} · {i.niin}
+                    </small>
+                  </span>
+                  <b>{i.variant}</b>
+                </button>
+              ))
+            ) : (
+              <p>No inventory matches that search.</p>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="count-layout">
+        <section className="count-card marble-card">
+          <div className="item-heading">
+            <div className="item-icon">
+              <Boxes />
+            </div>
+            <div>
+              <span>{selected.category.toUpperCase()}</span>
+              <h3>{selected.name}</h3>
+              <p>
+                Size: <strong>{selected.variant}</strong> · {selected.niin}
+              </p>
+            </div>
+          </div>
+          <div className="count-display">
+            <small>YOUR PHYSICAL COUNT</small>
+            <strong>{count}</strong>
+            <span>UNITS COUNTED</span>
+          </div>
+          <div className="step-label">
+            <span>COUNT BY</span>
+            <div>
+              {[1, 5, 10].map((n) => (
+                <button
+                  key={n}
+                  className={step === n ? "active" : ""}
+                  onClick={() => setStep(n)}
+                >
+                  {n}
+                </button>
+              ))}
+              <button
+                className={![1, 5, 10].includes(step) ? "active" : ""}
+                onClick={custom}
+              >
+                {![1, 5, 10].includes(step) ? step : "Custom"}
+              </button>
+            </div>
+          </div>
+          <div className="counter-actions">
+            <button
+              className="stone-button minus"
+              onClick={() => setCount(count - step)}
+            >
+              <Minus />
+              <span>Subtract {step}</span>
+            </button>
+            <button
+              className="stone-button plus"
+              onClick={() => setCount(count + step)}
+            >
+              <Plus />
+              <span>Add {step}</span>
+            </button>
+          </div>
+          <button className="undo-button" disabled={!last} onClick={undo}>
+            <RotateCcw size={16} />
+            {last
+              ? `Undo ${last.name}: ${last.to} → ${last.from}`
+              : "Nothing to undo"}
+          </button>
+        </section>
+        <aside className="review-card">
+          <div className="card-title">
+            <span>
+              <ClipboardCheck />
+            </span>
+            <div>
+              <small>LIVE COMPARISON</small>
+              <h3>Count review</h3>
+            </div>
+          </div>
+          <div className="stat-row">
+            <span>
+              Official on hand<small>Before this count</small>
+            </span>
+            <strong>{selected.onHand}</strong>
+          </div>
+          <div className="stat-row">
+            <span>
+              Physical count<small>Local draft</small>
+            </span>
+            <strong>{count}</strong>
+          </div>
+          <div
+            className={
+              difference === 0 ? "difference match" : "difference warning"
+            }
+          >
+            <span>{difference === 0 ? <ShieldCheck /> : <Activity />}</span>
+            <div>
+              <small>DIFFERENCE</small>
+              <strong>
+                {difference > 0 ? "+" : ""}
+                {difference} units
+              </strong>
+              <p>
+                {difference === 0
+                  ? "Inventory matches the record."
+                  : "Administrator review required."}
+              </p>
+            </div>
+          </div>
+          <div className="contributors">
+            <p>
+              <strong>Local counting session</strong>
+              <br />
+              Draft saved in this view
+            </p>
+            <Cloud />
+          </div>
+          <button className="primary-button" onClick={review}>
+            Review &amp; submit <ArrowRight />
+          </button>
+          <p className="safe-note">
+            <ShieldCheck />
+            Draft only—official inventory is unchanged
+          </p>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function Summary({
+  label,
+  value,
+  detail,
+  accent = false,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  accent?: boolean;
+}) {
+  return (
+    <div className={accent ? "summary-card accent" : "summary-card"}>
+      <small>{label.toUpperCase()}</small>
+      <strong>{value}</strong>
+      <p>{detail}</p>
+    </div>
+  );
+}
+function InventoryView({
+  items,
+  all,
+  query,
+  setQuery,
+  onAdd,
+  choose,
+}: {
+  items: InventoryProjection[];
+  all: InventoryProjection[];
+  query: string;
+  setQuery: (s: string) => void;
+  onAdd: () => void;
+  choose: (i: InventoryProjection) => void;
+}) {
+  const health = (i: InventoryProjection) =>
+    i.reorderAt !== undefined && i.onHand <= i.reorderAt
+      ? "Low stock"
+      : i.active
+        ? "Healthy"
+        : "Inactive";
+  return (
+    <div className="content">
+      <section className="page-intro">
+        <div>
+          <p className="eyebrow">SERVICEABLE INVENTORY</p>
+          <h2>Every asset, accounted for.</h2>
+          <p>Search by item, size, category, or CDMIS NIIN.</p>
+        </div>
+        <button className="gold-button" onClick={onAdd}>
+          <PackagePlus />
+          Add item
+        </button>
+      </section>
+      <div className="summary-grid">
+        <Summary
+          label="On hand"
+          value={String(all.reduce((s, i) => s + i.onHand, 0))}
+          detail={`${all.length} tracked variants`}
+        />
+        <Summary
+          label="Issued"
+          value={String(all.reduce((s, i) => s + i.issued, 0))}
+          detail="Across active cadets"
+        />
+        <Summary
+          label="Needs attention"
+          value={String(all.filter((i) => health(i) !== "Healthy").length)}
+          detail="Low stock or inactive"
+          accent
+        />
+      </div>
+      <div className="table-card">
+        <div className="table-tools">
+          <div className="inline-search">
+            <Search />
+            <input
+              aria-label="Search inventory table"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search inventory…"
+            />
+          </div>
+          <button>
+            <Settings />
+            Filters
+          </button>
+        </div>
+        <div className="inventory-list">
+          {items.length ? (
+            items.map((i) => (
+              <button
+                className="inventory-row"
+                key={i.entityId}
+                onClick={() => choose(i)}
+              >
+                <span className="category-mark">
+                  {i.name.slice(0, 2).toUpperCase()}
+                </span>
+                <span className="item-name">
+                  <strong>{i.name}</strong>
+                  <small>
+                    {i.category} · {i.niin}
+                  </small>
+                </span>
+                <span>
+                  <small>SIZE</small>
+                  <b>{i.variant}</b>
+                </span>
+                <span>
+                  <small>ON HAND</small>
+                  <b>{i.onHand}</b>
+                </span>
+                <span>
+                  <small>ISSUED</small>
+                  <b>{i.issued}</b>
+                </span>
+                <em className={health(i) === "Healthy" ? "ready" : "attention"}>
+                  {health(i)}
+                </em>
+                <ArrowRight />
+              </button>
+            ))
+          ) : (
+            <p className="empty-state">No inventory matches that search.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+function CadetsView({
+  projection,
+  query,
+  setQuery,
+  open,
+}: {
+  projection: ArgusAppProjection;
+  query: string;
+  setQuery: (s: string) => void;
+  open: (id: string) => void;
+}) {
+  const visible = projection.cadets.filter((c) =>
+    matchesSearch(query, c.fullName, c.nsLevel, c.gender, c.status),
+  );
+  return (
+    <div className="content">
+      <section className="page-intro">
+        <div>
+          <p className="eyebrow">PERSONNEL ACCOUNTABILITY</p>
+          <h2>Cadet property records.</h2>
+          <p>
+            Readiness is derived from current property and Still Needed
+            requirements.
+          </p>
+        </div>
+        <button className="gold-button" disabled title="Coming Later">
+          <UserRound />
+          Add cadet · Coming Later
+        </button>
+      </section>
+      <div className="table-card">
+        <div className="table-tools">
+          <div className="inline-search">
+            <Search />
+            <input
+              aria-label="Search cadets"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search cadet name…"
+            />
+          </div>
+        </div>
+        <div className="cadet-grid">
+          {visible.map((c) => (
+            <button
+              className="cadet-card"
+              key={c.cadetId}
+              onClick={() => open(c.cadetId)}
+            >
+              <span className="large-avatar">{initials(c.fullName)}</span>
+              <span>
+                <strong>{c.fullName}</strong>
+                <small>
+                  {c.nsLevel} · {c.gender} · {c.status}
+                </small>
+              </span>
+              <div>
+                <b>{c.propertyCount}</b>
+                <small>Current property</small>
+              </div>
+              <em
+                className={
+                  c.readiness.status === "READY" ? "ready" : "attention"
+                }
+              >
+                {c.readiness.status} · {c.stillNeededCount} needed
+              </em>
+              <ArrowRight />
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+function ActivityView({
+  projection,
+  wallet,
+}: {
+  projection: ArgusAppProjection;
+  wallet: () => void;
+}) {
+  return (
+    <div className="content">
+      <section className="page-intro">
+        <div>
+          <p className="eyebrow">AUDIT TRAIL</p>
+          <h2>Nothing changes silently.</h2>
+          <p>
+            Operational details remain private; public audit state is reported
+            separately and truthfully.
+          </p>
+        </div>
+        <button onClick={wallet}>Testnet wallet status</button>
+      </section>
+      <section
+        className="distributed-panel"
+        aria-label="A.R.G.U.S. distributed system"
+      >
+        <strong>DISTRIBUTED SYSTEM · LOCAL DEVELOPMENT</strong>
+        <div>
+          <span>
+            <small>IDENTITY</small>supply-officer-development
+          </span>
+          <span>
+            <small>AUTHORIZATION</small>SUPPLY OFFICER
+          </span>
+          <span>
+            <small>LOCAL STORE</small>IndexedDB v4
+          </span>
+          <span>
+            <small>EVENTS</small>
+            {projection.events.length}
+          </span>
+          <span>
+            <small>OUTBOX</small>
+            {projection.sync.outbox}
+          </span>
+          <span>
+            <small>CONFLICTS</small>
+            {projection.sync.openConflicts}
+          </span>
+          <span>
+            <small>PRIVATE SYNC</small>
+            {projection.sync.outbox ? "QUEUED" : "LOCAL ONLY"}
+          </span>
+          <span>
+            <small>AUDIT TARGET</small>TESTNET / MOCK
+          </span>
+        </div>
+      </section>
+      <div className="timeline">
+        {projection.events.length ? (
+          projection.events.map((r) => (
+            <div className="event" key={r.event.eventId}>
+              <span className="event-icon">
+                <Activity />
+              </span>
+              <div>
+                <strong>
+                  {activityLabel(
+                    projection,
+                    r.event.eventId,
+                    r.event.eventType,
+                  )}
+                </strong>
+                <p>
+                  {r.event.eventType} · {r.event.entityId}
+                </p>
+                <div className="audit-metadata">
+                  <span>
+                    <b>Actor</b>
+                    {r.event.actorPublicIdentity}
+                  </span>
+                  <span>
+                    <b>Local</b>Persisted
+                  </span>
+                  <span>
+                    <b>Private sync</b>
+                    {r.syncStatus}
+                  </span>
+                  <span>
+                    <b>BSV audit</b>
+                    {r.auditStatus}
+                  </span>
+                </div>
+              </div>
+              <span className="event-user">SO</span>
+              <time>{new Date(r.event.timestamp).toLocaleString()}</time>
+            </div>
+          ))
+        ) : (
+          <p className="empty-state">No signed operational events yet.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+function CommandCenter({
+  open,
+  settings,
+  lock,
+}: {
+  open: (p: Panel) => void;
+  settings: () => void;
+  lock?: () => void;
+}) {
+  const actions = [
+    [
+      "bundles",
+      "Issue bundles",
+      "Configure exact uniform bundle mappings",
+      Shirt,
+    ],
+    [
+      "needed",
+      "Still needed",
+      "Track unfulfilled cadet requirements",
+      ClipboardCheck,
+    ],
+    ["roster", "Roster administration", "Manage cadet lifecycle", Users],
+    ["import", "Import preview", "Review roster imports safely", FileUp],
+    ["roles", "Roles & access", "Authorization and credentials", KeyRound],
+    ["rollover", "Annual rollover", "Preview lifecycle changes", CalendarRange],
+    [
+      "diagnostics",
+      "Diagnostics",
+      "Repository health and migration warnings",
+      ShieldCheck,
+    ],
+  ] as const;
+  return (
+    <div className="content">
+      <section className="page-intro">
+        <div>
+          <p className="eyebrow">OPERATIONS</p>
+          <h2>Command Center</h2>
+          <p>Administration, readiness, and system controls in one place.</p>
+        </div>
+      </section>
+      <div className="command-grid">
+        {actions.map(([id, title, detail, Icon]) => (
+          <button key={id} onClick={() => open(id)}>
+            <span>
+              <Icon />
+            </span>
+            <div>
+              <strong>{title}</strong>
+              <p>{detail}</p>
+            </div>
+            <ArrowRight />
+          </button>
+        ))}
+        <button onClick={settings}>
+          <span>
+            <Settings />
+          </span>
+          <div>
+            <strong>Settings</strong>
+            <p>Appearance, behavior, and diagnostics</p>
+          </div>
+          <ArrowRight />
+        </button>
+        {lock && (
+          <button onClick={lock}>
+            <span>
+              <KeyRound />
+            </span>
+            <div>
+              <strong>Lock this device</strong>
+              <p>Return to the passphrase unlock screen</p>
+            </div>
+            <ArrowRight />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+function Drawer({
+  title,
+  icon,
+  close,
+  children,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  close: () => void;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("keydown", dismiss);
+    return () => document.removeEventListener("keydown", dismiss);
+  }, [close]);
+  return (
+    <div
+      className="drawer-backdrop"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) close();
+      }}
+    >
+      <aside
+        className="demo-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
+        <header>
+          <span className="drawer-icon">{icon}</span>
+          <div>
+            <small>A.R.G.U.S. COMMAND PANEL</small>
+            <h2>{title}</h2>
+          </div>
+          <button
+            className="drawer-close"
+            aria-label="Close panel"
+            onClick={close}
+          >
+            <X />
+          </button>
+        </header>
+        {children}
+      </aside>
+    </div>
+  );
+}
+function CadetDrawer({
+  cadet,
+  needs,
+  close,
+  issue,
+  returnItems,
+}: {
+  cadet: ArgusAppProjection["cadets"][number];
+  needs: ArgusAppProjection["stillNeeded"];
+  close: () => void;
+  issue: () => void;
+  returnItems: () => void;
+}) {
+  return (
+    <Drawer title={cadet.fullName} icon={<UserRound />} close={close}>
+      <div className="record-hero">
+        <span className="large-avatar">{initials(cadet.fullName)}</span>
+        <div>
+          <strong>
+            {cadet.nsLevel} · {cadet.gender}
+          </strong>
+          <p>{cadet.status} personnel record</p>
+        </div>
+        <em
+          className={cadet.readiness.status === "READY" ? "ready" : "attention"}
+        >
+          {cadet.readiness.status}
+        </em>
+      </div>
+      {cadet.profileNeedsReview && (
+        <div className="notice" role="alert">
+          <Activity />
+          <span>
+            <strong>Profile review required</strong>
+            <br />
+            Migrated profile information could not be fully verified.
+          </span>
+        </div>
+      )}
+      <div className="record-stats">
+        <Summary
+          label="Property"
+          value={String(cadet.propertyCount)}
+          detail="Items currently held"
+        />
+        <Summary
+          label="Readiness"
+          value={`${cadet.readiness.percent}%`}
+          detail={`${cadet.stillNeededCount} still needed`}
+        />
+      </div>
+      <h3>Current Property</h3>
+      <div className="panel-rows">
+        {cadet.currentProperty.length ? (
+          cadet.currentProperty.map((p) => (
+            <div className="needed-row" key={p.propertyId}>
+              <span>
+                <strong>{p.label}</strong>
+                <small>
+                  {p.variant} · quantity {p.quantity}
+                </small>
+              </span>
+            </div>
+          ))
+        ) : (
+          <p className="empty-state">No current property.</p>
+        )}
+      </div>
+      <h3>Still Needed</h3>
+      {needs.length ? (
+        needs.map((n) => (
+          <div className="needed-row" key={n.requirementId}>
+            <span>
+              <strong>{n.displayLabel}</strong>
+              <small>
+                {n.size ?? "No variant"} · {n.status}
+              </small>
+            </span>
+            <b>{n.quantityNeeded - n.quantityFulfilled}</b>
+          </div>
+        ))
+      ) : (
+        <p>No open requirements.</p>
+      )}
+      <div className="split-actions">
+        <button onClick={returnItems}>Return Items</button>
+        <button
+          className="primary-button"
+          disabled={cadet.status !== "ACTIVE"}
+          onClick={issue}
+        >
+          Issue Items
+        </button>
+      </div>
+    </Drawer>
+  );
+}
+function BundlesPanel({
+  projection,
+  close,
+}: {
+  projection: ArgusAppProjection;
+  close: () => void;
+}) {
+  return (
+    <Drawer title="Bundle selection" icon={<Shirt />} close={close}>
+      {projection.bundles.map((b) => {
+        const current = b.versions.find((v) => v.version === b.currentVersion)!;
+        return (
+          <details className="panel-rows" key={b.bundleId}>
+            <summary>
+              <strong>{current.displayName}</strong> · v{b.currentVersion} ·{" "}
+              {current.active ? "ACTIVE" : "INACTIVE"}
+              <small>
+                {current.genderApplicability} · {b.mapping.mapped}/
+                {b.mapping.total} mapped
+              </small>
+            </summary>
+            <div>
+              {current.lines
+                .sort((a, z) => a.order - z.order)
+                .map((l) => (
+                  <p key={l.lineId}>
+                    <b>{l.displayLabel}</b> ·{" "}
+                    {l.required ? "Required" : "Optional"} ·{" "}
+                    {l.itemId ? "Mapped" : "Inventory item not configured"}
+                  </p>
+                ))}
+              <h4>Version history</h4>
+              {[...b.versions].reverse().map((v) => (
+                <p key={v.version}>
+                  v{v.version}
+                  {v.version === b.currentVersion ? " · CURRENT" : ""} ·{" "}
+                  {new Date(v.createdAt).toLocaleDateString()} ·{" "}
+                  {v.actorPublicIdentity}
+                </p>
+              ))}
+            </div>
+          </details>
+        );
+      })}
+    </Drawer>
+  );
+}
+function NeededPanel({
+  projection,
+  close,
+}: {
+  projection: ArgusAppProjection;
+  close: () => void;
+}) {
+  const requirements = projection.stillNeeded,
+    remaining = requirements.reduce(
+      (sum, item) =>
+        sum + Math.max(0, item.quantityNeeded - item.quantityFulfilled),
+      0,
+    ),
+    ready = requirements.filter((item) => item.availability.available).length;
+  return (
+    <Drawer title="Still Needed" icon={<ClipboardCheck />} close={close}>
+      <section className="needed-overview" aria-label="Requirement overview">
+        <div>
+          <small>OPEN REQUIREMENTS</small>
+          <strong>{requirements.length}</strong>
+          <span>
+            Across {new Set(requirements.map((item) => item.cadetId)).size}{" "}
+            cadets
+          </span>
+        </div>
+        <div>
+          <small>UNITS REMAINING</small>
+          <strong>{remaining}</strong>
+          <span>{ready} ready to issue</span>
+        </div>
+      </section>
+      <div className="needed-section-heading">
+        <div>
+          <p className="operational-label">READINESS QUEUE</p>
+          <h3>Unfulfilled equipment</h3>
+        </div>
+        <span>{requirements.length} records</span>
+      </div>
+      <div className="needed-list">
+        {requirements.length ? (
+          requirements.map((n) => {
+            const count = Math.max(0, n.quantityNeeded - n.quantityFulfilled),
+              status = !n.availability.configured
+                ? "Not configured"
+                : n.availability.available
+                  ? `${n.availability.onHand} available`
+                  : "Awaiting stock",
+              progressPercent = Math.min(
+                100,
+                n.quantityNeeded
+                  ? (100 * n.quantityFulfilled) / n.quantityNeeded
+                  : 100,
+              );
+            return (
+              <article className="needed-card" key={n.requirementId}>
+                <div className="needed-card-main">
+                  <span className="needed-initials" aria-hidden="true">
+                    {initials(
+                      projection.cadets.find((c) => c.cadetId === n.cadetId)
+                        ?.fullName ?? "?",
+                    )}
+                  </span>
+                  <div>
+                    <strong>
+                      {projection.cadets.find((c) => c.cadetId === n.cadetId)
+                        ?.fullName ?? "Missing cadet"}
+                    </strong>
+                    <p>
+                      {n.displayLabel}
+                      <span>·</span>
+                      {n.size ?? "No size"}
+                    </p>
+                  </div>
+                  <b
+                    className="needed-quantity"
+                    aria-label={`${count} remaining`}
+                  >
+                    {count}
+                    <small>REMAINING</small>
+                  </b>
+                </div>
+                <div className="needed-card-meta">
+                  <span>
+                    <CalendarRange />
+                    First needed{" "}
+                    <time dateTime={n.firstNeededAt}>
+                      {new Date(n.firstNeededAt).toLocaleDateString()}
+                    </time>
+                  </span>
+                  <em
+                    className={
+                      n.availability.available
+                        ? "needed-status ready"
+                        : "needed-status attention"
+                    }
+                  >
+                    <span />
+                    {status}
+                  </em>
+                </div>
+                <div
+                  className="needed-progress"
+                  aria-label={`${n.quantityFulfilled} of ${n.quantityNeeded} fulfilled`}
+                >
+                  <span
+                    style={{
+                      width: `${progressPercent}%`,
+                    }}
+                  />
+                  <small>
+                    {n.quantityFulfilled} of {n.quantityNeeded} fulfilled
+                  </small>
+                </div>
+              </article>
+            );
+          })
+        ) : (
+          <p className="empty-state">
+            <strong>All requirements fulfilled</strong>
+            <span>No equipment is currently waiting to be issued.</span>
+          </p>
+        )}
+      </div>
+    </Drawer>
+  );
+}
+function isComingPanel(
+  panel: Panel,
+): panel is "roster" | "import" | "rollover" | "diagnostics" {
+  return (
+    panel !== null &&
+    ["roster", "import", "rollover", "diagnostics"].includes(panel)
+  );
+}
+function RolesPanel({
+  identity,
+  close,
+}: {
+  identity?: {
+    publicIdentity: string;
+    role: DeviceRole;
+    people: KnownPerson[];
+    admit?: (
+      identityCode: string,
+      role: Exclude<ArgusRole, "MASTER">,
+      expiresAt?: string,
+    ) => Promise<string>;
+  };
+  close: () => void;
+}) {
+  return (
+    <Drawer title="Roles & access" icon={<KeyRound />} close={close}>
+      {identity ? (
+        <>
+          <div className="panel-rows">
+            <p>
+              <small>IDENTITY</small>
+              <br />
+              {identity.publicIdentity}
+            </p>
+            <p>
+              <small>ROLE</small>
+              <br />
+              {identity.role}
+            </p>
+          </div>
+          <PeopleList
+            people={identity.people}
+            isMaster={identity.role === "MASTER"}
+          />
+          {identity.admit && <AdmitPersonForm admit={identity.admit} />}
+        </>
+      ) : (
+        <div className="notice">
+          <Activity />
+          <span>
+            <strong>Coming Later</strong>
+            <br />
+            This workflow remains visible but disabled until it can use the
+            authoritative repository command model.
+          </span>
+        </div>
+      )}
+    </Drawer>
+  );
+}
+
+function PeopleList({
+  people,
+  isMaster,
+}: {
+  people: KnownPerson[];
+  isMaster: boolean;
+}) {
+  return (
+    <div className="panel-rows">
+      <p>
+        <small>PEOPLE THIS DEVICE KNOWS</small>
+      </p>
+      <ul aria-label="People this device knows">
+        {people.map((person) => (
+          <li key={person.publicIdentity}>
+            <p>
+              {person.you && <strong>You · </strong>}
+              <span>{person.role}</span>
+              {person.issuedAt &&
+                ` · admitted ${new Date(person.issuedAt).toLocaleDateString()}`}
+              <br />
+              <small>{person.publicIdentity}</small>
+            </p>
+          </li>
+        ))}
+      </ul>
+      {!isMaster && (
+        <p>
+          Other devices this unit has admitted are learned through the chain in
+          a later epic; for now this device knows only itself and the Master
+          that admitted it.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function AdmitPersonForm({
+  admit,
+}: {
+  admit: (
+    identityCode: string,
+    role: Exclude<ArgusRole, "MASTER">,
+    expiresAt?: string,
+  ) => Promise<string>;
+}) {
+  const [identityCode, setIdentityCode] = useState("");
+  const [role, setRole] =
+    useState<Exclude<ArgusRole, "MASTER">>("SUPPLY_OFFICER");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [credentialCode, setCredentialCode] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    setCredentialCode("");
+    setCopied(false);
+    try {
+      const code = await admit(
+        identityCode,
+        role,
+        expiresAt ? new Date(expiresAt).toISOString() : undefined,
+      );
+      setCredentialCode(code);
+      setIdentityCode("");
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "This person could not be admitted.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async () => {
+    await navigator.clipboard.writeText(credentialCode);
+    setCopied(true);
+  };
+
+  return (
+    <form className="panel-rows" aria-label="Admit a person" onSubmit={submit}>
+      <p>
+        <small>ADMIT A PERSON</small>
+      </p>
+      <label className="field">
+        IDENTITY CODE
+        <textarea
+          aria-label="Identity code"
+          value={identityCode}
+          onChange={(event) => setIdentityCode(event.target.value)}
+          rows={3}
+          required
+        />
+      </label>
+      <label className="field">
+        ROLE
+        <select
+          aria-label="Role"
+          value={role}
+          onChange={(event) =>
+            setRole(event.target.value as Exclude<ArgusRole, "MASTER">)
+          }
+        >
+          <option value="INSTRUCTOR">Instructor</option>
+          <option value="SUPPLY_OFFICER">Supply Officer</option>
+          <option value="SUPPLY_ASSISTANT">Supply Assistant</option>
+        </select>
+      </label>
+      <label className="field">
+        EXPIRES (OPTIONAL)
+        <input
+          type="date"
+          aria-label="Expires"
+          value={expiresAt}
+          onChange={(event) => setExpiresAt(event.target.value)}
+        />
+      </label>
+      {error && (
+        <div className="workflow-error" role="alert">
+          {error}
+        </div>
+      )}
+      <div className="modal-actions">
+        <button className="primary-button" type="submit" disabled={busy}>
+          Admit
+        </button>
+      </div>
+      {credentialCode && (
+        <>
+          <label className="field">
+            CREDENTIAL CODE FOR THIS PERSON
+            <textarea
+              readOnly
+              aria-label="Credential code"
+              value={credentialCode}
+              rows={3}
+            />
+          </label>
+          <div className="modal-actions">
+            <button type="button" onClick={() => void copy()}>
+              {copied ? "Credential code copied ✓" : "Copy credential code"}
+            </button>
+          </div>
+        </>
+      )}
+    </form>
+  );
+}
+function ComingPanel({
+  panel,
+  projection,
+  close,
+}: {
+  panel: Exclude<
+    Panel,
+    | null
+    | "review"
+    | "cadet"
+    | "issue"
+    | "return"
+    | "bundles"
+    | "needed"
+    | "roles"
+  >;
+  projection: ArgusAppProjection;
+  close: () => void;
+}) {
+  const title = {
+    roster: "Cadet roster",
+    import: "Import 24 cadets",
+    rollover: "Annual rollover preview",
+    diagnostics: "Repository diagnostics",
+  }[panel];
+  return (
+    <Drawer title={title} icon={<ShieldCheck />} close={close}>
+      {panel === "diagnostics" ? (
+        <>
+          <div
+            className={projection.integrity.healthy ? "validation" : "notice"}
+          >
+            <ShieldCheck />
+            <div>
+              <strong>
+                {projection.integrity.healthy
+                  ? "Repository healthy"
+                  : "Attention required"}
+              </strong>
+              <p>
+                {projection.integrity.issues.length} issues detected
+                non-destructively.
+              </p>
+            </div>
+          </div>
+          <div className="panel-rows">
+            <p>Orphan references: {projection.integrity.orphanReferences}</p>
+            <p>Projection errors: {projection.integrity.projectionErrors}</p>
+            <p>Migration warnings: {projection.integrity.migrationWarnings}</p>
+          </div>
+        </>
+      ) : (
+        <div className="notice">
+          <Activity />
+          <span>
+            <strong>Coming Later</strong>
+            <br />
+            This workflow remains visible but disabled until it can use the
+            authoritative repository command model.
+          </span>
+        </div>
+      )}
+    </Drawer>
+  );
+}
+function SettingsPanel({
+  value,
+  projection,
+  change,
+  wallet,
+  syncNow,
+  close,
+}: {
+  value: UserSettings;
+  projection: ArgusAppProjection;
+  change: (v: UserSettings) => void;
+  wallet: () => void;
+  syncNow: () => Promise<void>;
+  close: () => void;
+}) {
+  const set = <K extends keyof UserSettings>(k: K, v: UserSettings[K]) =>
+    change({ ...value, [k]: v });
+  const report = projection.integrity;
+  return (
+    <Drawer title="Settings" icon={<Settings />} close={close}>
+      <h3>Appearance</h3>
+      <label className="field">
+        THEME
+        <select
+          aria-label="Appearance"
+          value={value.theme}
+          onChange={(e) =>
+            set("theme", e.target.value as UserSettings["theme"])
+          }
+        >
+          <option value="system">System</option>
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+        </select>
+      </label>
+      <label className="field">
+        DENSITY
+        <select
+          aria-label="Density"
+          value={value.density}
+          onChange={(e) =>
+            set("density", e.target.value as UserSettings["density"])
+          }
+        >
+          <option value="comfortable">Comfortable</option>
+          <option value="compact">Compact</option>
+        </select>
+      </label>
+      <label className="field">
+        MOTION
+        <select
+          aria-label="Motion"
+          value={value.motion}
+          onChange={(e) =>
+            set("motion", e.target.value as UserSettings["motion"])
+          }
+        >
+          <option value="full">Full</option>
+          <option value="reduced">Reduced</option>
+        </select>
+      </label>
+      <label className="field">
+        TEXT SIZE
+        <select
+          aria-label="Text size"
+          value={value.textSize}
+          onChange={(e) =>
+            set("textSize", e.target.value as UserSettings["textSize"])
+          }
+        >
+          <option value="standard">Standard</option>
+          <option value="large">Large</option>
+        </select>
+      </label>
+      <label className="field">
+        DEFAULT SECTION
+        <select
+          aria-label="Default section"
+          value={value.defaultSection}
+          onChange={(e) => set("defaultSection", e.target.value as Tab)}
+        >
+          {nav.map((n) => (
+            <option key={n.id} value={n.id}>
+              {pageTitle(n.id)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <h3>Shared Synchronization</h3>
+      <div
+        className={projection.sync.mode === "remote" ? "validation" : "notice"}
+        role="status"
+      >
+        <Wifi />
+        <div>
+          <strong>
+            {projection.sync.mode === "remote"
+              ? "SHARED SYNC · CONNECTED"
+              : "LOCAL ONLY"}
+          </strong>
+          <p>
+            Pending: {projection.sync.outbox} · Conflicts:{" "}
+            {projection.sync.openConflicts}
+          </p>
+        </div>
+      </div>
+      <button onClick={() => void syncNow()}>Sync now</button>
+      <h3>BSV testnet</h3>
+      <button onClick={wallet}>Open Testnet Wallet Status</button>
+      <h3>Diagnostics</h3>
+      <div className={report.healthy ? "validation" : "notice"}>
+        <ShieldCheck />
+        <div>
+          <strong>
+            DATA INTEGRITY · {report.healthy ? "Healthy" : "Action required"}
+          </strong>
+          <p>
+            {report.orphanReferences} orphans · {report.projectionErrors}{" "}
+            projection errors · {report.migrationWarnings} migration warnings
+          </p>
+        </div>
+      </div>
+      <p>A.R.G.U.S. version {__APP_VERSION__}</p>
+      <button disabled>Replay Tutorial — Coming Later</button>
+    </Drawer>
+  );
+}
+function WalletStatusPanel({
+  provider,
+  close,
+}: {
+  provider: TestnetWalletStatusProvider;
+  close: () => void;
+}) {
+  const [status, setStatus] = useState<TestnetWalletStatus>(),
+    [error, setError] = useState(""),
+    [copied, setCopied] = useState(false),
+    [loading, setLoading] = useState(true),
+    [password, setPassword] = useState(""),
+    [confirm, setConfirm] = useState(""),
+    [failures, setFailures] = useState(0),
+    [backupPassword, setBackupPassword] = useState(""),
+    [recoveryFile, setRecoveryFile] = useState(""),
+    [recoveryPassword, setRecoveryPassword] = useState(""),
+    [recoveryAddress, setRecoveryAddress] = useState(""),
+    [recoveryDetails, setRecoveryDetails] = useState<{
+      address: string;
+      currentAddress?: string;
+      rollbackWarning: boolean;
+    }>(),
+    [replaceConfirmed, setReplaceConfirmed] = useState(false),
+    [rollbackConfirmed, setRollbackConfirmed] = useState(false);
+  const refresh = () => {
+    setLoading(true);
+    setError("");
+    provider
+      .getStatus()
+      .then(setStatus)
+      .catch((reason) =>
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Wallet status is unavailable.",
+        ),
+      )
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => {
+    let active = true;
+    provider
+      .getStatus()
+      .then((value) => {
+        if (active) setStatus(value);
+      })
+      .catch((reason) => {
+        if (active)
+          setError(
+            reason instanceof Error
+              ? reason.message
+              : "Wallet status is unavailable.",
+          );
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [provider]);
+  const attempt = async (kind: "create" | "unlock") => {
+    if (failures >= 5) {
+      setError(
+        "Too many failed unlock attempts. Wait and reopen the wallet panel.",
+      );
+      return;
+    }
+    const entered = password;
+    setPassword("");
+    setConfirm("");
+    setLoading(true);
+    try {
+      if (kind === "create" && entered !== confirm)
+        throw new Error("Wallet passwords do not match.");
+      const next = await provider[kind]?.(entered);
+      if (!next)
+        throw new Error(
+          "This wallet provider does not support that lifecycle operation.",
+        );
+      setStatus(next);
+      setFailures(0);
+      setError("");
+    } catch (reason) {
+      setFailures((value) => value + 1);
+      setError(
+        reason instanceof Error ? reason.message : "Wallet operation failed.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+  const copy = async () => {
+    if (!status?.receivingAddress) return;
+    await navigator.clipboard.writeText(status.receivingAddress);
+    setCopied(true);
+  };
+  const backup = async () => {
+    try {
+      if (!provider.exportBackup)
+        throw new Error("Backup is unavailable for this wallet provider.");
+      const contents = await provider.exportBackup(backupPassword);
+      setBackupPassword("");
+      const url = URL.createObjectURL(
+          new Blob([contents], { type: "application/vnd.argus.wallet+json" }),
+        ),
+        link = document.createElement("a");
+      link.href = url;
+      link.download = `argus-testnet-wallet-${new Date().toISOString().slice(0, 10)}.argus-wallet`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setError(
+        "Recovery package downloaded. Store it securely; A.R.G.U.S. cannot recover its password.",
+      );
+    } catch (reason) {
+      setBackupPassword("");
+      setError(reason instanceof Error ? reason.message : "Backup failed.");
+    }
+  };
+  const inspectRecovery = async () => {
+    try {
+      if (!provider.inspectBackup)
+        throw new Error("Recovery is unavailable for this wallet provider.");
+      const details = await provider.inspectBackup(
+        recoveryFile,
+        recoveryPassword,
+      );
+      setRecoveryDetails(details);
+      setRecoveryAddress("");
+      setError(
+        "Recovery package authenticated. Confirm the recovered address before installing it.",
+      );
+    } catch (reason) {
+      setRecoveryDetails(undefined);
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Recovery package could not be inspected.",
+      );
+    }
+  };
+  const installRecovery = async () => {
+    try {
+      if (!provider.recoverBackup || !recoveryDetails)
+        throw new Error("Inspect the recovery package first.");
+      const next = await provider.recoverBackup(
+        recoveryFile,
+        recoveryPassword,
+        {
+          address: recoveryAddress,
+          replaceExisting: Boolean(recoveryDetails.currentAddress),
+          currentWalletBackedUp: replaceConfirmed,
+          allowRollback: rollbackConfirmed,
+        },
+      );
+      setRecoveryPassword("");
+      setRecoveryFile("");
+      setRecoveryDetails(undefined);
+      setStatus(next);
+      setError("Organization testnet wallet recovered successfully.");
+    } catch (reason) {
+      setRecoveryPassword("");
+      setError(
+        reason instanceof Error ? reason.message : "Wallet recovery failed.",
+      );
+    }
+  };
+  const address = status?.receivingAddress;
+  return (
+    <Drawer
+      title="Organization Testnet Wallet"
+      icon={<KeyRound />}
+      close={close}
+    >
+      <div className="notice" role="status">
+        <ShieldCheck />
+        <span>
+          <strong>BSV TESTNET · MAINNET IMPOSSIBLE</strong>
+          <br />
+          {status?.mode === "EMBEDDED"
+            ? "Encrypted organization wallet"
+            : status?.mode === "LIVE"
+              ? "External BRC-100 testnet wallet"
+              : status?.mode === "MOCK"
+                ? "MOCK TEST DATA"
+                : "Wallet unconfigured"}
+        </span>
+      </div>
+      {error && (
+        <p role={error.includes("downloaded") ? "status" : "alert"}>{error}</p>
+      )}
+      {status?.requiresSetup && (
+        <section className="wallet-lifecycle">
+          <h3>Create organization testnet wallet</h3>
+          <p>
+            This creates a testnet-only spending key for audit publication. It
+            is separate from user passwords and signing credentials.
+          </p>
+          <div className="notice">
+            <ShieldCheck />
+            <span>
+              Before creation, choose a unique strong password and plan secure
+              recovery-package storage. Forgotten passwords cannot be recovered.
+            </span>
+          </div>
+          <label className="field">
+            WALLET PASSWORD
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </label>
+          <label className="field">
+            CONFIRM PASSWORD
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+            />
+          </label>
+          <button
+            className="primary-button"
+            disabled={loading}
+            onClick={() => void attempt("create")}
+          >
+            {loading ? "Creating…" : "Create encrypted testnet wallet"}
+          </button>
+        </section>
+      )}
+      {status?.requiresUnlock && (
+        <section className="wallet-lifecycle">
+          <h3>Wallet locked</h3>
+          <p>Known public address</p>
+          <code>{address}</code>
+          <label className="field">
+            WALLET PASSWORD
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </label>
+          <button
+            className="primary-button"
+            disabled={loading || failures >= 5}
+            onClick={() => void attempt("unlock")}
+          >
+            {loading ? "Unlocking…" : "Unlock wallet"}
+          </button>
+          <small>
+            {Math.max(0, 5 - failures)} attempts remaining in this panel.
+          </small>
+        </section>
+      )}
+      {status?.connection === "ERROR" && (
+        <section>
+          <h3>Testnet service unavailable</h3>
+          <p>
+            The known wallet address is preserved. This is separate from a
+            password or vault failure.
+          </p>
+          {address && <code>{address}</code>}
+          <button disabled={loading} onClick={refresh}>
+            Retry network
+          </button>
+        </section>
+      )}
+      {status?.connection === "CONNECTED" && address && (
+        <section className="wallet-lifecycle">
+          <h3>Connected</h3>
+          <label className="field">
+            PUBLIC TESTNET FAUCET ADDRESS
+            <input readOnly value={address} />
+          </label>
+          <p>
+            <strong>Full testnet address</strong>
+            <br />
+            <code>{address}</code>
+            <br />
+            <small>
+              {address.slice(0, 8)}…{address.slice(-8)}
+            </small>
+          </p>
+          <button onClick={() => void copy()}>
+            {copied ? "Address copied ✓" : "Copy address"}
+          </button>
+          <div className="record-stats">
+            <Summary
+              label="Confirmed balance"
+              value={`${(status.balanceSatoshis ?? 0).toLocaleString()} sat`}
+              detail="Spendable testnet balance"
+            />
+            <Summary
+              label="Unconfirmed"
+              value={
+                status.unconfirmedBalanceSatoshis === undefined
+                  ? "Unavailable"
+                  : `${status.unconfirmedBalanceSatoshis.toLocaleString()} sat`
+              }
+              detail={
+                status.unconfirmedBalanceSatoshis === undefined
+                  ? "Provider does not separate it"
+                  : "Seen but not yet confirmed"
+              }
+            />
+          </div>
+          <div className="split-actions">
+            <button onClick={refresh}>Refresh</button>
+            <button
+              onClick={() => {
+                provider.lock?.();
+                refresh();
+              }}
+            >
+              Lock
+            </button>
+          </div>
+          <h3>Encrypted recovery package</h3>
+          <p>
+            The package never contains a plaintext WIF, mnemonic, or password.
+            A.R.G.U.S. cannot recover a forgotten backup password.
+          </p>
+          <label className="field">
+            BACKUP PASSWORD
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={backupPassword}
+              onChange={(e) => setBackupPassword(e.target.value)}
+            />
+          </label>
+          <button onClick={() => void backup()}>
+            Download .argus-wallet backup
+          </button>
+        </section>
+      )}
+      {!status?.requiresSetup &&
+        !status?.requiresUnlock &&
+        status?.connection !== "CONNECTED" &&
+        status?.connection !== "ERROR" && (
+          <>
+            <h3>No wallet connected</h3>
+            <p>
+              Choose an explicit embedded-testnet or external-brc100-testnet
+              mode. No mock fallback will be used.
+            </p>
+            <button disabled={loading} onClick={refresh}>
+              {loading ? "Checking…" : "Retry"}
+            </button>
+          </>
+        )}
+      {provider.inspectBackup && provider.recoverBackup && (
+        <details className="panel-rows">
+          <summary>
+            <strong>Import recovery package</strong>
+            <small>For an empty device or explicit wallet replacement</small>
+          </summary>
+          <label className="field">
+            RECOVERY FILE
+            <input
+              type="file"
+              accept=".argus-wallet,application/json"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void file.text().then(setRecoveryFile);
+              }}
+            />
+          </label>
+          <label className="field">
+            RECOVERY PASSWORD
+            <input
+              type="password"
+              autoComplete="off"
+              value={recoveryPassword}
+              onChange={(event) => setRecoveryPassword(event.target.value)}
+            />
+          </label>
+          <button
+            disabled={!recoveryFile || !recoveryPassword}
+            onClick={() => void inspectRecovery()}
+          >
+            Inspect recovery package
+          </button>
+          {recoveryDetails && (
+            <div className="notice" role="status">
+              <ShieldCheck />
+              <span>
+                <strong>Recovered address</strong>
+                <br />
+                <code>{recoveryDetails.address}</code>
+                {recoveryDetails.currentAddress && (
+                  <>
+                    <br />
+                    <strong>Current address</strong>
+                    <br />
+                    <code>{recoveryDetails.currentAddress}</code>
+                  </>
+                )}
+                {recoveryDetails.rollbackWarning && (
+                  <>
+                    <br />
+                    <strong>
+                      WARNING: this backup is older than the local wallet.
+                    </strong>
+                  </>
+                )}
+              </span>
+            </div>
+          )}
+          {recoveryDetails && (
+            <>
+              <label className="field">
+                TYPE RECOVERED ADDRESS
+                <input
+                  value={recoveryAddress}
+                  onChange={(event) => setRecoveryAddress(event.target.value)}
+                  autoComplete="off"
+                />
+              </label>
+              {recoveryDetails.currentAddress && (
+                <label className="threshold-toggle">
+                  <input
+                    type="checkbox"
+                    checked={replaceConfirmed}
+                    onChange={(event) =>
+                      setReplaceConfirmed(event.target.checked)
+                    }
+                  />
+                  I exported or accept losing access to the current wallet and
+                  explicitly authorize replacement.
+                </label>
+              )}
+              {recoveryDetails.rollbackWarning && (
+                <label className="threshold-toggle">
+                  <input
+                    type="checkbox"
+                    checked={rollbackConfirmed}
+                    onChange={(event) =>
+                      setRollbackConfirmed(event.target.checked)
+                    }
+                  />
+                  I understand this is an older backup and explicitly authorize
+                  rollback.
+                </label>
+              )}
+              <button
+                className="primary-button"
+                disabled={
+                  recoveryAddress !== recoveryDetails.address ||
+                  Boolean(
+                    recoveryDetails.currentAddress && !replaceConfirmed,
+                  ) ||
+                  Boolean(recoveryDetails.rollbackWarning && !rollbackConfirmed)
+                }
+                onClick={() => void installRecovery()}
+              >
+                Recover organization wallet
+              </button>
+            </>
+          )}
+        </details>
+      )}
+      <h3>Recent A.R.G.U.S. transactions</h3>
+      {status?.recentTransactions.length ? (
+        status.recentTransactions.map((transaction) => (
+          <p key={transaction.transactionId}>
+            <a
+              href={`https://test.whatsonchain.com/tx/${transaction.transactionId}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <code>{transaction.transactionId}</code>
+            </a>
+            <br />
+            {transaction.status}
+            {transaction.timestamp && (
+              <>
+                {" "}
+                ·{" "}
+                <time dateTime={transaction.timestamp}>
+                  {new Date(transaction.timestamp).toLocaleString()}
+                </time>
+              </>
+            )}
+          </p>
+        ))
+      ) : (
+        <p>No wallet transactions reported.</p>
+      )}
+      <p className="safe-note">
+        <ShieldCheck />
+        Audit publication is successful only after the broadcaster returns a
+        real 64-character TXID.
+      </p>
+    </Drawer>
+  );
+}
+function AddItem({
+  inventory,
+  close,
+  save,
+}: {
+  inventory: InventoryProjection[];
+  close: () => void;
+  save: (
+    v: Omit<
+      InventoryProjection,
+      "entityId" | "version" | "appliedEventIds" | "issued"
+    >,
+  ) => void;
+}) {
+  const [name, setName] = useState(""),
+    [category, setCategory] = useState(""),
+    [variant, setVariant] = useState("No variant"),
+    [niin, setNiin] = useState("Not assigned"),
+    [onHand, setOnHand] = useState(0),
+    [threshold, setThreshold] = useState(false),
+    [reorderAt, setReorderAt] = useState(0),
+    [countIncrement, setIncrement] = useState(1);
+  const duplicate = inventory.find(
+    (i) =>
+      (matchesSearch(name, i.name) &&
+        name.trim().toLowerCase() === i.name.trim().toLowerCase()) ||
+      (niin !== "Not assigned" &&
+        niin.replace(/\W/g, "").toLowerCase() ===
+          i.niin.replace(/\W/g, "").toLowerCase()),
+  );
+  return (
+    <div className="modal-backdrop">
+      <form
+        className="modal"
+        aria-label="Add inventory item"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save({
+            name: name.trim(),
+            category: category.trim(),
+            variant: variant.trim(),
+            niin: niin.trim(),
+            onHand,
+            reorderAt: threshold ? reorderAt : undefined,
+            countIncrement,
+            active: true,
+          });
+        }}
+      >
+        <div className="modal-heading">
+          <div>
+            <p className="eyebrow">INVENTORY CONTROL</p>
+            <h2>Add a new item</h2>
+          </div>
+          <button type="button" aria-label="Close add item" onClick={close}>
+            <X />
+          </button>
+        </div>
+        <p>Create an authoritative inventory variant with a signed event.</p>
+        {duplicate && (
+          <div className="duplicate-warning" role="alert">
+            <strong>Possible duplicate</strong>
+            <span>
+              {duplicate.name} · {duplicate.variant} · {duplicate.niin}
+            </span>
+          </div>
+        )}
+        <div className="form-grid">
+          <label>
+            Item name
+            <input
+              required
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </label>
+          <label>
+            Category
+            <input
+              required
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+            />
+          </label>
+          <label>
+            Size or variant
+            <input
+              value={variant}
+              onChange={(e) => setVariant(e.target.value)}
+            />
+          </label>
+          <label>
+            CDMIS NIIN
+            <input value={niin} onChange={(e) => setNiin(e.target.value)} />
+          </label>
+          <label>
+            Initial on hand
+            <input
+              type="number"
+              min="0"
+              value={onHand}
+              onChange={(e) => setOnHand(Number(e.target.value))}
+            />
+          </label>
+          <label>
+            Count increment
+            <input
+              type="number"
+              min="1"
+              value={countIncrement}
+              onChange={(e) =>
+                setIncrement(Math.max(1, Number(e.target.value)))
+              }
+            />
+          </label>
+          <label className="threshold-toggle">
+            <input
+              type="checkbox"
+              aria-label="Enable low-stock warning"
+              checked={threshold}
+              onChange={(e) => setThreshold(e.target.checked)}
+            />
+            Enable low-stock warning
+          </label>
+          {threshold && (
+            <label>
+              Low-stock threshold
+              <input
+                aria-label="Low-stock threshold"
+                type="number"
+                min="0"
+                value={reorderAt}
+                onChange={(e) => setReorderAt(Number(e.target.value))}
+              />
+            </label>
+          )}
+        </div>
+        <div className="modal-actions">
+          <button type="button" onClick={close}>
+            Cancel
+          </button>
+          <button className="primary-button" type="submit">
+            Add item
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}

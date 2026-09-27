@@ -2,6 +2,8 @@
 
 **Asset Readiness & Gear Utility System** is a phone-first inventory and uniform-issuance application designed for Bethel Navy NJROTC supply operations.
 
+This repository, [Jonathan-A-White/argus](https://github.com/Jonathan-A-White/argus), is a fork of [lukeaverywhite-alt/Supply-counter-](https://github.com/lukeaverywhite-alt/Supply-counter-), live at <https://jonathan-a-white.github.io/argus/>.
+
 This repository currently contains the first functional front-end prototype. It uses fictional demonstration records only; no uploaded roster names or unverified inventory quantities are included.
 
 ## Current prototype
@@ -25,9 +27,7 @@ npm install
 npm run dev
 ```
 
-GitHub Pages hosts the A.R.G.U.S. client only. Shared organizational synchronization requires a separately deployed A.R.G.U.S. encrypted relay. Run `npm run relay:dev` for local development and see [relay deployment](docs/SYNC_RELAY_DEPLOYMENT.md); mock sync never leaves one device.
-
-Operational clients can compose `DistributedAppController` with `DurableEncryptedEventSyncProvider`, distinct enrolled Web Crypto identities, signed authority credentials, and organization epoch keys. The adapter durably prepares ciphertext before sending and reuses it after ambiguous failures. A deployed relay and explicit enrollment package are still required; the static site never invents credentials or silently falls back to shared plaintext.
+GitHub Pages hosts the A.R.G.U.S. client only. Devices share one history through the BSV testnet chain (the next epic); mock sync never leaves one device.
 
 ## Checks
 
@@ -57,7 +57,7 @@ The build uses relative asset paths so the installed app, manifest, icon, and se
 
 ## Product boundary
 
-Authentication, normal-runtime encrypted synchronization, production roster imports, backend account persistence, and authoritative audit storage require the next operational phase. The current local prototype intentionally does not claim to provide those security guarantees. The separately tested encrypted relay is protocol infrastructure, not an account service and not proof that the normal application is operationally ready.
+Authentication, normal-runtime encrypted synchronization, production roster imports, backend account persistence, and authoritative audit storage require the next operational phase. The current local prototype intentionally does not claim to provide those security guarantees. The separately tested encrypted transport protocol is not an account service and not proof that the normal application is operationally ready.
 
 ## BSV integration status
 
@@ -80,7 +80,7 @@ See [the shared-counting milestone](docs/SHARED_COUNTING_MILESTONE.md), [the BSV
 3. Open **Settings → Open Testnet Wallet Status**, approve the wallet capability request, and copy the displayed **Public testnet faucet address**.
 4. Send only faucet testnet coins to that address. Never send mainnet BSV; the app rejects a mainnet wallet.
 
-The app never stores a seed phrase or private key. The wallet remains the signing/spending authority. Future password authentication should issue per-user application credentials and encrypted synchronization grants, not become wallet custody: operational data already uses the repository/event/encrypted-relay boundaries described above. A faucet payment is not automatically proof that an injected wallet has indexed the output; confirm the test balance in the wallet before publishing a data transaction.
+The app never stores a seed phrase or private key. The wallet remains the signing/spending authority. Future password authentication should issue per-user application credentials and encrypted synchronization grants, not become wallet custody: operational data already uses the repository/event/encrypted-transport boundaries described above. A faucet payment is not automatically proof that an injected wallet has indexed the output; confirm the test balance in the wallet before publishing a data transaction.
 
 ## Stage 2 distributed proof
 
@@ -106,6 +106,6 @@ Stage 3B adds atomic multi-SKU Issue and Return transactions, exact bundle mappi
 
 ## Stage 3C.5 stabilization status
 
-Stage 3C.5 adds failure-safe repository transaction serialization, persistent **development-only** epoch enrollment, hardened relay validation/storage behavior, expanded integrity diagnostics, structural CSS validation, and safer service-worker navigation/asset/update handling. The relay remains separately deployed, single-instance development/small-unit infrastructure. Its bearer token is only a relay-access credential and is not an encryption key, signing identity, or production account.
+Stage 3C.5 added failure-safe repository transaction serialization, persistent **development-only** epoch enrollment, hardened transport validation/storage behavior, expanded integrity diagnostics, structural CSS validation, and safer service-worker navigation/asset/update handling. That stage's synchronization transport was separately deployed, single-instance development/small-unit infrastructure, since removed by decision of Luke (2026-09-27) in favor of the BSV testnet chain; its bearer token was only a transport-access credential and was not an encryption key, signing identity, or production account.
 
-A real HTTP integration test now proves that two independently constructed, explicitly enrolled clients can publish and decrypt multiple ciphertext event types without relay plaintext. This does **not** make the normal React controller production-ready: its remote runtime selection/enrollment UI and distinct-actor credential distribution are not complete. Browser visual/PWA regression coverage and the complete offline final-unit conflict gate also remain open. Accordingly, this repository is **NOT READY FOR STAGE 4A**. See [the Stage 3C.5 report](docs/STAGE_3C_5_STABILIZATION.md) and [ADR 008](docs/adr/008-stage-3c-5-application-stabilization.md).
+A real HTTP integration test proved that two independently constructed, explicitly enrolled clients could publish and decrypt multiple ciphertext event types without transport plaintext. This did **not** make the normal React controller production-ready: its remote runtime selection/enrollment UI and distinct-actor credential distribution were not complete. Browser visual/PWA regression coverage and the complete offline final-unit conflict gate also remain open. Accordingly, this repository is **NOT READY FOR STAGE 4A**. See [the Stage 3C.5 report](docs/STAGE_3C_5_STABILIZATION.md) and [ADR 008](docs/adr/008-stage-3c-5-application-stabilization.md).

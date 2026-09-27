@@ -4,9 +4,18 @@ import { assertRepositoryInvariants } from '../integrity'
 import type { EncryptedArgusEnvelope } from '../private-sync/types'
 
 export const REPOSITORY_SCHEMA_VERSION = 10
-export const INDEXED_DB_VERSION = 4
+export const INDEXED_DB_VERSION = 6
 export const REPLICA_STORE_NAME = 'replica'
 export const REPLICA_STATE_KEY = 'state'
+export const CHAIN_HEADERS_STORE_NAME = 'chainHeaders'
+export const CHAIN_EVENTS_STORE_NAME = 'chainEvents'
+
+/** Idempotent: safe to call from any connection's onupgradeneeded, in any open order. */
+export function ensureArgusObjectStores(db: IDBDatabase) {
+  if (!db.objectStoreNames.contains(REPLICA_STORE_NAME)) db.createObjectStore(REPLICA_STORE_NAME)
+  if (!db.objectStoreNames.contains(CHAIN_HEADERS_STORE_NAME)) db.createObjectStore(CHAIN_HEADERS_STORE_NAME)
+  if (!db.objectStoreNames.contains(CHAIN_EVENTS_STORE_NAME)) db.createObjectStore(CHAIN_EVENTS_STORE_NAME)
+}
 export type RemoteSyncMetadata = { providerId: string; cursor?: string; lastAttemptAt?: string; lastSuccessAt?: string; lastError?: string; state: 'DISCONNECTED'|'CONNECTING'|'SYNCHRONIZING'|'SYNCHRONIZED'|'DEGRADED'|'FAILED' }
 export type QuarantinedEnvelope = { eventId: string; reason: string; receivedAt: string }
 export type PrivateSyncOutboxRecord = { providerId: string; eventId: string; envelope: EncryptedArgusEnvelope }
@@ -57,18 +66,12 @@ export class IndexedDbRepository implements ArgusRepository {
         settled = true
         reject(new Error(message, { cause }))
       }
-      request.onupgradeneeded = event => {
+      request.onupgradeneeded = () => {
         const db = request.result
-        const oldVersion = event.oldVersion
         request.transaction?.addEventListener('abort', () => {
           upgradeAborted = true
         })
-
-        // Version 1 introduced the replica store. Never recreate an existing
-        // store: future physical schema migrations must also be version-gated.
-        if (oldVersion < 1 && !db.objectStoreNames.contains(REPLICA_STORE_NAME)) db.createObjectStore(REPLICA_STORE_NAME)
-        // Defensively repair databases created by an incomplete older release.
-        if (!db.objectStoreNames.contains(REPLICA_STORE_NAME)) db.createObjectStore(REPLICA_STORE_NAME)
+        ensureArgusObjectStores(db)
       }
       request.onblocked = () => fail('A.R.G.U.S. needs to update its local database, but another tab is still using the old version. Close other A.R.G.U.S. tabs and reload. Your existing data was preserved.')
       request.onerror = () => fail(

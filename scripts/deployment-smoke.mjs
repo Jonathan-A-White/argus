@@ -3,7 +3,7 @@ import { createServer } from 'node:http'
 import { extname, join, normalize } from 'node:path'
 
 const dist = join(process.cwd(), 'dist')
-const mountPath = '/Supply-counter-/'
+const mountPath = '/argus/'
 const requiredFiles = ['index.html', 'manifest.webmanifest', 'sw.js', 'argus-mark.svg']
 
 for (const file of requiredFiles) {

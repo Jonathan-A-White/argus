@@ -5,6 +5,15 @@ export const DEFAULT_SETTINGS: UserSettings = { theme: 'system', density: 'comfo
 export interface SettingsStorage { load(): UserSettings; save(value: UserSettings): void }
 export class LocalSettingsStorage implements SettingsStorage {
   constructor(private storage: Pick<Storage, 'getItem'|'setItem'> = localStorage) {}
-  load() { const raw = this.storage.getItem(SETTINGS_KEY); if (!raw) return { ...DEFAULT_SETTINGS }; try { return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } as UserSettings } catch { return { ...DEFAULT_SETTINGS } } }
+  load() {
+    const raw = this.storage.getItem(SETTINGS_KEY)
+    if (!raw) return { ...DEFAULT_SETTINGS }
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>
+      const value = { ...DEFAULT_SETTINGS }
+      for (const key of Object.keys(DEFAULT_SETTINGS) as Array<keyof UserSettings>) if (key in parsed) (value[key] as unknown) = parsed[key]
+      return value
+    } catch { return { ...DEFAULT_SETTINGS } }
+  }
   save(value: UserSettings) { this.storage.setItem(SETTINGS_KEY, JSON.stringify(value)) }
 }

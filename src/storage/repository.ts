@@ -4,17 +4,19 @@ import { assertRepositoryInvariants } from '../integrity'
 import type { EncryptedArgusEnvelope } from '../private-sync/types'
 
 export const REPOSITORY_SCHEMA_VERSION = 10
-export const INDEXED_DB_VERSION = 6
+export const INDEXED_DB_VERSION = 7
 export const REPLICA_STORE_NAME = 'replica'
 export const REPLICA_STATE_KEY = 'state'
 export const CHAIN_HEADERS_STORE_NAME = 'chainHeaders'
 export const CHAIN_EVENTS_STORE_NAME = 'chainEvents'
+export const EPOCH_KEYS_STORE_NAME = 'epochKeys'
 
 /** Idempotent: safe to call from any connection's onupgradeneeded, in any open order. */
 export function ensureArgusObjectStores(db: IDBDatabase) {
   if (!db.objectStoreNames.contains(REPLICA_STORE_NAME)) db.createObjectStore(REPLICA_STORE_NAME)
   if (!db.objectStoreNames.contains(CHAIN_HEADERS_STORE_NAME)) db.createObjectStore(CHAIN_HEADERS_STORE_NAME)
   if (!db.objectStoreNames.contains(CHAIN_EVENTS_STORE_NAME)) db.createObjectStore(CHAIN_EVENTS_STORE_NAME)
+  if (!db.objectStoreNames.contains(EPOCH_KEYS_STORE_NAME)) db.createObjectStore(EPOCH_KEYS_STORE_NAME)
 }
 export type RemoteSyncMetadata = { providerId: string; cursor?: string; lastAttemptAt?: string; lastSuccessAt?: string; lastError?: string; state: 'DISCONNECTED'|'CONNECTING'|'SYNCHRONIZING'|'SYNCHRONIZED'|'DEGRADED'|'FAILED' }
 export type QuarantinedEnvelope = { eventId: string; reason: string; receivedAt: string }

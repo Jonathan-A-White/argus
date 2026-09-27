@@ -26,7 +26,15 @@ export async function decryptEvent(input: unknown, recipientIdentity: string, ve
   if (!(await verifier.verify(canonicalize(signed), signature, envelope.senderPublicIdentity))) throw new Error('Invalid encrypted envelope sender signature.')
   let plaintext: ArrayBuffer
   const header = { protocol: envelope.protocol, protocolVersion: envelope.protocolVersion, organizationId: envelope.organizationId, eventId: envelope.eventId, epochId: envelope.epochId, senderPublicIdentity: envelope.senderPublicIdentity, algorithm: envelope.algorithm, nonce: envelope.nonce }
-  try { plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(envelope.nonce), additionalData: encoder.encode(authenticatedHeader(header)), tagLength: 128 }, await keys.keyFor(recipientIdentity, envelope.epochId), base64ToBytes(ciphertext)) }
+  let key: CryptoKey
+  try { key = await keys.keyFor(recipientIdentity, envelope.epochId) }
+  catch (error) {
+    // NO_EPOCH_KEY is a distinct, quarantine-worthy condition (this device has no grant yet), not a
+    // ciphertext/key mismatch; every other keyFor failure keeps the generic message below.
+    if (error instanceof Error && error.message.startsWith('NO_EPOCH_KEY')) throw error
+    throw new Error('Authenticated envelope decryption failed.', { cause: error })
+  }
+  try { plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(envelope.nonce), additionalData: encoder.encode(authenticatedHeader(header)), tagLength: 128 }, key, base64ToBytes(ciphertext)) }
   catch { throw new Error('Authenticated envelope decryption failed.') }
   const event = parseSignedEvent(JSON.parse(decoder.decode(plaintext)))
   if (event.eventId !== envelope.eventId || event.organizationId !== envelope.organizationId || event.actorPublicIdentity !== envelope.senderPublicIdentity) throw new Error('Envelope metadata does not match its signed event.')

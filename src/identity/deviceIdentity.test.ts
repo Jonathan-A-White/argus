@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { AuthorizationService, ROLE_PERMISSIONS, issueCredential } from '../auth/authorization'
+import { encodeCredentialCode, encodeIdentityCode } from './codes'
 import { WebCryptoIdentityProvider } from './identity'
 import {
   DEVICE_IDENTITY_STORAGE_KEY,
+  admitDeviceWithCredential,
+  admitPerson,
   createJoiningDeviceIdentity,
   createMasterDeviceIdentity,
+  knownPeople,
   loadDeviceIdentityRecord,
   unlockDeviceIdentity,
 } from './deviceIdentity'
@@ -78,5 +82,99 @@ describe('device identity persistence', () => {
     expect(loadDeviceIdentityRecord(storage)).toBeUndefined()
     const record = await createMasterDeviceIdentity('correct horse battery 7', storage)
     await expect(unlockDeviceIdentity(record, 'wrong passphrase 7')).rejects.toThrow('incorrect or')
+  })
+
+  it('unlocks a Master device with a usable authority signer for admitting people', async () => {
+    const storage = fakeStorage()
+    const record = await createMasterDeviceIdentity('correct horse battery 7', storage)
+    const unlocked = await unlockDeviceIdentity(record, 'correct horse battery 7')
+    expect(unlocked.authoritySigner).toBeDefined()
+    expect(await unlocked.authoritySigner!.getPublicIdentity()).toBe(record.authorityKey!.publicIdentity)
+  })
+})
+
+describe('admission', () => {
+  const password = 'correct horse battery 7'
+
+  it('admits a joining device with a role, and the joining device unlocks into that role after pasting the credential', async () => {
+    const masterStorage = fakeStorage()
+    const masterRecord = await createMasterDeviceIdentity(password, masterStorage)
+    const master = await unlockDeviceIdentity(masterRecord, password)
+
+    const joiningStorage = fakeStorage()
+    const joiningRecord = await createJoiningDeviceIdentity(password, joiningStorage)
+    const joining = await unlockDeviceIdentity(joiningRecord, password)
+    const identityCode = await encodeIdentityCode(joining.publicIdentity)
+
+    const admitted = await admitPerson(masterRecord, master.authoritySigner!, identityCode, 'SUPPLY_OFFICER', undefined, masterStorage)
+    expect(knownPeople(admitted.record)).toEqual([
+      expect.objectContaining({ publicIdentity: master.publicIdentity, role: 'MASTER', you: true }),
+      expect.objectContaining({ publicIdentity: joining.publicIdentity, role: 'SUPPLY_OFFICER', you: false }),
+    ])
+
+    const { record: updatedJoiningRecord, authorization } = await admitDeviceWithCredential(joiningRecord, joining.identity, admitted.credentialCode, joiningStorage)
+    expect(updatedJoiningRecord.role).toBe('SUPPLY_OFFICER')
+    expect(updatedJoiningRecord.pinnedAuthority).toBe(await master.authoritySigner!.getPublicIdentity())
+    expect(() => authorization.require(joining.publicIdentity, 'inventory.issue')).not.toThrow()
+
+    const rehydrated = await unlockDeviceIdentity(updatedJoiningRecord, password)
+    expect(rehydrated.role).toBe('SUPPLY_OFFICER')
+    expect(knownPeople(updatedJoiningRecord)).toEqual([
+      expect.objectContaining({ publicIdentity: joining.publicIdentity, role: 'SUPPLY_OFFICER', you: true }),
+      expect.objectContaining({ publicIdentity: await master.authoritySigner!.getPublicIdentity(), role: 'MASTER', you: false }),
+    ])
+  })
+
+  it('refuses a credential signed by a different, unrelated authority key', async () => {
+    const joiningStorage = fakeStorage()
+    const joiningRecord = await createJoiningDeviceIdentity(password, joiningStorage)
+    const joining = await unlockDeviceIdentity(joiningRecord, password)
+
+    const impostorAuthority = await WebCryptoIdentityProvider.create()
+    const forgedCredential = await issueCredential(impostorAuthority, {
+      subjectPublicIdentity: joining.publicIdentity,
+      role: 'SUPPLY_OFFICER',
+      permissions: [...ROLE_PERMISSIONS.SUPPLY_OFFICER],
+      issuedAt: new Date().toISOString(),
+    })
+    const forgedCode = await encodeCredentialCode({ ...forgedCredential, issuedBy: 'p256:someone-else' })
+
+    await expect(admitDeviceWithCredential(joiningRecord, joining.identity, forgedCode, joiningStorage)).rejects.toThrow('Invalid credential signature.')
+  })
+
+  it('pins the admitting Master as this device\'s root, and refuses a later valid credential from a different root naming the mismatch', async () => {
+    const masterAStorage = fakeStorage()
+    const masterARecord = await createMasterDeviceIdentity(password, masterAStorage)
+    const masterA = await unlockDeviceIdentity(masterARecord, password)
+
+    const masterBStorage = fakeStorage()
+    const masterBRecord = await createMasterDeviceIdentity(password, masterBStorage)
+    const masterB = await unlockDeviceIdentity(masterBRecord, password)
+
+    const joiningStorage = fakeStorage()
+    const joiningRecord = await createJoiningDeviceIdentity(password, joiningStorage)
+    const joining = await unlockDeviceIdentity(joiningRecord, password)
+    const identityCode = await encodeIdentityCode(joining.publicIdentity)
+
+    const admittedByA = await admitPerson(masterARecord, masterA.authoritySigner!, identityCode, 'INSTRUCTOR', undefined, masterAStorage)
+    const { record: pinnedRecord } = await admitDeviceWithCredential(joiningRecord, joining.identity, admittedByA.credentialCode, joiningStorage)
+    expect(pinnedRecord.pinnedAuthority).toBe(await masterA.authoritySigner!.getPublicIdentity())
+
+    const admittedByB = await admitPerson(masterBRecord, masterB.authoritySigner!, identityCode, 'INSTRUCTOR', undefined, masterBStorage)
+    await expect(admitDeviceWithCredential(pinnedRecord, joining.identity, admittedByB.credentialCode, joiningStorage)).rejects.toThrow(await masterA.authoritySigner!.getPublicIdentity())
+  })
+
+  it('refuses a tampered credential code', async () => {
+    const masterStorage = fakeStorage()
+    const masterRecord = await createMasterDeviceIdentity(password, masterStorage)
+    const master = await unlockDeviceIdentity(masterRecord, password)
+    const joiningStorage = fakeStorage()
+    const joiningRecord = await createJoiningDeviceIdentity(password, joiningStorage)
+    const joining = await unlockDeviceIdentity(joiningRecord, password)
+    const identityCode = await encodeIdentityCode(joining.publicIdentity)
+
+    const admitted = await admitPerson(masterRecord, master.authoritySigner!, identityCode, 'SUPPLY_ASSISTANT', undefined, masterStorage)
+    const tampered = `${admitted.credentialCode.slice(0, -1)}${admitted.credentialCode.at(-1) === '0' ? '1' : '0'}`
+    await expect(admitDeviceWithCredential(joiningRecord, joining.identity, tampered, joiningStorage)).rejects.toThrow('damaged')
   })
 })

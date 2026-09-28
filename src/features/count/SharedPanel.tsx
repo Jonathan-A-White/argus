@@ -114,6 +114,7 @@ export function SharedPanel({ session, variant, actor, canCorrect, memberName, c
                   )}
                 </strong>
                 {badge && <em className={`status-badge ${badge.tone}`}>{badge.label}</em>}
+                {observation.corrections?.some(correction => correction.late) && <em className="status-badge danger">Late correction</em>}
                 {mine && canCorrect && countsTowardTotal(observation) && correcting !== observation.eventId && (
                   <button
                     type="button"

@@ -135,3 +135,19 @@
   .count-picker { padding: 20px 22px; }
   .count-start { padding: 28px; }
 }
+
+/* ---------- approval lifecycle (spec §13) ---------- */
+.shared-count .count-meta .count-lifecycle { display: inline-flex; margin-right: 6px; vertical-align: middle; }
+.count-callout p + p { margin-top: 4px; }
+.count-finalized .count-summary-head .status-badge { display: inline-flex; margin-top: 6px; }
+.count-history { margin-bottom: 18px; }
+.count-history > summary { min-height: 48px; display: flex; align-items: center; padding: 0 16px; cursor: pointer; font-size: 13px; font-weight: 700; color: var(--color-text-secondary); }
+.count-history ul { margin: 0; padding: 0 16px 12px; list-style: none; }
+.count-history li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--color-border); }
+.count-history li > span { min-width: 0; }
+.count-history li b { display: block; font-size: 13px; }
+.count-history li small { display: block; margin-top: 2px; font-size: 11px; color: var(--color-text-muted); }
+.count-assign { margin: 8px 0 12px; }
+.count-assign > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font-size: 13px; font-weight: 700; color: var(--color-text-secondary); }
+.count-assign > p { margin: 4px 0 8px; font-size: 12px; color: var(--color-text-muted); }
+.count-assign select { width: 100%; min-height: 44px; font-size: 16px; background: var(--color-bg-input); color: var(--color-text-primary); }

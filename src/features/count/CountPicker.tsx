@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { AlertTriangle, Boxes, Search, X } from 'lucide-react'
 import type { ArgusAppProjection } from '../../distributed/appIntegration'
 import type { CountSessionProjection } from '../../distributed/types'
-import { matchesSearch } from '../../domain'
+import { matchesItemSearch } from '../../domain'
 
 type Props = {
   projection: ArgusAppProjection
@@ -13,10 +13,12 @@ type Props = {
   onSelectCatalog: (catalogId: string | undefined) => void
   onSelectVariant: (itemId: string) => void
   notify: (message: string) => void
+  /** "Assigned to you" / "Assigned to Cadet Lee" for a category, when the count assigns categories. */
+  assignedLabel?: (category: string) => string | undefined
 }
 
 /** Step 1 of counting: find the catalog item, then tap the size on the shelf in front of you. */
-export function CountPicker({ projection, session, catalogId, itemId, canCreateSizes, onSelectCatalog, onSelectVariant, notify }: Props) {
+export function CountPicker({ projection, session, catalogId, itemId, canCreateSizes, onSelectCatalog, onSelectVariant, notify, assignedLabel }: Props) {
   const [query, setQuery] = useState('')
   const activeVariants = (id: string) => projection.inventory.filter(item => item.catalogId === id && item.active)
   const countedFor = (id: string) => activeVariants(id).reduce((sum, item) => sum + (session.totals[item.entityId] ?? 0), 0)
@@ -80,7 +82,7 @@ export function CountPicker({ projection, session, catalogId, itemId, canCreateS
   const matches = projection.catalog.filter(
     item =>
       item.active &&
-      matchesSearch(query, [item.name, item.category, item.niin, ...activeVariants(item.catalogId).map(variant => variant.variant)].join(' ')),
+      matchesItemSearch(query, { name: item.name, category: item.category, niin: item.niin, sizes: activeVariants(item.catalogId).map(variant => variant.variant) }),
   )
   return (
     <section className="table-card count-picker" aria-labelledby="count-picker-heading">
@@ -107,6 +109,7 @@ export function CountPicker({ projection, session, catalogId, itemId, canCreateS
           {matches.map(item => {
             const sizes = activeVariants(item.catalogId).length
             const counted = countedFor(item.catalogId)
+            const assigned = assignedLabel?.(item.category)
             return (
               <li key={item.catalogId}>
                 <button type="button" onClick={() => onSelectCatalog(item.catalogId)}>
@@ -117,6 +120,7 @@ export function CountPicker({ projection, session, catalogId, itemId, canCreateS
                     <strong>{item.name}</strong>
                     <small>
                       {item.category} · {!item.sized ? 'One size' : sizes ? `${sizes} size${sizes === 1 ? '' : 's'}` : 'Sizes not set'}
+                      {assigned ? ` · ${assigned}` : ''}
                     </small>
                   </span>
                   <span className="count-picker-counted">

@@ -36,6 +36,7 @@ import "./app-shell.css";
 import { Drawer, Summary } from "./components/Drawer";
 import { SharedCountView } from "./features/count/SharedCountView";
 import { InventoryCatalogView } from "./features/inventory/InventoryCatalogView";
+import { COUNT_INTERVAL_CHOICES } from "./stage3/inventoryStatus";
 import { CadetsView } from "./features/cadets/CadetsView";
 import { ConflictsPanel } from "./features/conflicts/ConflictsPanel";
 import { StillNeededActions } from "./features/needs/StillNeededActions";
@@ -501,6 +502,8 @@ function AuthenticatedApp({
               setCountItemId(itemId);
               setTab("count");
             }}
+            onOpenConflicts={() => setPanel("conflicts")}
+            countIntervalDays={preferences.countIntervalDays}
           />
         )}
         {tab === "cadets" && (
@@ -1049,6 +1052,21 @@ function SettingsPanel({
         value={value.readinessWeights}
         change={(weights) => set("readinessWeights", weights)}
       />
+      <h3>Inventory</h3>
+      <label className="field">
+        COUNT DUE AFTER
+        <select
+          aria-label="Count due after"
+          value={value.countIntervalDays}
+          onChange={(e) => set("countIntervalDays", Number(e.target.value))}
+        >
+          {COUNT_INTERVAL_CHOICES.map((days) => (
+            <option key={days} value={days}>
+              {days} days without a count
+            </option>
+          ))}
+        </select>
+      </label>
       <p>A.R.G.U.S. version {__APP_VERSION__}</p>
     </Drawer>
   );

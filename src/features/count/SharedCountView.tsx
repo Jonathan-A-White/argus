@@ -1,18 +1,27 @@
 import { useId, useState, type FormEvent, type JSX } from 'react'
-import { AlertTriangle, Ban, ClipboardCheck, RefreshCw, Users } from 'lucide-react'
+import { AlertTriangle, Ban, ClipboardCheck, RefreshCw, Send, Undo2, Users } from 'lucide-react'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
-import type { ArgusPermission } from '../../distributed/types'
+import type { ArgusPermission, InventoryProjection, MemberProjection } from '../../distributed/types'
 import { CountPicker } from './CountPicker'
-import { CancelCountDrawer, FinalizeCountDrawer } from './SessionDrawers'
-import { FinalizedSummary, SessionSummary } from './SessionSummary'
+import { CancelCountDrawer, FinalizeCountDrawer, SendBackDrawer, SubmitCountDrawer } from './SessionDrawers'
+import { CountHistory, FinalizedSummary, SessionSummary } from './SessionSummary'
 import { SharedPanel } from './SharedPanel'
 import { TallyCard } from './TallyCard'
 import {
+  LIFECYCLE_LABEL,
+  LIFECYCLE_TONE,
+  MAX_ASSIGNED_SIZES,
   acceptsContributions,
+  categoryAssignees,
+  categoryAssignments,
+  countLifecycle,
+  countableCategories,
   defaultSessionName,
   errorMessage,
   findActiveSession,
   findLastReconciledSession,
+  lateWork,
+  lateWorkText,
   relativeTime,
   useNow,
 } from './countModel'
@@ -33,6 +42,7 @@ export type SharedCountViewProps = {
 type Selection = { catalogId?: string; itemId?: string }
 
 const EXPLAINER = "Everyone's counts add up into one shared total. An officer finalizes the count to update on-hand."
+type SessionDrawer = 'finalize' | 'cancel' | 'submit' | 'sendBack'
 
 const selectionFor = (projection: ArgusAppProjection, itemId?: string): Selection => {
   const variant = itemId ? projection.inventory.find(item => item.entityId === itemId) : undefined
@@ -46,7 +56,7 @@ const selectionFor = (projection: ArgusAppProjection, itemId?: string): Selectio
 export function SharedCountView({ projection, controller, can, memberName, onProjection, notify, initialItemId }: SharedCountViewProps): JSX.Element {
   const [selection, setSelection] = useState<Selection>(() => selectionFor(projection, initialItemId))
   const [seenInitialItemId, setSeenInitialItemId] = useState(initialItemId)
-  const [drawer, setDrawer] = useState<'finalize' | 'cancel'>()
+  const [drawer, setDrawer] = useState<SessionDrawer>()
   const [syncing, setSyncing] = useState(false)
   const now = useNow()
 
@@ -99,22 +109,35 @@ export function SharedCountView({ projection, controller, can, memberName, onPro
         <StartCountPanel
           canStart={canCount}
           controller={controller}
+          inventory={projection.inventory}
+          members={projection.members.filter(member => member.status === 'ACTIVE')}
+          memberName={memberName}
           onStarted={next => {
             onProjection(next)
             notify('Shared count started. Everyone in the unit can add their counts now.')
           }}
         />
         {lastFinalized && <FinalizedSummary session={lastFinalized} inventory={projection.inventory} memberName={memberName} />}
+        <CountHistory sessions={projection.countSessions} memberName={memberName} />
       </div>
     )
   }
 
   const variant = projection.inventory.find(item => item.entityId === selection.itemId && item.active)
   const open = acceptsContributions(session)
+  const lifecycle = countLifecycle(session, projection.events)
+  const waiting = lifecycle === 'NEEDS_APPROVAL'
+  const late = lateWorkText(lateWork(session))
+  const assignees = categoryAssignees(session)
+  const mine = [...assignees].filter(([, who]) => who === projection.actor).map(([category]) => category)
+  const assignedLabel = (category: string) => {
+    const who = assignees.get(category)
+    return who ? (who === projection.actor ? 'Assigned to you' : `Assigned to ${memberName(who)}`) : undefined
+  }
   const readOnlyReason = !canCount
     ? 'Your role can view this count but not add to it.'
     : !open
-      ? 'This count is closed to new contributions while it waits to be finalized.'
+      ? 'This count is waiting for an officer’s approval, so it is closed to new contributions.'
       : undefined
   const people = session.participants.length
 
@@ -124,22 +147,36 @@ export function SharedCountView({ projection, controller, can, memberName, onPro
         <div>
           <div className="section-kicker">
             <span />
-            <b>{open ? 'SHARED COUNT · LIVE' : 'SHARED COUNT · SUBMITTED'}</b>
+            <b>SHARED COUNT · {LIFECYCLE_LABEL[lifecycle].toUpperCase()}</b>
             <span />
           </div>
           <h2>{session.scope}</h2>
           <p>{EXPLAINER}</p>
           <p className="count-meta">
-            Started{session.createdBy ? ` by ${memberName(session.createdBy)}` : ''}
+            <em className={`status-badge count-lifecycle ${LIFECYCLE_TONE[lifecycle]}`}>{LIFECYCLE_LABEL[lifecycle]}</em> Started
+            {session.createdBy ? ` by ${memberName(session.createdBy)}` : ''}
             {session.createdAt ? ` ${relativeTime(session.createdAt, now)}` : ''} · {people} {people === 1 ? 'person' : 'people'} counting
           </p>
+          {mine.length > 0 && <p className="count-meta">Assigned to you: {mine.join(', ')}</p>}
         </div>
         <div className="count-hero-actions">
           {syncButton}
           {canAdjust && (
             <button type="button" className="gold-button" onClick={() => setDrawer('finalize')}>
               <ClipboardCheck />
-              Finalize count
+              {waiting ? 'Review and approve' : 'Finalize count'}
+            </button>
+          )}
+          {canAdjust && waiting && (
+            <button type="button" className="secondary-button" onClick={() => setDrawer('sendBack')}>
+              <Undo2 />
+              Send back
+            </button>
+          )}
+          {canCount && !canAdjust && open && (
+            <button type="button" className="gold-button" onClick={() => setDrawer('submit')}>
+              <Send />
+              Submit for approval
             </button>
           )}
           {canAdjust && (
@@ -150,12 +187,37 @@ export function SharedCountView({ projection, controller, can, memberName, onPro
           )}
         </div>
       </section>
-      {!open && (
-        <div className="workflow-warning count-callout">
+      {waiting && (
+        <div className="workflow-warning count-callout" role="status">
           <AlertTriangle />
           <div>
-            <strong>Contributions are closed</strong>
-            <p>This count was submitted for review. An officer can finalize it to update on-hand.</p>
+            <strong>Needs approval — contributions are closed</strong>
+            <p>
+              Submitted{session.submittedBy ? ` by ${memberName(session.submittedBy)}` : ''}
+              {session.submittedAt ? ` ${relativeTime(session.submittedAt, now)}` : ''}.{' '}
+              {canAdjust
+                ? 'Review the shared totals, then approve them to update on-hand or send the count back for more counting.'
+                : 'An officer approves it to update on-hand, or sends it back for more counting.'}
+            </p>
+            {late && <p>{late} arrived after it was submitted{canAdjust ? ' — send it back to include them.' : '.'}</p>}
+          </div>
+        </div>
+      )}
+      {open && session.sentBack && (
+        <div className="workflow-warning count-callout" role="status">
+          <Undo2 />
+          <div>
+            <strong>Sent back by {memberName(session.sentBack.by)}</strong>
+            <p>“{session.sentBack.reason}”</p>
+          </div>
+        </div>
+      )}
+      {lifecycle === 'DRAFT' && (
+        <div className="workflow-warning count-callout" role="status">
+          <AlertTriangle />
+          <div>
+            <strong>Draft — only on this device so far</strong>
+            <p>Others can join this count once it syncs. Your counts are saved here in the meantime.</p>
           </div>
         </div>
       )}
@@ -168,6 +230,7 @@ export function SharedCountView({ projection, controller, can, memberName, onPro
         onSelectCatalog={selectCatalog}
         onSelectVariant={selectVariant}
         notify={notify}
+        {...(assignees.size ? { assignedLabel } : {})}
       />
       {variant && (
         <div className="count-layout">
@@ -199,11 +262,37 @@ export function SharedCountView({ projection, controller, can, memberName, onPro
           session={session}
           inventory={projection.inventory}
           controller={controller}
+          approving={waiting}
           close={() => setDrawer(undefined)}
           onFinalized={(next, countedSizes) => {
             setDrawer(undefined)
             onProjection(next)
-            notify(`Count finalized — on-hand updated for ${countedSizes} size${countedSizes === 1 ? '' : 's'}.`)
+            notify(`Count ${waiting ? 'approved' : 'finalized'} — on-hand updated for ${countedSizes} size${countedSizes === 1 ? '' : 's'}.`)
+          }}
+        />
+      )}
+      {drawer === 'submit' && (
+        <SubmitCountDrawer
+          session={session}
+          inventory={projection.inventory}
+          controller={controller}
+          close={() => setDrawer(undefined)}
+          onSubmitted={next => {
+            setDrawer(undefined)
+            onProjection(next)
+            notify('Count submitted for approval. An officer will review it.')
+          }}
+        />
+      )}
+      {drawer === 'sendBack' && (
+        <SendBackDrawer
+          session={session}
+          controller={controller}
+          close={() => setDrawer(undefined)}
+          onSentBack={next => {
+            setDrawer(undefined)
+            onProjection(next)
+            notify('Count sent back. Everyone can add counts again.')
           }}
         />
       )}
@@ -226,16 +315,31 @@ export function SharedCountView({ projection, controller, can, memberName, onPro
 function StartCountPanel({
   canStart,
   controller,
+  inventory,
+  members,
+  memberName,
   onStarted,
 }: {
   canStart: boolean
   controller: DistributedAppController
+  inventory: InventoryProjection[]
+  members: MemberProjection[]
+  memberName: (publicIdentity: string) => string
   onStarted: (projection: ArgusAppProjection) => void
 }) {
   const id = useId()
   const [name, setName] = useState(defaultSessionName)
+  const [assignees, setAssignees] = useState<ReadonlyMap<string, string>>(() => new Map())
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const categories = countableCategories(inventory)
+  const assign = (category: string, publicIdentity: string) =>
+    setAssignees(current => {
+      const next = new Map(current)
+      if (publicIdentity) next.set(category, publicIdentity)
+      else next.delete(category)
+      return next
+    })
   const start = async (event: FormEvent) => {
     event.preventDefault()
     const scope = name.trim()
@@ -243,10 +347,15 @@ function StartCountPanel({
       setError('Give the count a name of up to 120 characters, e.g. “Fall inventory 2026”.')
       return
     }
+    const assignments = categoryAssignments(inventory, assignees)
+    if (assignments.length > MAX_ASSIGNED_SIZES) {
+      setError(`Those categories have ${assignments.length} sizes; assign at most ${MAX_ASSIGNED_SIZES} sizes in one count. Leave the largest categories as “Anyone”.`)
+      return
+    }
     setBusy(true)
     setError('')
     try {
-      onStarted(await controller.createCountSession({ sessionId: `count_${crypto.randomUUID()}`, scope }))
+      onStarted(await controller.createCountSession({ sessionId: `count_${crypto.randomUUID()}`, scope, ...(assignments.length ? { assignments } : {}) }))
     } catch (reason) {
       setError(errorMessage(reason, 'The count could not be started. Try again.'))
     } finally {
@@ -277,6 +386,25 @@ function StartCountPanel({
             onChange={event => setName(event.target.value)}
           />
         </div>
+        {canStart && members.length > 1 && categories.length > 0 && (
+          <details className="count-assign">
+            <summary>Assign categories to people (optional)</summary>
+            <p>Each person sees what they are asked to count. Anyone can still count anything, and all counts add up.</p>
+            {categories.map((category, index) => (
+              <div className="field count-field" key={category}>
+                <label htmlFor={`${id}-assign-${index}`}>{category}</label>
+                <select id={`${id}-assign-${index}`} value={assignees.get(category) ?? ''} onChange={event => assign(category, event.target.value)}>
+                  <option value="">Anyone</option>
+                  {members.map(member => (
+                    <option key={member.publicIdentity} value={member.publicIdentity}>
+                      {memberName(member.publicIdentity)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </details>
+        )}
         {error && (
           <p className="workflow-error" role="alert">
             <AlertTriangle />

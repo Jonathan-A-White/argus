@@ -98,3 +98,26 @@
   .catalog-list .catalog-row > em.status-badge { display: inline-flex; grid-column: 2; grid-row: 2; justify-self: start; }
   .catalog-list .catalog-row > svg { grid-column: 4; grid-row: 1 / span 2; }
 }
+
+/* ---------- Count Due / Reconciliation Required (spec §7) ---------- */
+.catalog-filters .catalog-status-filters { margin-left: 8px; }
+.catalog-filters .catalog-status-filters .catalog-chip.attention { margin-left: 0; }
+.catalog-flags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.catalog-flags .status-badge { font-size: 9px; }
+.catalog-hero-badges { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; }
+.catalog-reconcile { margin-top: 12px; }
+.catalog-reconcile > div { flex: 1; min-width: 0; }
+.catalog-reconcile ul { display: grid; gap: 8px; margin: 8px 0 0; padding: 0; list-style: none; }
+.catalog-reconcile li { display: grid; gap: 4px; }
+.catalog-reconcile li > span { color: var(--color-text-secondary); }
+.catalog-reconcile-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.catalog-reconcile-actions button { min-height: 44px; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; font-size: 13px; font-weight: 700; }
+.catalog-reconcile-actions svg { width: 16px; height: 16px; }
+.catalog-duplicates { margin: 10px 0; }
+.catalog-duplicates > div { flex: 1; min-width: 0; }
+.catalog-duplicates ul { display: grid; gap: 6px; margin: 6px 0; padding: 0; list-style: none; }
+.catalog-duplicates li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.catalog-duplicates li button { min-height: 44px; padding: 0 14px; font-weight: 700; }
+.catalog-duplicates small { display: block; color: var(--color-text-secondary); }
+/* Four stats (on hand, issued, low at, last counted) wrap on narrow phones. */
+.size-stats { flex-wrap: wrap; row-gap: 6px; }

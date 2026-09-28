@@ -1,6 +1,7 @@
 import type { CatalogItemProjection, InventoryProjection } from '../../distributed/types'
 import { MAX_COUNT_QUANTITY, MAX_RECEIVE_QUANTITY } from '../../distributed/replica'
 import { normalizeSizeLabel } from '../../stage3/sizes'
+import type { InventoryStatus } from '../../stage3/inventoryStatus'
 
 export { MAX_COUNT_QUANTITY, MAX_RECEIVE_QUANTITY }
 export const MAX_COUNT_INCREMENT = 1000
@@ -31,6 +32,27 @@ export function catalogStatus(item: CatalogItemProjection, variants: InventoryPr
 }
 
 export const toneClass = (tone: StatusTone) => (tone === 'neutral' ? '' : tone)
+
+// Count Due and Reconciliation Required (spec §7) are derived per size in src/stage3/inventoryStatus.ts.
+export {
+  COUNT_INTERVAL_CHOICES,
+  DEFAULT_COUNT_INTERVAL_DAYS,
+  describeReconciliation,
+  inventoryStatus,
+  inventoryStatuses,
+  type InventoryStatus,
+  type ReconciliationReason,
+} from '../../stage3/inventoryStatus'
+
+/** How many active sizes of an item are Count Due / need reconciliation. */
+export type CatalogFlags = { countDue: number; reconcile: number }
+export function catalogFlags(variants: InventoryProjection[], statuses: ReadonlyMap<string, InventoryStatus>): CatalogFlags {
+  const active = variants.filter(variant => variant.active).map(variant => statuses.get(variant.entityId))
+  return { countDue: active.filter(status => status?.countDue).length, reconcile: active.filter(status => status?.reconciliationRequired).length }
+}
+
+/** "Mar 3, 2026", or "Never" for a size that has not been counted. */
+export const countedOn = (iso?: string) => (iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Never')
 
 export const categoriesOf = (catalog: CatalogItemProjection[]) => [...new Set(catalog.map(item => item.category).filter(Boolean))]
 

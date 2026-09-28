@@ -2,8 +2,9 @@ import { useId, useState, type FormEvent } from 'react'
 import { AlertTriangle, ClipboardCheck, Eye, EyeOff, PackagePlus, Pencil } from 'lucide-react'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
 import type { CatalogItemProjection, InventoryProjection } from '../../distributed/types'
+import { sizeKey } from '../../domain'
 import { normalizeSizeLabel } from '../../stage3/sizes'
-import { MAX_COUNT_QUANTITY, MAX_RECEIVE_QUANTITY, errorMessage, needsAttention, parseWhole, plural } from './catalogModel'
+import { MAX_COUNT_QUANTITY, MAX_RECEIVE_QUANTITY, countedOn, errorMessage, needsAttention, parseWhole, plural, type InventoryStatus } from './catalogModel'
 
 type SizeChanges = Parameters<DistributedAppController['updateInventoryItem']>[1]
 type OpenForm = { itemId: string; kind: 'receive' | 'edit' }
@@ -11,6 +12,8 @@ type OpenForm = { itemId: string; kind: 'receive' | 'edit' }
 type Props = {
   item: CatalogItemProjection
   variants: InventoryProjection[]
+  /** Count Due / Reconciliation Required per size, keyed by inventory entityId. */
+  statuses?: ReadonlyMap<string, InventoryStatus>
   canAdjust: boolean
   canCount: boolean
   controller: DistributedAppController
@@ -20,13 +23,14 @@ type Props = {
 }
 
 /** Every size of one catalog item with its stock numbers and the per-size actions. */
-export function SizeList({ item, variants, canAdjust, canCount, controller, onProjection, notify, onCount }: Props) {
+export function SizeList({ item, variants, statuses, canAdjust, canCount, controller, onProjection, notify, onCount }: Props) {
   const ids = useId()
   const [filter, setFilter] = useState('')
   const [open, setOpen] = useState<OpenForm>()
   const [busyId, setBusyId] = useState<string>()
-  const needle = filter.trim().toLowerCase()
-  const shown = variants.filter(variant => !needle || variant.variant.toLowerCase().includes(needle))
+  // "34 r", "34-R" and "7 1/2" find 34R and 7.5 the same way the catalog search does.
+  const needle = sizeKey(filter.trim())
+  const shown = variants.filter(variant => !needle || sizeKey(variant.variant).includes(needle))
   const ordered = [...shown.filter(variant => variant.active), ...shown.filter(variant => !variant.active)]
   const nameOf = (variant: InventoryProjection) => (item.sized ? variant.variant : item.name)
   const isOpen = (variant: InventoryProjection, kind: OpenForm['kind']) => open?.itemId === variant.entityId && open.kind === kind
@@ -72,6 +76,7 @@ export function SizeList({ item, variants, canAdjust, canCount, controller, onPr
           {ordered.map(variant => {
             const labelId = `${ids}-${variant.entityId}`
             const attention = needsAttention(variant)
+            const status = statuses?.get(variant.entityId)
             return (
               <li key={variant.entityId} className={variant.active ? 'size-row' : 'size-row inactive'} aria-labelledby={labelId}>
                 <div className="size-row-main">
@@ -91,12 +96,18 @@ export function SizeList({ item, variants, canAdjust, canCount, controller, onPr
                       <dt>Low at</dt>
                       <dd>{variant.reorderAt ?? '—'}</dd>
                     </div>
+                    <div>
+                      <dt>Counted</dt>
+                      <dd>{countedOn(variant.lastCountedAt)}</dd>
+                    </div>
                   </dl>
                   {!variant.active ? (
                     <em className="status-badge">Inactive</em>
                   ) : attention ? (
                     <em className={`status-badge ${variant.onHand === 0 ? 'danger' : 'warning'}`}>{variant.onHand === 0 ? 'Out' : 'Low'}</em>
                   ) : null}
+                  {status?.reconciliationRequired && <em className="status-badge danger">Reconcile</em>}
+                  {status?.countDue && <em className="status-badge warning">Count due</em>}
                 </div>
                 <div className="size-actions">
                   {variant.active && canCount && (

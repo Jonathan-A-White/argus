@@ -33,4 +33,15 @@ describe('local settings storage', () => {
     }
     expect(new LocalSettingsStorage(storage()).load().readinessWeights).toEqual({ cadets: 1, inventory: 1, events: 1, audit: 1 })
   })
+
+  it('defaults the Count Due interval to 90 days, keeps a valid choice and ignores anything else', () => {
+    const local = storage(), settings = new LocalSettingsStorage(local)
+    expect(settings.load().countIntervalDays).toBe(90)
+    settings.save({ ...DEFAULT_SETTINGS, countIntervalDays: 30 })
+    expect(settings.load().countIntervalDays).toBe(30)
+    local.setItem(SETTINGS_KEY, JSON.stringify({ countIntervalDays: -5 }))
+    expect(settings.load().countIntervalDays).toBe(90)
+    local.setItem(SETTINGS_KEY, JSON.stringify({ countIntervalDays: '180' }))
+    expect(settings.load().countIntervalDays).toBe(90)
+  })
 })

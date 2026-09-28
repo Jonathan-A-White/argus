@@ -103,7 +103,9 @@ export function describeActivity(projection: Projection, record: StoredEvent, me
       return { title: `Corrected a count to ${Number(payload.replacementQuantity)}`, record: { kind: 'Count', label }, correction: { originalEventId: String(payload.originalEventId ?? ''), ...(original ? { from: String(original.quantity) } : {}), to: String(payload.replacementQuantity) } }
     }
     case 'COUNT_SESSION_SUBMITTED':
-      return { title: `Submitted count ${count(event.entityId)} for review`, record: { kind: 'Count', label: count(event.entityId) } }
+      return { title: `Submitted count ${count(event.entityId)} for approval`, record: { kind: 'Count', label: count(event.entityId) } }
+    case 'COUNT_SESSION_REOPENED':
+      return { title: `Sent count ${count(event.entityId)} back for recounting`, record: { kind: 'Count', label: count(event.entityId) } }
     case 'COUNT_SESSION_RECONCILED':
       return { title: `Finalized count ${count(event.entityId)} — on-hand updated`, record: { kind: 'Count', label: count(event.entityId) } }
     case 'COUNT_SESSION_CANCELLED':

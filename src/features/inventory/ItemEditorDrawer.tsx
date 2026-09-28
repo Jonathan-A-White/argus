@@ -1,5 +1,5 @@
 import { useId, useState, type FormEvent } from 'react'
-import { AlertTriangle, Shirt } from 'lucide-react'
+import { AlertTriangle, ClipboardCheck, GitMerge, Shirt } from 'lucide-react'
 import { Drawer } from '../../components/Drawer'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
 import type { ArgusPermission, CatalogItemProjection, InventoryProjection } from '../../distributed/types'
@@ -7,17 +7,21 @@ import { sizeScheme } from '../../stage3/sizes'
 import { ReceiptHistory } from '../corrections/ReceiptHistory'
 import { AddSizesPanel } from './AddSizesPanel'
 import { SizeList } from './SizeList'
+import { describeDuplicate, findLikelyDuplicates } from './duplicates'
 import {
   MAX_COUNT_INCREMENT,
   MAX_COUNT_QUANTITY,
+  catalogFlags,
   catalogStatus,
   categoriesOf,
+  describeReconciliation,
   errorMessage,
   parseWhole,
   plural,
   sumOf,
   toneClass,
   variantsOf,
+  type InventoryStatus,
 } from './catalogModel'
 
 type Props = {
@@ -28,11 +32,15 @@ type Props = {
   onProjection: (projection: ArgusAppProjection) => void
   notify: (message: string) => void
   onCount: (itemId: string) => void
+  /** Status of every size (Count Due, Reconciliation Required), keyed by inventory entityId. */
+  statuses: ReadonlyMap<string, InventoryStatus>
+  countIntervalDays: number
+  onOpenConflicts?: () => void
   close: () => void
 }
 
 /** Everything about one catalog item: its sizes and stock, adding sizes, and the item's details. */
-export function ItemEditorDrawer({ catalogId, projection, controller, can, onProjection, notify, onCount, close }: Props) {
+export function ItemEditorDrawer({ catalogId, projection, controller, can, onProjection, notify, onCount, statuses, countIntervalDays, onOpenConflicts, close }: Props) {
   const item = projection.catalog.find(candidate => candidate.catalogId === catalogId)
   if (!item) return null
   const variants = variantsOf(projection.inventory, catalogId)
@@ -41,6 +49,7 @@ export function ItemEditorDrawer({ catalogId, projection, controller, can, onPro
   const status = catalogStatus(item, variants)
   const activeSizes = variants.filter(variant => variant.active).length
   const canCreate = can('inventory.create')
+  const flags = catalogFlags(item.active ? variants : [], statuses)
 
   return (
     <Drawer title={item.name} icon={<Shirt />} close={close}>
@@ -55,12 +64,33 @@ export function ItemEditorDrawer({ catalogId, projection, controller, can, onPro
             </b>
             <p>{item.sized ? (variants.length ? `${plural(activeSizes, 'active size')} of ${variants.length}` : 'No sizes set yet') : 'One size'}</p>
           </div>
-          <em className={`status-badge ${toneClass(status.tone)}`}>{status.label}</em>
+          <span className="catalog-hero-badges">
+            <em className={`status-badge ${toneClass(status.tone)}`}>{status.label}</em>
+            {flags.reconcile > 0 && <em className="status-badge danger">Reconciliation required</em>}
+            {flags.countDue > 0 && <em className="status-badge warning">Count due</em>}
+          </span>
         </div>
         {onHand === 0 && activeSizes > 0 && <p className="catalog-zero-hint">0 on hand — record a count or receive stock.</p>}
+        {flags.countDue > 0 && (
+          <p className="catalog-zero-hint">
+            {item.sized ? `${plural(flags.countDue, 'size')} ${flags.countDue === 1 ? 'is' : 'are'}` : 'This item is'} due for a count — never counted, or not counted in the last{' '}
+            {countIntervalDays} days.
+          </p>
+        )}
+        {flags.reconcile > 0 && (
+          <ReconciliationPanel
+            item={item}
+            variants={variants}
+            statuses={statuses}
+            canCount={can('inventory.count')}
+            onCount={onCount}
+            {...(onOpenConflicts ? { onOpenConflicts } : {})}
+          />
+        )}
         <SizeList
           item={item}
           variants={variants}
+          statuses={statuses}
           canAdjust={can('inventory.adjust')}
           canCount={can('inventory.count')}
           controller={controller}
@@ -80,6 +110,7 @@ export function ItemEditorDrawer({ catalogId, projection, controller, can, onPro
           key={`${item.catalogId}:${item.version}`}
           item={item}
           variants={variants}
+          catalog={projection.catalog}
           categories={categoriesOf(projection.catalog)}
           canEdit={can('inventory.adjust')}
           controller={controller}
@@ -91,6 +122,61 @@ export function ItemEditorDrawer({ catalogId, projection, controller, can, onPro
   )
 }
 
+/** Sizes that need an officer's attention, why, and where to go to settle it. */
+function ReconciliationPanel({
+  item,
+  variants,
+  statuses,
+  canCount,
+  onCount,
+  onOpenConflicts,
+}: {
+  item: CatalogItemProjection
+  variants: InventoryProjection[]
+  statuses: ReadonlyMap<string, InventoryStatus>
+  canCount: boolean
+  onCount: (itemId: string) => void
+  onOpenConflicts?: () => void
+}) {
+  const ids = useId()
+  const flagged = variants.filter(variant => variant.active && statuses.get(variant.entityId)?.reconciliationRequired)
+  return (
+    <section className="workflow-warning catalog-reconcile" aria-labelledby={`${ids}-heading`}>
+      <GitMerge />
+      <div>
+        <strong id={`${ids}-heading`}>Reconciliation required</strong>
+        <ul aria-label="Reconciliation required">
+          {flagged.map(variant => {
+            const reasons = statuses.get(variant.entityId)?.reconciliation ?? []
+            const conflict = reasons.some(reason => reason.kind === 'CONFLICT')
+            const counting = reasons.some(reason => reason.kind !== 'CONFLICT')
+            const label = item.sized ? variant.variant : item.name
+            return (
+              <li key={variant.entityId}>
+                <b>{label}</b>
+                <span>{reasons.map(describeReconciliation).join(' · ')}</span>
+                <span className="catalog-reconcile-actions">
+                  {conflict && onOpenConflicts && (
+                    <button type="button" className="secondary-button" aria-label={`Open conflicts for ${label}`} onClick={onOpenConflicts}>
+                      Open conflicts
+                    </button>
+                  )}
+                  {counting && canCount && (
+                    <button type="button" className="secondary-button" aria-label={`Recount ${label}`} onClick={() => onCount(variant.entityId)}>
+                      <ClipboardCheck />
+                      Recount
+                    </button>
+                  )}
+                </span>
+              </li>
+            )
+          })}
+        </ul>
+      </div>
+    </section>
+  )
+}
+
 type CatalogChanges = Parameters<DistributedAppController['updateCatalogItem']>[1]
 type FieldErrors = Partial<Record<'name' | 'category' | 'niin' | 'threshold' | 'increment', string>>
 
@@ -99,6 +185,7 @@ const thresholdText = (value?: number) => (value === undefined ? '' : String(val
 function ItemDetailsForm({
   item,
   variants,
+  catalog,
   categories,
   canEdit,
   controller,
@@ -107,6 +194,7 @@ function ItemDetailsForm({
 }: {
   item: CatalogItemProjection
   variants: InventoryProjection[]
+  catalog: CatalogItemProjection[]
   categories: string[]
   canEdit: boolean
   controller: DistributedAppController
@@ -133,6 +221,9 @@ function ItemDetailsForm({
     increment !== String(item.countIncrement) ||
     active !== item.active ||
     applyToSizes
+  // Only a new name or NIIN can make this item look like another one; the warning never blocks saving.
+  const renamed = name.trim() !== item.name || niin.trim() !== item.niin
+  const duplicates = canEdit && renamed ? findLikelyDuplicates({ name, niin }, catalog, { excludeCatalogId: item.catalogId }) : []
 
   const validate = () => {
     const found: FieldErrors = {}
@@ -206,6 +297,23 @@ function ItemDetailsForm({
             <input {...fieldProps('name')} maxLength={80} value={name} onChange={event => setName(event.target.value)} />
             {fieldError('name')}
           </div>
+          {duplicates.length > 0 && (
+            <div className="workflow-warning catalog-duplicates" role="status">
+              <AlertTriangle />
+              <div>
+                <strong>Looks like an item you already have</strong>
+                <ul aria-label="Likely duplicates">
+                  {duplicates.map(duplicate => (
+                    <li key={duplicate.item.catalogId}>
+                      “{duplicate.item.name}” · {duplicate.item.category}
+                      {duplicate.item.active ? '' : ' (inactive)'} — {describeDuplicate(duplicate)}
+                    </li>
+                  ))}
+                </ul>
+                <small>You can still save. Keeping one catalog item per kind of gear keeps counts and issue history in one place.</small>
+              </div>
+            </div>
+          )}
           <div className="catalog-field-row">
             <div className="field catalog-field">
               <label htmlFor={`${ids}-category`}>Category</label>

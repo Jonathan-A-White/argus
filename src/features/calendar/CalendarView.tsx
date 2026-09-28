@@ -4,6 +4,8 @@ import { Summary } from '../../components/Drawer'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
 import type { ArgusPermission, CalendarEventProjection, SupplyEventKind } from '../../distributed/types'
 import { SUPPLY_EVENT_TEMPLATES } from '../../stage3/calendar'
+import { combinedEventReadiness } from '../../stage3/eventReadiness'
+import type { AlertTarget, SyncSnapshot } from '../../stage3/readinessTypes'
 import { AddEventDrawer } from './AddEventDrawer'
 import { EventDrawer } from './EventDrawer'
 import {
@@ -31,6 +33,12 @@ export type CalendarViewProps = {
   notify: (message: string) => void
   /** Injectable clock for tests; defaults to the system clock. */
   now?: () => Date
+  /** Opens this event's drawer on arrival (e.g. from a dashboard alert). */
+  initialEventId?: string
+  /** This device's sync state, for AMI readiness. */
+  sync?: SyncSnapshot
+  /** Opens a record elsewhere in the app from an event's readiness section. */
+  navigate?: (target: AlertTarget) => void
 }
 
 const CLOCK_INTERVAL_MS = 60_000
@@ -42,12 +50,12 @@ const nextLabel = (days: number) => (days === 0 ? 'Today' : days === 1 ? 'Tomorr
  * are entered by hand every year; each event carries its preparation checklist, due relative to
  * the date, plus the stock readiness of the bundles it issues.
  */
-export function CalendarView({ projection, controller, can, memberName, onProjection, notify, now = systemClock }: CalendarViewProps): JSX.Element {
+export function CalendarView({ projection, controller, can, memberName, onProjection, notify, now = systemClock, initialEventId, sync, navigate }: CalendarViewProps): JSX.Element {
   const id = useId()
   const current = useClock(now, CLOCK_INTERVAL_MS)
   const canWrite = can('calendar.write')
   const [adding, setAdding] = useState<SupplyEventKind | null>(null)
-  const [openEventId, setOpenEventId] = useState<string>()
+  const [openEventId, setOpenEventId] = useState<string | undefined>(initialEventId)
   const [showCancelled, setShowCancelled] = useState(false)
   const closeAdd = useCallback(() => setAdding(null), [])
   const closeEvent = useCallback(() => setOpenEventId(undefined), [])
@@ -60,7 +68,7 @@ export function CalendarView({ projection, controller, can, memberName, onProjec
 
   const card = (event: CalendarEventProjection) => (
     <li key={event.calendarEventId}>
-      <EventCard event={event} current={current} open={() => setOpenEventId(event.calendarEventId)} />
+      <EventCard event={event} readiness={combinedEventReadiness(event, projection, current, sync).percent} current={current} open={() => setOpenEventId(event.calendarEventId)} />
     </li>
   )
 
@@ -161,13 +169,16 @@ export function CalendarView({ projection, controller, can, memberName, onProjec
           onProjection={onProjection}
           notify={notify}
           close={closeEvent}
+          sync={sync}
+          navigate={navigate}
         />
       )}
     </div>
   )
 }
 
-function EventCard({ event, current, open }: { event: CalendarEventProjection; current: Date; open: () => void }) {
+/** `readiness` combines the task checklist with what the event's kind adds (cadet preparation, AMI, rollover checklist). */
+function EventCard({ event, readiness, current, open }: { event: CalendarEventProjection; readiness: number; current: Date; open: () => void }) {
   const progress = eventProgress(event)
   const days = daysUntil(event.startsAt, current)
   const leaf = dateBlock(event.startsAt)
@@ -192,9 +203,9 @@ function EventCard({ event, current, open }: { event: CalendarEventProjection; c
       <span className="calendar-card-status">
         <b className={days < 0 ? 'calendar-countdown past' : 'calendar-countdown'}>{countdownLabel(days)}</b>
         <span className="calendar-meter" aria-hidden="true">
-          <span style={{ width: `${progress.percent}%` }} />
+          <span style={{ width: `${readiness}%` }} />
         </span>
-        <small>{progress.total ? `${progress.percent}% ready · ${progress.done}/${progress.total} tasks` : 'No tasks yet'}</small>
+        <small>{progress.total ? `${readiness}% ready · ${progress.done}/${progress.total} tasks` : readiness < 100 ? `${readiness}% ready · no tasks yet` : 'No tasks yet'}</small>
       </span>
       <ChevronRight className="calendar-card-chevron" aria-hidden="true" />
     </button>

@@ -30,7 +30,7 @@ function fakeEnvironment(overrides: Partial<NotificationEnvironment> = {}) {
   return { environment, shown, closed, summaries, setVisible: (value: boolean) => { visible = value } }
 }
 
-const outOfStock: SupplyAlert = { id: 'out-of-stock', severity: 'critical', title: '2 sizes out of stock', detail: 'PT Shorts · M, PT Shirt · L', target: { tab: 'inventory' } }
+const outOfStock: SupplyAlert = { id: 'out-of-stock', severity: 'critical', title: '2 sizes out of stock', detail: 'PT Shorts · M, PT Shirt · L', target: { tab: 'inventory' }, fingerprint: 'test' }
 const emptyCalendar = { calendar: [] }
 
 afterEach(() => resetNotificationRouting())

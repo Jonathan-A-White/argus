@@ -1,7 +1,8 @@
-import { useId, useState, type CSSProperties, type JSX } from 'react'
+import { useEffect, useId, useState, type CSSProperties, type JSX } from 'react'
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
+  BellOff,
   Boxes,
   CalendarPlus,
   CalendarRange,
@@ -21,15 +22,35 @@ import {
 } from 'lucide-react'
 import { Drawer } from '../../components/Drawer'
 import type { ArgusAppProjection } from '../../distributed/appIntegration'
+import { amiProminence, amiReadiness, nextAmiEvent } from '../../stage3/amiReadiness'
+import { combinedEventReadiness } from '../../stage3/eventReadiness'
 import {
   alerts as supplyAlerts,
   auditSummary,
+  cadetsMissingStandardIssue,
   readiness as supplyReadiness,
+  stockNeedsAttention,
   upcomingEvents,
   type AlertSeverity,
+  type AlertTarget,
   type ReadinessBreakdown,
+  type ReadinessWeights,
   type SupplyAlert,
+  type SyncSnapshot,
 } from '../../stage3/readiness'
+import { readinessTone } from '../readiness/readinessModel'
+import {
+  acknowledge,
+  browserAckStorage,
+  isAcknowledged,
+  loadAcknowledgements,
+  pruneAcknowledgements,
+  saveAcknowledgements,
+  unacknowledge,
+  type AckStorage,
+  type Acknowledgements,
+} from './alertAcknowledgements'
+import { AmiReadinessCard } from './AmiReadinessCard'
 import {
   KIND_LABEL,
   countdownLabel,
@@ -45,15 +66,13 @@ import {
 } from '../calendar/calendarModel'
 import './dashboard.css'
 
-export type DashboardTarget = {
-  tab: 'count' | 'inventory' | 'cadets' | 'activity' | 'calendar' | 'more'
-  panel?: 'conflicts' | 'needed' | 'wallet' | 'diagnostics'
-}
+/** Where a node, alert or tile leads; the optional fields open the exact record (see AlertTarget). */
+export type DashboardTarget = AlertTarget
 
 export type DashboardProps = {
   projection: ArgusAppProjection
-  /** `label` is the ready-made sync text, e.g. "SYNCHRONIZED". */
-  sync: { label: string; needsFunding?: boolean; state?: string; queued?: number }
+  /** `label` is the ready-made sync text, e.g. "SYNCHRONIZED"; the rest is this device's sync state. */
+  sync: { label: string } & SyncSnapshot
   unitName: string
   navigate: (target: DashboardTarget) => void
   onQuickAction: (action: 'issue' | 'return' | 'count') => void
@@ -61,6 +80,10 @@ export type DashboardProps = {
   now?: () => Date
   /** False for people without audit.read (Supply Assistants): the Activity screen is not offered. */
   canViewActivity?: boolean
+  /** This device's readiness weights (Settings); defaults to equal weights. */
+  weights?: ReadinessWeights
+  /** Where alert acknowledgements are kept on this device; defaults to localStorage. */
+  acknowledgementStorage?: AckStorage
 }
 
 type Tone = 'ok' | 'attention' | 'critical'
@@ -111,7 +134,6 @@ const place = (x: number, y: number): CSSProperties => ({
   top: `${(y / TREE_HEIGHT) * 100}%`,
 })
 const delayStyle = (seconds: number) => ({ '--delay': `${seconds}s` }) as CSSProperties
-const readinessTone = (percent: number): Tone => (percent >= 85 ? 'ok' : percent >= 60 ? 'attention' : 'critical')
 
 const SEVERITY: Record<AlertSeverity, { label: string; icon: typeof Info }> = {
   critical: { label: 'Critical', icon: OctagonAlert },
@@ -124,15 +146,23 @@ const SEVERITY: Record<AlertSeverity, { label: string; icon: typeof Info }> = {
  * the shared projection through the readiness engine, so all devices agree; every node, alert and
  * tile is a real button that opens the matching screen.
  */
-export function Dashboard({ projection, sync, unitName, navigate, onQuickAction, now = systemClock, canViewActivity = true }: DashboardProps): JSX.Element {
+export function Dashboard({ projection, sync, unitName, navigate, onQuickAction, now = systemClock, weights, acknowledgementStorage, canViewActivity = true }: DashboardProps): JSX.Element {
   const current = useClock(now, CLOCK_INTERVAL_MS)
   const [showReadiness, setShowReadiness] = useState(false)
-  const breakdown = supplyReadiness(projection, current)
-  const alertList = supplyAlerts(projection, { needsFunding: sync.needsFunding, state: sync.state, queued: sync.queued }, current)
+  const [ackStorage] = useState(() => acknowledgementStorage ?? browserAckStorage())
+  const breakdown = supplyReadiness(projection, current, { weights, sync })
+  const alertList = supplyAlerts(projection, sync, current)
   const next = nextSupplyEvent(projection, current)
+  const ami = nextAmiEvent(projection, current)
+  const prominence = ami ? amiProminence(ami.days) : 'hidden'
+  const amiCard =
+    ami && prominence !== 'hidden' ? (
+      <AmiReadinessCard event={ami.event} days={ami.days} report={amiReadiness(projection, sync, current)} prominence={prominence} navigate={navigate} />
+    ) : null
+  const amiOnTop = prominence === 'top' || prominence === 'critical'
 
   const overdue = upcomingEvents(projection, current).reduce((sum, event) => sum + overdueTasks(event, current).length, 0)
-  const outOfStock = projection.inventory.some(item => item.active && item.onHand === 0 && item.issued > 0)
+  const outOfStock = projection.inventory.some(item => stockNeedsAttention(item) && item.onHand === 0)
   const nodes: TreeNode[] = [
     {
       id: 'cadets',
@@ -150,7 +180,7 @@ export function Dashboard({ projection, sync, unitName, navigate, onQuickAction,
       caption: 'NEED ATTENTION',
       ariaLabel: `Stock: ${breakdown.stockNeedingAttention} ${breakdown.stockNeedingAttention === 1 ? 'needs' : 'need'} attention`,
       tone: outOfStock ? 'critical' : breakdown.stockNeedingAttention ? 'attention' : 'ok',
-      activate: () => navigate({ tab: 'inventory' }),
+      activate: () => navigate({ tab: 'inventory', filter: 'attention' }),
     },
     {
       id: 'events',
@@ -173,8 +203,10 @@ export function Dashboard({ projection, sync, unitName, navigate, onQuickAction,
   ]
 
   return (
-    <div className="content dashboard">
+    <div className={`content dashboard${amiCard ? ` has-ami${amiOnTop ? ' ami-top' : ''}` : ''}`}>
       <DashboardHero current={current} unitName={unitName} sync={sync} audit={breakdown.audit} />
+
+      {amiOnTop && amiCard}
 
       <section className="dash-actions" aria-label="Quick actions">
         <button type="button" className="dash-action issue" onClick={() => onQuickAction('issue')}>
@@ -202,14 +234,16 @@ export function Dashboard({ projection, sync, unitName, navigate, onQuickAction,
 
       <ReadinessTree nodes={nodes} overall={breakdown.overall} openDetails={() => setShowReadiness(true)} />
 
-      <AlertsPanel list={alertList} navigate={navigate} />
+      <AlertsPanel list={alertList} navigate={navigate} storage={ackStorage} />
+
+      {!amiOnTop && amiCard}
 
       <section className="dash-panel dash-next" aria-labelledby="dash-next-heading">
         <header className="dash-panel-head">
           <h3 id="dash-next-heading">Next supply event</h3>
         </header>
         {next ? (
-          <NextEvent event={next} current={current} open={() => navigate({ tab: 'calendar' })} />
+          <NextEvent event={next} current={current} open={() => navigate({ tab: 'calendar', calendarEventId: next.calendarEventId })} />
         ) : (
           <div className="dash-empty">
             <CalendarPlus aria-hidden="true" />
@@ -236,6 +270,7 @@ export function Dashboard({ projection, sync, unitName, navigate, onQuickAction,
           breakdown={breakdown}
           current={current}
           canViewActivity={canViewActivity}
+          sync={sync}
           close={() => setShowReadiness(false)}
           navigate={target => {
             setShowReadiness(false)
@@ -364,51 +399,91 @@ function ReadinessRing({ percent }: { percent: number }) {
   )
 }
 
-function AlertsPanel({ list, navigate }: { list: SupplyAlert[]; navigate: (target: DashboardTarget) => void }) {
+function AlertsPanel({ list, navigate, storage }: { list: SupplyAlert[]; navigate: (target: DashboardTarget) => void; storage?: AckStorage }) {
+  const id = useId()
   const [showAll, setShowAll] = useState(false)
-  const visible = showAll ? list : list.slice(0, MAX_ALERTS)
-  const critical = list.filter(alert => alert.severity === 'critical').length
+  const [showAcknowledged, setShowAcknowledged] = useState(false)
+  const [acks, setAcks] = useState<Acknowledgements>(() => loadAcknowledgements(storage))
+  const open = list.filter(alert => !isAcknowledged(alert, acks))
+  const acknowledged = list.filter(alert => isAcknowledged(alert, acks))
+  const visible = showAll ? open : open.slice(0, MAX_ALERTS)
+  const critical = open.filter(alert => alert.severity === 'critical').length
+  // Forget acknowledgements whose condition has cleared, so it alerts again if it comes back.
+  const liveIds = list.map(alert => alert.id).join('\n')
+  useEffect(() => {
+    const stored = loadAcknowledgements(storage)
+    const pruned = pruneAcknowledgements(stored, liveIds ? liveIds.split('\n').map(alertId => ({ id: alertId })) : [])
+    if (Object.keys(pruned).length !== Object.keys(stored).length) saveAcknowledgements(storage, pruned)
+  }, [liveIds, storage])
+  const update = (next: Acknowledgements) => {
+    const pruned = pruneAcknowledgements(next, list)
+    setAcks(pruned)
+    saveAcknowledgements(storage, pruned)
+  }
   return (
     <section className="dash-panel dash-alerts" aria-labelledby="dash-alerts-heading">
       <header className="dash-panel-head">
         <h3 id="dash-alerts-heading">Alerts</h3>
-        {list.length > 0 && (
+        {open.length > 0 && (
           <span className={critical ? 'dash-count critical' : 'dash-count'}>
-            {critical ? `${critical} critical` : `${list.length} open`}
+            {critical ? `${critical} critical` : `${open.length} open`}
           </span>
         )}
       </header>
-      {list.length ? (
+      {open.length ? (
         <ul className="dash-alert-list">
-          {visible.map(alert => {
-            const Icon = SEVERITY[alert.severity].icon
-            return (
-              <li key={alert.id}>
-                <button type="button" className={`dash-alert ${alert.severity}`} onClick={() => navigate(alert.target)}>
-                  <Icon aria-hidden="true" />
-                  <span>
-                    <span className="sr-only">{SEVERITY[alert.severity].label}: </span>
-                    <strong>{alert.title}</strong>
-                    <small>{alert.detail}</small>
-                  </span>
-                  <ChevronRight aria-hidden="true" />
-                </button>
-              </li>
-            )
-          })}
+          {visible.map((alert, index) => (
+            <AlertRow key={alert.id} alert={alert} titleId={`${id}-open-${index}`} navigate={navigate} action={{ label: 'Acknowledge', run: () => update(acknowledge(acks, alert)) }} />
+          ))}
         </ul>
       ) : (
         <p className="dash-all-clear">
           <CircleCheck aria-hidden="true" />
-          All clear — nothing needs attention right now.
+          {acknowledged.length ? 'All clear — every open alert is acknowledged.' : 'All clear — nothing needs attention right now.'}
         </p>
       )}
-      {list.length > MAX_ALERTS && (
+      {open.length > MAX_ALERTS && (
         <button type="button" className="text-button dash-more" aria-expanded={showAll} onClick={() => setShowAll(value => !value)}>
-          {showAll ? 'Show fewer alerts' : `View all ${list.length} alerts`}
+          {showAll ? 'Show fewer alerts' : `View all ${open.length} alerts`}
         </button>
       )}
+      {acknowledged.length > 0 && (
+        <>
+          <button type="button" className="text-button dash-more" aria-expanded={showAcknowledged} onClick={() => setShowAcknowledged(value => !value)}>
+            {showAcknowledged ? 'Hide acknowledged' : `Show acknowledged (${acknowledged.length})`}
+          </button>
+          {showAcknowledged && (
+            <ul className="dash-alert-list acknowledged" aria-label="Acknowledged alerts">
+              {acknowledged.map((alert, index) => (
+                <AlertRow key={alert.id} alert={alert} titleId={`${id}-ack-${index}`} navigate={navigate} action={{ label: 'Restore', run: () => update(unacknowledge(acks, alert)) }} />
+              ))}
+            </ul>
+          )}
+        </>
+      )}
     </section>
+  )
+}
+
+/** One alert: the whole row opens its record; the side button acknowledges (or restores) it on this device. */
+function AlertRow({ alert, titleId, navigate, action }: { alert: SupplyAlert; titleId: string; navigate: (target: DashboardTarget) => void; action: { label: string; run: () => void } }) {
+  const Icon = SEVERITY[alert.severity].icon
+  return (
+    <li className="dash-alert-item">
+      <button type="button" className={`dash-alert ${alert.severity}`} onClick={() => navigate(alert.target)}>
+        <Icon aria-hidden="true" />
+        <span>
+          <span className="sr-only">{SEVERITY[alert.severity].label}: </span>
+          <strong id={titleId}>{alert.title}</strong>
+          <small>{alert.detail}</small>
+        </span>
+        <ChevronRight aria-hidden="true" />
+      </button>
+      <button type="button" className="dash-alert-ack" aria-describedby={titleId} title={`${action.label} on this device`} onClick={action.run}>
+        <BellOff aria-hidden="true" />
+        <span>{action.label}</span>
+      </button>
+    </li>
   )
 }
 
@@ -519,7 +594,18 @@ function DashboardTiles({ projection, current, navigate, canViewActivity }: { pr
   )
 }
 
-type ReadinessRow = { key: string; label: string; percent: number; explanation: string; link?: string; target: DashboardTarget; icon: typeof Users }
+type ReadinessRow = {
+  key: keyof ReadinessWeights
+  label: string
+  percent: number
+  explanation: string
+  extra?: JSX.Element | string
+  link?: string
+  target: DashboardTarget
+  icon: typeof Users
+}
+
+const MAX_LISTED_CADETS = 5
 
 /** Plain words for the audit row: only records mined in a block count as verified. */
 function auditExplanation(projection: ArgusAppProjection) {
@@ -537,6 +623,7 @@ function ReadinessDrawer({
   breakdown,
   current,
   canViewActivity,
+  sync,
   close,
   navigate,
 }: {
@@ -544,22 +631,37 @@ function ReadinessDrawer({
   breakdown: ReadinessBreakdown
   current: Date
   canViewActivity: boolean
+  sync: SyncSnapshot
   close: () => void
   navigate: (target: DashboardTarget) => void
 }) {
-  const activeCadets = projection.cadets.filter(cadet => cadet.status === 'ACTIVE').length
-  const tracked = projection.inventory.filter(item => item.active && (item.reorderAt !== undefined || item.issued > 0 || item.onHand > 0)).length
   // Same event the readiness engine scores: the first active event still ahead of now.
-  const scored = upcomingEvents(projection, current).find(event => new Date(event.startsAt).getTime() >= current.getTime())
+  const scored = projection.calendar.find(event => event.calendarEventId === breakdown.scoredEventId)
   const scoredProgress = scored ? eventProgress(scored) : undefined
+  const scoredParts = scored ? combinedEventReadiness(scored, projection, current, sync).parts : []
+  const missing = breakdown.cadetsNeedingItems ? cadetsMissingStandardIssue(projection) : []
+  const weights = breakdown.weights
   const rows: ReadinessRow[] = [
     {
       key: 'cadets',
       label: 'Cadets',
       percent: breakdown.cadets,
-      explanation: activeCadets
-        ? `${activeCadets - breakdown.cadetsNeedingItems} of ${activeCadets} active cadets are fully issued.`
+      explanation: breakdown.activeCadets
+        ? `${breakdown.activeCadets - breakdown.cadetsNeedingItems} of ${breakdown.activeCadets} active cadets are fully issued.`
         : 'No active cadets yet — add your roster to track who is fully issued.',
+      extra: missing.length ? (
+        <ul className="readiness-cadets" aria-label="Cadets missing standard-issue gear">
+          {missing.slice(0, MAX_LISTED_CADETS).map(entry => (
+            <li key={entry.cadetId}>
+              <button type="button" className="text-button" onClick={() => navigate({ tab: 'cadets', cadetId: entry.cadetId })}>
+                {entry.label}
+                <small>missing {entry.missing.map(item => item.label).join(', ')}</small>
+              </button>
+            </li>
+          ))}
+          {missing.length > MAX_LISTED_CADETS && <li className="readiness-cadets-more">and {missing.length - MAX_LISTED_CADETS} more</li>}
+        </ul>
+      ) : undefined,
       link: 'Open Still Needed',
       target: { tab: 'more', panel: 'needed' },
       icon: Users,
@@ -568,11 +670,11 @@ function ReadinessDrawer({
       key: 'inventory',
       label: 'Inventory',
       percent: breakdown.inventory,
-      explanation: tracked
-        ? `${Math.max(0, tracked - breakdown.stockNeedingAttention)} of ${tracked} stocked sizes are above their low-stock level.`
-        : 'No sizes are stocked or tracked yet.',
-      link: 'Open Inventory',
-      target: { tab: 'inventory' },
+      explanation: breakdown.inventoryNeeded
+        ? `${breakdown.inventoryReady} of ${breakdown.inventoryNeeded} sizes the unit’s bundles need are on hand, above their low-stock level and enough for cadets waiting on them.`
+        : 'No bundle defines what to stock yet.',
+      link: 'Open items needing attention',
+      target: { tab: 'inventory', filter: 'attention' },
       icon: Boxes,
     },
     {
@@ -583,8 +685,9 @@ function ReadinessDrawer({
         scored && scoredProgress
           ? `${scoredProgress.done} of ${scoredProgress.total} preparation tasks complete for ${scored.title}.`
           : 'No upcoming supply event — nothing to prepare yet.',
-      link: 'Open Calendar',
-      target: { tab: 'calendar' },
+      extra: scoredParts.length > 1 ? `Event readiness combines ${scoredParts.map(part => `${part.label.toLowerCase()} ${part.percent}%`).join(' and ')}.` : undefined,
+      link: scored ? `Open ${scored.title}` : 'Open Calendar',
+      target: scored ? { tab: 'calendar', calendarEventId: scored.calendarEventId } : { tab: 'calendar' },
       icon: CalendarRange,
     },
     {
@@ -597,17 +700,19 @@ function ReadinessDrawer({
       icon: ShieldCheck,
     },
   ]
+  const equal = rows.every(row => weights[row.key] === weights.cadets)
   return (
     <Drawer title="Supply readiness" icon={<Gauge />} close={close}>
       <section className={`readiness-overall tone-${readinessTone(breakdown.overall)}`}>
         <strong>{breakdown.overall}%</strong>
         <p>
-          Overall supply readiness: the equal-weighted average of the four categories below, computed the same way on every
-          device from the unit’s shared records.
+          Overall supply readiness: the {equal ? 'equal-weighted' : 'weighted'} average of the four categories below
+          {equal ? '' : ` (${rows.map(row => `${row.label} ×${weights[row.key]}`).join(', ')})`}, computed the same way on every device from the
+          unit’s shared records. Weights are set per device in Settings.
         </p>
       </section>
       <ul className="readiness-rows">
-        {rows.map(({ key, label, percent, explanation, link, target, icon: Icon }) => (
+        {rows.map(({ key, label, percent, explanation, extra, link, target, icon: Icon }) => (
           <li key={key} className={`tone-${readinessTone(percent)}`}>
             <div className="readiness-row-head">
               <Icon aria-hidden="true" />
@@ -625,6 +730,7 @@ function ReadinessDrawer({
               <span style={{ width: `${percent}%` }} />
             </div>
             <p>{explanation}</p>
+            {typeof extra === 'string' ? <p>{extra}</p> : extra}
             {link && (
               <button type="button" className="text-button" onClick={() => navigate(target)}>
                 {link} <ChevronRight aria-hidden="true" />

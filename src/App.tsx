@@ -39,7 +39,10 @@ import { InventoryCatalogView } from "./features/inventory/InventoryCatalogView"
 import { CadetsView } from "./features/cadets/CadetsView";
 import { ConflictsPanel } from "./features/conflicts/ConflictsPanel";
 import { StillNeededActions } from "./features/needs/StillNeededActions";
-import { Dashboard } from "./features/dashboard";
+import { Dashboard, type DashboardTarget } from "./features/dashboard";
+import { ReadinessWeightsEditor } from "./features/dashboard/ReadinessWeightsEditor";
+import { StandardIssueGaps } from "./features/readiness/StandardIssueGaps";
+import type { SyncSnapshot } from "./stage3/readinessTypes";
 import { CalendarView } from "./features/calendar";
 import { BundleEditorPanel } from "./features/bundles";
 import { RolloverPanel, RosterImportPanel } from "./features/admin";
@@ -180,6 +183,12 @@ function AuthenticatedApp({
   const [notice, setNotice] = useState("");
   const [countItemId, setCountItemId] = useState<string>();
   const [workflowCadetId, setWorkflowCadetId] = useState<string>();
+  // The exact record an alert or readiness link opened (event drawer, cadet,
+  // filtered inventory); plain navigation clears it.
+  const [focus, setFocus] = useState<{
+    target: DashboardTarget;
+    nonce: number;
+  }>();
 
   useEffect(() => {
     let active = true,
@@ -303,6 +312,30 @@ function AuthenticatedApp({
     setWorkflowCadetId(cadetId);
     setPanel(kind);
   };
+  const openTarget = (target: DashboardTarget) => {
+    setTab(target.tab);
+    setPanel(target.panel ?? null);
+    const exact = Boolean(
+      target.calendarEventId || target.cadetId || target.itemId || target.filter,
+    );
+    setFocus((previous) =>
+      exact ? { target, nonce: (previous?.nonce ?? 0) + 1 } : undefined,
+    );
+  };
+  const showTab = (next: Tab) => {
+    setTab(next);
+    setFocus(undefined);
+  };
+  const focused = (which: Tab) =>
+    focus?.target.tab === which ? focus : undefined;
+  const syncSnapshot: SyncSnapshot = {
+    needsFunding: Boolean(status?.needsFunding),
+    state: status?.state,
+    queued: status?.queued ?? projection.sync.outbox,
+    unreadable: status?.unreadable,
+    lastScanAt: status?.lastScanAt,
+    revoked: status?.revoked,
+  };
   // Master spec §5: the dashboard is itself the navigation surface, so the normal taskbar is hidden there.
   const onDashboard = tab === "home";
   return (
@@ -320,7 +353,7 @@ function AuthenticatedApp({
               <button
                 key={id}
                 className={tab === id ? "nav-item active" : "nav-item"}
-                onClick={() => setTab(id)}
+                onClick={() => showTab(id)}
               >
                 <Icon size={19} />
                 <span>{label}</span>
@@ -410,20 +443,13 @@ function AuthenticatedApp({
         {tab === "home" && (
           <Dashboard
             projection={projection}
-            sync={{
-              label: syncText,
-              needsFunding: Boolean(status?.needsFunding),
-              state: status?.state,
-              queued: status?.queued ?? projection.sync.outbox,
-            }}
+            sync={{ label: syncText, ...syncSnapshot }}
+            weights={preferences.readinessWeights}
             unitName={
               runtime?.device.record.unit?.unitName ?? "A.R.G.U.S. demo"
             }
             canViewActivity={canViewActivity}
-            navigate={({ tab: next, panel: nextPanel }) => {
-              setTab(next);
-              setPanel(nextPanel ?? null);
-            }}
+            navigate={openTarget}
             onQuickAction={(action) => {
               if (action === "count") setTab("count");
               else {
@@ -435,6 +461,10 @@ function AuthenticatedApp({
         )}
         {tab === "calendar" && (
           <CalendarView
+            key={`calendar-${focused("calendar")?.nonce ?? 0}`}
+            initialEventId={focused("calendar")?.target.calendarEventId}
+            sync={syncSnapshot}
+            navigate={openTarget}
             projection={projection}
             controller={controller}
             can={can}
@@ -457,6 +487,11 @@ function AuthenticatedApp({
         )}
         {tab === "inventory" && (
           <InventoryCatalogView
+            key={`inventory-${focused("inventory")?.nonce ?? 0}`}
+            initialAttentionOnly={
+              focused("inventory")?.target.filter === "attention"
+            }
+            initialItemId={focused("inventory")?.target.itemId}
             projection={projection}
             controller={controller}
             can={can}
@@ -470,6 +505,13 @@ function AuthenticatedApp({
         )}
         {tab === "cadets" && (
           <CadetsView
+            key={`cadets-${focused("cadets")?.nonce ?? 0}`}
+            initialCadetId={focused("cadets")?.target.cadetId}
+            initialFilter={
+              focused("cadets")?.target.filter === "inactive"
+                ? "INACTIVE"
+                : undefined
+            }
             projection={projection}
             controller={controller}
             can={can}
@@ -504,7 +546,7 @@ function AuthenticatedApp({
             <button
               key={id}
               className={tab === id ? "active" : ""}
-              onClick={() => setTab(id)}
+              onClick={() => showTab(id)}
             >
               <Icon size={21} />
               <span>{label}</span>
@@ -561,6 +603,7 @@ function AuthenticatedApp({
           canManage={can("cadets.manage")}
           onProjection={setProjection}
           notify={notify}
+          openCadet={(cadetId) => openTarget({ tab: "cadets", cadetId })}
         />
       )}
       {panel === "conflicts" && (
@@ -754,6 +797,7 @@ function NeededPanel({
   canManage,
   onProjection,
   notify,
+  openCadet,
 }: {
   projection: ArgusAppProjection;
   close: () => void;
@@ -761,6 +805,7 @@ function NeededPanel({
   canManage: boolean;
   onProjection: (projection: ArgusAppProjection) => void;
   notify: (message: string) => void;
+  openCadet: (cadetId: string) => void;
 }) {
   const requirements = projection.stillNeeded,
     remaining = requirements.reduce(
@@ -860,6 +905,7 @@ function NeededPanel({
           </p>
         )}
       </div>
+      <StandardIssueGaps projection={projection} openCadet={openCadet} />
     </Drawer>
   );
 }
@@ -998,6 +1044,10 @@ function SettingsPanel({
       <DeviceNotificationSettings
         enabled={value.deviceNotifications}
         onChange={(on) => set("deviceNotifications", on)}
+      />
+      <ReadinessWeightsEditor
+        value={value.readinessWeights}
+        change={(weights) => set("readinessWeights", weights)}
       />
       <p>A.R.G.U.S. version {__APP_VERSION__}</p>
     </Drawer>

@@ -134,7 +134,7 @@ const EVENT_LABEL: Record<SupplyEventKind, string> = {
 }
 /** Generic label for a supply event: its kind, never its (free-text) title. */
 export const eventLabel = (kind: SupplyEventKind) => EVENT_LABEL[kind] ?? EVENT_LABEL.CUSTOM
-const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
+const plural = (count: number, word: string, many = `${word}s`) => `${count} ${count === 1 ? word : many}`
 const when = (startsAt: number, now: number) => {
   if (startsAt < now) return ''
   const days = Math.ceil((startsAt - now) / DAY)
@@ -181,39 +181,49 @@ function genericText(alert: SupplyAlert): { title: string; body: string } {
  */
 export function notificationCandidates(alerts: readonly AlertInput[], projection: Pick<ArgusAppProjection, 'calendar'>, now: number): NotificationCandidate[] {
   const tasks = projection.calendar.flatMap(event => event.active ? event.tasks.map(task => ({ event, task, dueAt: new Date(taskDueDate(event.startsAt, task.dueOffsetDays)).getTime() })) : [])
-  const groups = new Map<string, { event: (typeof tasks)[number]['event']; members: Array<{ alert: AlertInput; dueAt: number }> }>()
+  type Group = { event: (typeof tasks)[number]['event']; members: Array<{ alert: AlertInput; dueAt: number }>; eventAlerts: AlertInput[] }
+  const groups = new Map<string, Group>()
+  const groupFor = (event: Group['event']) => { const group = groups.get(event.calendarEventId) ?? { event, members: [], eventAlerts: [] }; groups.set(event.calendarEventId, group); return group }
   const candidates: NotificationCandidate[] = []
   for (const alert of alerts) {
     const task = tasks.find(entry => alert.id.includes(entry.task.taskId))
-    if (task) {
-      const group = groups.get(task.event.calendarEventId) ?? { event: task.event, members: [] }
-      group.members.push({ alert, dueAt: dueTime(alert.dueAt) ?? task.dueAt })
-      groups.set(task.event.calendarEventId, group)
-      continue
-    }
+    if (task) { groupFor(task.event).members.push({ alert, dueAt: dueTime(alert.dueAt) ?? task.dueAt }); continue }
+    // The event itself (approaching, readiness low) and its AMI categories join the same group: one notification per supply event.
+    const event = projection.calendar.find(candidate => candidate.active && (alert.id === `event-${candidate.calendarEventId}` || alert.id.startsWith(`ami-${candidate.calendarEventId}-`)))
+    if (event) { groupFor(event).eventAlerts.push(alert); continue }
     const text = genericText(alert)
     const dueAt = dueTime(alert.dueAt)
     candidates.push({ id: alert.id, alertIds: [alert.id], severity: alert.severity, fingerprint: fingerprint(`${alert.severity}|${alert.title}`), ...(dueAt !== undefined ? { dueAt } : {}), ...text, target: alert.target })
   }
-  for (const { event, members } of groups.values()) {
+  const rank: Record<AlertSeverity, number> = { critical: 2, warning: 1, info: 0 }
+  for (const { event, members, eventAlerts } of groups.values()) {
     const overdue = members.filter(member => member.alert.severity === 'critical')
     const soon = members.filter(member => member.alert.severity === 'warning' && member.dueAt - now <= NOTIFICATION_RULES.warningWindowMs)
-    const severity: AlertSeverity = overdue.length ? 'critical' : members.some(member => member.alert.severity === 'warning') ? 'warning' : 'info'
+    const taskSeverity: AlertSeverity = overdue.length ? 'critical' : members.some(member => member.alert.severity === 'warning') ? 'warning' : 'info'
+    const eventSeverity = eventAlerts.reduce<AlertSeverity>((worst, alert) => rank[alert.severity] > rank[worst] ? alert.severity : worst, 'info')
+    const severity: AlertSeverity = rank[eventSeverity] > rank[taskSeverity] ? eventSeverity : taskSeverity
+    const amiGaps = eventAlerts.filter(alert => alert.id.startsWith('ami-') && alert.severity !== 'info').length
+    const behind = eventAlerts.some(alert => alert.id.startsWith('event-') && alert.severity !== 'info')
     const counted = overdue.length ? overdue : soon.length ? soon : members
     const parts = [
       ...(overdue.length ? [`${plural(overdue.length, 'preparation task')} overdue`] : []),
       ...(soon.length ? [`${plural(soon.length, 'preparation task')} due within a day`] : []),
+      ...(amiGaps ? [`${plural(amiGaps, 'readiness category', 'readiness categories')} below 100%`] : []),
+      ...(behind && !amiGaps ? ['preparation is behind'] : []),
     ]
-    const ids = (list: typeof members) => list.map(member => member.alert.id).sort().join(',')
+    const ids = (list: readonly AlertInput[]) => list.map(alert => `${alert.id}:${alert.severity}`).sort().join(',')
+    const eventStart = new Date(event.startsAt).getTime()
+    const dueTimes = [...counted.map(member => member.dueAt), ...(eventAlerts.length ? [eventStart] : [])]
+    const target = members[0]?.alert.target ?? eventAlerts[0].target
     candidates.push({
       id: `event-${event.calendarEventId}`,
-      alertIds: members.map(member => member.alert.id),
+      alertIds: [...members.map(member => member.alert.id), ...eventAlerts.map(alert => alert.id)],
       severity,
-      fingerprint: fingerprint(`${severity}|overdue:${ids(overdue)}|soon:${ids(soon)}`),
-      dueAt: Math.min(...counted.map(member => member.dueAt)),
-      title: `A.R.G.U.S.: ${eventLabel(event.kind)}${when(new Date(event.startsAt).getTime(), now)} — ${parts[0] ?? 'preparation tasks coming due'}`,
-      body: `${parts.length > 1 ? `${parts.slice(1).join(' · ')}. ` : ''}Open A.R.G.U.S. to see ${destination(members[0].alert.target)}.`,
-      target: members[0].alert.target,
+      fingerprint: fingerprint(`${severity}|overdue:${ids(overdue.map(member => member.alert))}|soon:${ids(soon.map(member => member.alert))}|event:${ids(eventAlerts)}`),
+      dueAt: Math.min(...dueTimes),
+      title: `A.R.G.U.S.: ${eventLabel(event.kind)}${when(eventStart, now)} — ${parts[0] ?? 'preparation tasks coming due'}`,
+      body: `${parts.length > 1 ? `${parts.slice(1).join(' · ')}. ` : ''}Open A.R.G.U.S. to see ${destination(target)}.`,
+      target,
     })
   }
   return candidates

@@ -1,3 +1,4 @@
+import { browserAckStorage, isAcknowledged, loadAcknowledgements } from '../features/dashboard/alertAcknowledgements'
 import { useEffect, useRef, useState } from 'react'
 import type { ArgusAppProjection } from '../distributed/appIntegration'
 import { alerts, type AlertTarget } from '../stage3/readiness'
@@ -62,6 +63,9 @@ export function useDeviceNotifications({ enabled, projection, sync = {}, acknowl
   useEffect(() => {
     if (!enabled || !projection) return
     const now = clockRef.current()
-    notifier.evaluate({ alerts: alerts(projection, { needsFunding, state, queued }, new Date(now)), projection, now, ...(acknowledged ? { acknowledged } : {}) })
+    // Alerts acknowledged on the dashboard (same condition fingerprint) never notify; a changed condition can again.
+    const dashboardAcks = loadAcknowledgements(browserAckStorage())
+    const current = alerts(projection, { needsFunding, state, queued }, new Date(now)).map(alert => isAcknowledged(alert, dashboardAcks) ? { ...alert, acknowledged: true } : alert)
+    notifier.evaluate({ alerts: current, projection, now, ...(acknowledged ? { acknowledged } : {}) })
   }, [enabled, projection, needsFunding, state, queued, acknowledged, tick, notifier])
 }

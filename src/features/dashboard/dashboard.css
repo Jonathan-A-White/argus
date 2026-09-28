@@ -20,6 +20,10 @@
 .dash-next { grid-area: next; }
 .dash-setup { grid-area: setup; }
 .dash-tiles { grid-area: tiles; }
+.dash-ami { grid-area: ami; }
+/* AMI readiness (spec §17) joins the layout 45 days out and moves to the top in the final two weeks. */
+.dashboard.has-ami { grid-template-areas: 'hero' 'actions' 'tree' 'alerts' 'ami' 'next' 'setup' 'tiles'; }
+.dashboard.has-ami.ami-top { grid-template-areas: 'hero' 'ami' 'actions' 'tree' 'alerts' 'next' 'setup' 'tiles'; }
 
 /* ---------- hero: unit, sync, clock ---------- */
 .dash-hero {
@@ -317,6 +321,53 @@
 .dash-alert.critical small,
 .dash-alert.warning small { color: var(--color-text-primary); }
 .dash-more { min-height: 44px; margin-top: 6px; padding: 0 4px; font-size: 12px; }
+.dash-alert-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: stretch; }
+.dash-alert-ack {
+  min-width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 2px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 11px;
+  background: var(--color-bg-surface-raised);
+  color: var(--color-text-secondary);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+}
+.dash-alert-ack svg { width: 16px; height: 16px; }
+.dash-alert-ack:hover { border-color: var(--color-accent-cyan); color: var(--color-text-primary); }
+.dash-alert-list.acknowledged { margin-top: 6px; }
+.dash-alert-list.acknowledged .dash-alert { opacity: 0.72; border-color: var(--color-border); background: var(--color-bg-surface-raised); }
+
+.dash-ami.prominence-top,
+.dash-ami.prominence-critical { border-color: var(--color-accent-gold); }
+.dash-ami.prominence-critical { border-color: var(--color-danger); box-shadow: 0 0 0 1px var(--color-danger), var(--shadow-card); }
+.dash-ami-summary {
+  width: 100%;
+  min-height: 56px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 11px;
+  background: var(--color-bg-sidebar-raised);
+  color: var(--color-text-inverse);
+  text-align: left;
+}
+.dash-ami-summary > svg:first-child { width: 20px; height: 20px; color: #69dce8; }
+.dash-ami-summary.tone-attention > svg:first-child { color: #f3c577; }
+.dash-ami-summary.tone-critical > svg:first-child { color: #ffaaa3; }
+.dash-ami-summary > svg:last-child { width: 16px; height: 16px; color: #c3ceda; }
+.dash-ami-summary strong { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.dash-ami-summary small { display: block; margin-top: 3px; color: #c3ceda; font-size: 11px; }
+.dash-ami-summary:hover { border-color: var(--color-accent-cyan); }
 .dash-all-clear { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--color-success); font-size: 13px; font-weight: 700; }
 .dash-all-clear svg { width: 18px; height: 18px; flex: none; }
 
@@ -480,6 +531,10 @@
   font-size: 12px;
 }
 .readiness-rows .text-button svg { width: 14px; height: 14px; }
+.readiness-cadets { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.readiness-cadets .text-button { display: grid; justify-items: start; gap: 1px; min-height: 40px; text-align: left; }
+.readiness-cadets small { color: var(--color-text-secondary); font-size: 11px; font-weight: 600; overflow-wrap: anywhere; }
+.readiness-cadets-more { color: var(--color-text-secondary); font-size: 11px; }
 
 /* ---------- wider screens ---------- */
 @media (min-width: 560px) {
@@ -512,4 +567,25 @@
   .dash-clock time { font-size: 44px; }
   .dash-tiles { grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .dash-tile:last-child { grid-column: auto; }
+  .dashboard.has-ami {
+    grid-template-rows: auto auto auto auto auto 1fr auto;
+    grid-template-areas:
+      'hero hero'
+      'tree actions'
+      'tree alerts'
+      'tree ami'
+      'tree next'
+      'tree setup'
+      'tiles tiles';
+  }
+  .dashboard.has-ami.ami-top {
+    grid-template-areas:
+      'hero hero'
+      'ami ami'
+      'tree actions'
+      'tree alerts'
+      'tree next'
+      'tree setup'
+      'tiles tiles';
+  }
 }

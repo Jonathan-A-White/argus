@@ -97,7 +97,8 @@ describe('Dashboard command center', () => {
     fireEvent.click(cadets)
     expect(navigate).toHaveBeenLastCalledWith({ tab: 'more', panel: 'needed' })
     fireEvent.click(stock)
-    expect(navigate).toHaveBeenLastCalledWith({ tab: 'inventory' })
+    // Spec §5: STOCK opens Inventory already filtered to the sizes needing attention.
+    expect(navigate).toHaveBeenLastCalledWith({ tab: 'inventory', filter: 'attention' })
     fireEvent.click(events)
     expect(navigate).toHaveBeenLastCalledWith({ tab: 'calendar' })
   })
@@ -118,20 +119,23 @@ describe('Dashboard command center', () => {
     const expected = alerts(projection, sync, NOW)
     expect(expected.length).toBeGreaterThan(5)
     const { navigate } = renderDashboard(projection, { sync })
+    const ami = projection.calendar[0], cadet = projection.cadets[0]
+    const medium = projection.inventory.find(item => item.catalogId === catalogId('PT Shorts'))!
 
     const region = screen.getByRole('region', { name: 'Alerts' })
     expect(within(region).getAllByRole('listitem')).toHaveLength(5)
     fireEvent.click(within(region).getByRole('button', { name: /This device needs testnet coins/ }))
     expect(navigate).toHaveBeenLastCalledWith({ tab: 'more', panel: 'wallet' })
+    // Every alert opens the exact record: the overdue task opens its AMI event's drawer.
     fireEvent.click(within(region).getByRole('button', { name: /Overdue: Complete a physical count of Supply/ }))
-    expect(navigate).toHaveBeenLastCalledWith({ tab: 'calendar' })
+    expect(navigate).toHaveBeenLastCalledWith({ tab: 'calendar', calendarEventId: ami.calendarEventId })
 
     fireEvent.click(within(region).getByRole('button', { name: `View all ${expected.length} alerts` }))
     expect(within(region).getAllByRole('listitem')).toHaveLength(expected.length)
-    fireEvent.click(within(region).getByRole('button', { name: /cadet still need items/ }))
-    expect(navigate).toHaveBeenLastCalledWith({ tab: 'more', panel: 'needed' })
+    fireEvent.click(within(region).getByRole('button', { name: /cadet still needs items/ }))
+    expect(navigate).toHaveBeenLastCalledWith({ tab: 'cadets', cadetId: cadet.cadetId })
     fireEvent.click(within(region).getByRole('button', { name: /low on stock/ }))
-    expect(navigate).toHaveBeenLastCalledWith({ tab: 'inventory' })
+    expect(navigate).toHaveBeenLastCalledWith({ tab: 'inventory', filter: 'attention', itemId: medium.entityId })
   })
 
   it('opens the supply readiness breakdown from the READINESS node and from the trunk', async () => {
@@ -172,7 +176,7 @@ describe('Dashboard command center', () => {
     expect(within(next).getByText('in 12 days')).toBeInTheDocument()
     expect(within(next).getByText(`1/${nco.tasks.length} tasks done`)).toBeInTheDocument()
     fireEvent.click(within(next).getByRole('button', { name: /New Cadet Orientation/ }))
-    expect(navigate).toHaveBeenLastCalledWith({ tab: 'calendar' })
+    expect(navigate).toHaveBeenLastCalledWith({ tab: 'calendar', calendarEventId: nco.calendarEventId })
     unmount()
 
     renderDashboard(projection, { now: () => new Date(2026, 9, 9, 7, 0) })

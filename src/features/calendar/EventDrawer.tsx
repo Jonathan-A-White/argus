@@ -8,6 +8,7 @@ import { EventAttendees } from './EventAttendees'
 import { InlineError } from './InlineError'
 import { TaskEditor } from './TaskEditor'
 import { useMutation } from './useMutation'
+import type { AlertTarget, SyncSnapshot } from '../../stage3/readinessTypes'
 import {
   KIND_LABEL,
   STOCKED_KINDS,
@@ -31,6 +32,7 @@ import {
   toTimeInput,
   type TaskTone,
 } from './calendarModel'
+import { EventReadinessSection } from './EventReadinessSection'
 
 export type EventDrawerProps = {
   event: CalendarEventProjection
@@ -45,14 +47,18 @@ export type EventDrawerProps = {
   onProjection: (projection: ArgusAppProjection) => void
   notify: (message: string) => void
   close: () => void
+  /** This device's sync state, for AMI readiness. */
+  sync?: SyncSnapshot
+  /** Opens a record elsewhere in the app from the readiness section (a cadet, the rollover panel). */
+  navigate?: (target: AlertTarget) => void
 }
 
 type Mutations = Pick<EventDrawerProps, 'controller' | 'onProjection' | 'notify'>
 
 const BADGE: Record<TaskTone, string> = { done: 'success', overdue: 'danger', soon: 'warning', later: '' }
 
-/** Supply event detail: countdown, preparation checklist, bundle stock readiness, attendees and (with calendar.write) editing. */
-export function EventDrawer({ event, projection, controller, canWrite, canRevealNames = false, memberName, now, onProjection, notify, close }: EventDrawerProps): JSX.Element {
+/** Supply event detail: countdown, preparation checklist, bundle stock readiness, readiness, attendees and (with calendar.write) editing. */
+export function EventDrawer({ event, projection, controller, canWrite, canRevealNames = false, memberName, now, onProjection, notify, close, sync, navigate }: EventDrawerProps): JSX.Element {
   const progress = eventProgress(event)
   const days = daysUntil(event.startsAt, now)
   const leaf = dateBlock(event.startsAt)
@@ -123,6 +129,7 @@ export function EventDrawer({ event, projection, controller, canWrite, canReveal
       <TaskList event={event} canWrite={editable} now={now} memberName={memberName} {...mutations} />
       {editable && <AddTaskForm event={event} {...mutations} />}
       <EventBundles event={event} projection={projection} />
+      <EventReadinessSection event={event} projection={projection} now={now} sync={sync} navigate={navigate} />
       <EventAttendees event={event} projection={projection} canWrite={editable} canRevealNames={canRevealNames} {...mutations} />
       {editable && <EventDetailsForm key={event.calendarEventId} event={event} projection={projection} {...mutations} />}
       {canWrite && <EventStatusControl event={event} close={close} {...mutations} />}

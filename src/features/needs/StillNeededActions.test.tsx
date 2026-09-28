@@ -68,8 +68,9 @@ describe('Still Needed fulfil / cancel controls', () => {
     fireEvent.click(within(panel).getByRole('button', { name: 'Fulfil Pumps for C-NEED' }))
     fireEvent.change(within(panel).getByLabelText('Note (optional)'), { target: { value: 'Brought her own' } })
     fireEvent.click(within(panel).getByRole('button', { name: 'Mark fulfilled' }))
-    await waitFor(() => expect(within(panel).queryByText(/Pumps/)).toBeNull())
+    await waitFor(async () => expect((await controller.technicalState()).stillNeeded.find(need => need.displayLabel === 'Pumps')).toMatchObject({ status: 'FULFILLED', closeReason: 'Brought her own' }))
+    // The requirement leaves the list (the cadet may still show Pumps among missing standard-issue gear, which is a separate list).
+    await waitFor(() => expect(within(panel).queryByRole('button', { name: /Pumps for C-NEED/ })).toBeNull())
     expect(within(panel).getByRole('button', { name: 'Cancel Neck Tabs for C-NEED' })).toBeInTheDocument()
-    expect((await controller.technicalState()).stillNeeded.find(need => need.displayLabel === 'Pumps')).toMatchObject({ status: 'FULFILLED', closeReason: 'Brought her own' })
   })
 })

@@ -175,8 +175,12 @@ describe('notification wording and grouping', () => {
     const ami = projection.calendar.find(event => event.kind === 'AMI')!
     const group = candidates.find(item => item.id === `event-${ami.calendarEventId}`)!
     expect(group).toMatchObject({ severity: 'critical', title: 'A.R.G.U.S.: AMI in 2 days — 5 preparation tasks overdue', target: { tab: 'calendar' } })
-    expect(group.body).toBe('1 preparation task due within a day. Open A.R.G.U.S. to see the Supply Calendar.')
-    expect(group.alertIds).toHaveLength(6)
+    expect(group.body).toMatch(/^1 preparation task due within a day( · \d+ readiness categor(y|ies) below 100%)?\. Open A\.R\.G\.U\.S\. to see the Supply Calendar\.$/)
+    // The six task alerts, plus the event's own and AMI-category alerts: one notification for the whole event.
+    const taskIds = list.filter(alert => ami.tasks.some(task => alert.id.includes(task.taskId))).map(alert => alert.id)
+    expect(taskIds).toHaveLength(6)
+    expect(group.alertIds).toEqual(expect.arrayContaining(taskIds))
+    expect(group.alertIds.every(id => taskIds.includes(id) || id === `event-${ami.calendarEventId}` || id.startsWith(`ami-${ami.calendarEventId}-`))).toBe(true)
     const custom = candidates.find(item => item.id.startsWith('event-') && item !== group)!
     expect(custom.title).toBe('A.R.G.U.S.: A supply event in 5 days — 1 preparation task overdue')
   })
@@ -184,8 +188,8 @@ describe('notification wording and grouping', () => {
   it('never puts cadet names, cadet IDs or free text into a notification, even for alert kinds it does not know', async () => {
     const projection = await busyUnit()
     const unknown: SupplyAlert[] = [
-      { id: 'overdue-return-cadet_1', severity: 'critical', title: `${CODE} has an overdue return`, detail: `${NAME} · Garrison Cap`, target: { tab: 'cadets' } },
-      { id: 'revocation', severity: 'critical', title: `${NAME}'s access was removed`, detail: CODE, target: { tab: 'more', panel: 'diagnostics' } },
+      { id: 'overdue-return-cadet_1', severity: 'critical', title: `${CODE} has an overdue return`, detail: `${NAME} · Garrison Cap`, target: { tab: 'cadets' }, fingerprint: 'test' },
+      { id: 'revocation', severity: 'critical', title: `${NAME}'s access was removed`, detail: CODE, target: { tab: 'more', panel: 'diagnostics' }, fingerprint: 'test' },
     ]
     const list = [...alerts(projection, { needsFunding: true, queued: 4 }, new Date(NOW)), ...unknown]
     expect(list.some(alert => `${alert.title} ${alert.detail}`.includes(NAME))).toBe(true)
@@ -200,7 +204,8 @@ describe('notification wording and grouping', () => {
     const projection = await busyUnit()
     const list = alerts(projection, {}, new Date(NOW))
     const ami = projection.calendar.find(event => event.kind === 'AMI')!
-    const amiAlerts = list.filter(alert => ami.tasks.some(task => alert.id.includes(task.taskId)))
+    // Every alert about the AMI: its tasks first, then the event's own and AMI-category alerts.
+    const amiAlerts = [...list.filter(alert => ami.tasks.some(task => alert.id.includes(task.taskId))), ...list.filter(alert => alert.id === `event-${ami.calendarEventId}` || alert.id.startsWith(`ami-${ami.calendarEventId}-`))]
     const history = { ...emptyHistory(), lastOpenedAt: NOW - HOUR }
     const partly = planDeviceNotifications({ alerts: list, projection, now: NOW, visible: false, history, acknowledged: new Set(amiAlerts.slice(0, 2).map(alert => alert.id)) })
     expect(partly.notify.find(item => item.id === `event-${ami.calendarEventId}`)?.title).toBe('A.R.G.U.S.: AMI in 2 days — 3 preparation tasks overdue')

@@ -29,7 +29,7 @@ export type AuthorityRevocation = {
   signature: string
 }
 
-export type DistributedEventType = 'INVENTORY_ITEM_CREATED' | 'INVENTORY_ITEM_UPDATED' | 'INVENTORY_RECEIVED' | 'CATALOG_ITEM_CREATED' | 'CATALOG_ITEM_UPDATED' | 'CATALOG_SIZES_ADDED' | 'ITEM_ISSUED' | 'ITEM_RETURNED' | 'INVENTORY_COUNT_SUBMITTED' | 'COUNT_SESSION_CREATED' | 'COUNT_CONTRIBUTED' | 'COUNT_CORRECTED' | 'COUNT_RECOUNTED' | 'COUNT_SESSION_SUBMITTED' | 'COUNT_SESSION_RECONCILED' | 'COUNT_SESSION_CANCELLED' | 'AUTHORITY_GRANTED' | 'AUTHORITY_REVOKED' | 'ROLE_CHANGED' | 'CONFLICT_DETECTED' | 'CONFLICT_RESOLVED' | 'RECORD_CORRECTED' | 'CADET_CREATED' | 'CADET_UPDATED' | 'BUNDLE_CREATED' | 'BUNDLE_UPDATED' | 'BUNDLE_DEACTIVATED' | 'STILL_NEEDED_ADDED' | 'STILL_NEEDED_UPDATED' | 'STILL_NEEDED_CANCELLED' | 'STILL_NEEDED_FULFILLED' | 'CALENDAR_EVENT_CREATED' | 'CALENDAR_EVENT_UPDATED' | 'CALENDAR_TASK_ADDED' | 'TASK_COMPLETED' | 'PROPERTY_CORRECTED' | 'ANNUAL_ROLLOVER_COMPLETED' | 'CADETS_IMPORTED' | 'UNIT_KEY_ROTATED' | 'RECOVERY_KEY_REGISTERED'
+export type DistributedEventType = 'INVENTORY_ITEM_CREATED' | 'INVENTORY_ITEM_UPDATED' | 'INVENTORY_RECEIVED' | 'CATALOG_ITEM_CREATED' | 'CATALOG_ITEM_UPDATED' | 'CATALOG_SIZES_ADDED' | 'ITEM_ISSUED' | 'ITEM_RETURNED' | 'INVENTORY_COUNT_SUBMITTED' | 'COUNT_SESSION_CREATED' | 'COUNT_CONTRIBUTED' | 'COUNT_CORRECTED' | 'COUNT_RECOUNTED' | 'COUNT_SESSION_SUBMITTED' | 'COUNT_SESSION_REOPENED' | 'COUNT_SESSION_RECONCILED' | 'COUNT_SESSION_CANCELLED' | 'AUTHORITY_GRANTED' | 'AUTHORITY_REVOKED' | 'ROLE_CHANGED' | 'CONFLICT_DETECTED' | 'CONFLICT_RESOLVED' | 'RECORD_CORRECTED' | 'CADET_CREATED' | 'CADET_UPDATED' | 'BUNDLE_CREATED' | 'BUNDLE_UPDATED' | 'BUNDLE_DEACTIVATED' | 'STILL_NEEDED_ADDED' | 'STILL_NEEDED_UPDATED' | 'STILL_NEEDED_CANCELLED' | 'STILL_NEEDED_FULFILLED' | 'CALENDAR_EVENT_CREATED' | 'CALENDAR_EVENT_UPDATED' | 'CALENDAR_TASK_ADDED' | 'TASK_COMPLETED' | 'PROPERTY_CORRECTED' | 'ANNUAL_ROLLOVER_COMPLETED' | 'CADETS_IMPORTED' | 'UNIT_KEY_ROTATED' | 'RECOVERY_KEY_REGISTERED'
 export type LocalSyncStatus = 'LOCAL' | 'QUEUED' | 'SYNCING' | 'SYNCHRONIZED' | 'CONFLICT' | 'FAILED'
 
 export type UnsignedArgusEvent = {
@@ -56,8 +56,12 @@ export type SignedArgusEvent = UnsignedArgusEvent & { signature: string }
 export type AuditDeliveryStatus = 'NOT_SUBMITTED' | 'PENDING' | 'BROADCAST' | 'CONFIRMED' | 'PROOF_VERIFIED' | 'FAILED'
 export type StoredEvent = { event: SignedArgusEvent; syncStatus: LocalSyncStatus; auditStatus: AuditDeliveryStatus; receivedAt: string; transactionId?: string; blockHeight?: number }
 export type OutboxRecord = { eventId: string; attempts: number; status: 'QUEUED' | 'SYNCING' | 'FAILED'; lastError?: string }
-/** One projection represents exactly one stock keeping variant (one size of one catalog item). */
-export type InventoryProjection = { entityId: string; catalogId?: string; name: string; category: string; variant: string; niin: string; onHand: number; issued: number; reorderAt?: number; countIncrement: number; active: boolean; version: number; appliedEventIds: string[] }
+/**
+ * One projection represents exactly one stock keeping variant (one size of one catalog item).
+ * lastCountedAt/lastCountEventId come from the event that last set on-hand from a physical count
+ * (its own timestamp, so every device agrees).
+ */
+export type InventoryProjection = { entityId: string; catalogId?: string; name: string; category: string; variant: string; niin: string; onHand: number; issued: number; reorderAt?: number; countIncrement: number; active: boolean; version: number; appliedEventIds: string[]; lastCountedAt?: string; lastCountEventId?: string }
 /**
  * A catalog item groups the sizes (inventory variants) of one kind of gear, e.g. "PT Shorts"
  * with sizes S/M/L. Unsized gear has exactly one variant labelled ONE_SIZE_LABEL.
@@ -79,7 +83,13 @@ export type RecoveryKeyProjection = { publicKey: string; fingerprint: string; re
 
 export type CountSessionStatus = 'DRAFT' | 'ACTIVE' | 'SUBMITTED' | 'RECONCILED' | 'CANCELLED'
 export type CountAssignment = { assignmentId: string; itemId: string; scope: string; assignedTo?: string }
-export type CountObservation = { eventId: string; itemId: string; assignmentId: string; actorPublicIdentity: string; quantity: number; effectiveQuantity: number; status: 'ACCEPTED' | 'SUPERSEDED' | 'CORRECTED' | 'LATE'; note?: string; timestamp?: string }
+/**
+ * corrections lists every COUNT_CORRECTED applied to this observation in canonical order; one the
+ * submitter/finalizer had not seen is `late` and never changes a frozen total. supersedes is the
+ * recount's own list of observations it replaces.
+ */
+export type CountCorrection = { eventId: string; quantity: number; late?: boolean }
+export type CountObservation = { eventId: string; itemId: string; assignmentId: string; actorPublicIdentity: string; quantity: number; effectiveQuantity: number; status: 'ACCEPTED' | 'SUPERSEDED' | 'CORRECTED' | 'LATE'; note?: string; timestamp?: string; corrections?: CountCorrection[]; supersedes?: string[] }
 export type CountSessionProjection = {
   sessionId: string
   scope: string
@@ -98,6 +108,11 @@ export type CountSessionProjection = {
   reconciledAt?: string
   /** Counted items whose stock moved (issue/return/receive) between session start and finalization. Shown for review; never silently ignored. */
   movementWarnings?: string[]
+  /** Submitted for an officer's approval (lifecycle NEEDS_APPROVAL while status is SUBMITTED). */
+  submittedBy?: string
+  submittedAt?: string
+  /** The last time an officer sent a submitted count back for more counting. */
+  sentBack?: { by: string; at: string; reason: string; eventId: string }
   appliedEventIds: string[]
 }
 

@@ -41,6 +41,7 @@ import "./app-shell.css";
 import { Drawer, Summary } from "./components/Drawer";
 import { SharedCountView } from "./features/count/SharedCountView";
 import { InventoryCatalogView } from "./features/inventory/InventoryCatalogView";
+import { COUNT_INTERVAL_CHOICES } from "./stage3/inventoryStatus";
 import { CadetsView } from "./features/cadets/CadetsView";
 import { ConflictsPanel } from "./features/conflicts/ConflictsPanel";
 import { Dashboard } from "./features/dashboard";
@@ -442,6 +443,8 @@ function AuthenticatedApp({
               setCountItemId(itemId);
               setTab("count");
             }}
+            onOpenConflicts={() => setPanel("conflicts")}
+            countIntervalDays={preferences.countIntervalDays}
           />
         )}
         {tab === "cadets" && (
@@ -615,6 +618,10 @@ function describeEvent(
       return `Corrected a count to ${payload.replacementQuantity}`;
     case "COUNT_SESSION_CREATED":
       return `Started shared count “${payload.scope}”`;
+    case "COUNT_SESSION_SUBMITTED":
+      return `Submitted count “${session?.scope ?? "count"}” for approval`;
+    case "COUNT_SESSION_REOPENED":
+      return `Sent count “${session?.scope ?? "count"}” back for recounting`;
     case "COUNT_SESSION_RECONCILED":
       return `Finalized count “${session?.scope ?? "count"}” — on-hand updated`;
     case "COUNT_SESSION_CANCELLED":
@@ -1143,6 +1150,21 @@ function SettingsPanel({
           {nav.map((n) => (
             <option key={n.id} value={n.id}>
               {pageTitle(n.id)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <h3>Inventory</h3>
+      <label className="field">
+        COUNT DUE AFTER
+        <select
+          aria-label="Count due after"
+          value={value.countIntervalDays}
+          onChange={(e) => set("countIntervalDays", Number(e.target.value))}
+        >
+          {COUNT_INTERVAL_CHOICES.map((days) => (
+            <option key={days} value={days}>
+              {days} days without a count
             </option>
           ))}
         </select>

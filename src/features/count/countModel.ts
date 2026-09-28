@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import type { CountObservation, CountSessionProjection, InventoryProjection } from '../../distributed/types'
+import type { CountAssignment, CountObservation, CountSessionProjection, InventoryProjection, StoredEvent } from '../../distributed/types'
 import { MAX_COUNT_QUANTITY } from '../../distributed/replica'
 import { ONE_SIZE_LABEL } from '../../stage3/domain'
 
@@ -22,6 +22,71 @@ export function findLastReconciledSession(sessions: CountSessionProjection[]) {
 
 /** The replica only accepts contributions and corrections while a session is DRAFT or ACTIVE. */
 export const acceptsContributions = (session: CountSessionProjection) => session.status === 'DRAFT' || session.status === 'ACTIVE'
+
+// ---------- lifecycle (master spec §13) ----------
+
+/** The count lifecycle people see. The shared status SUBMITTED reads as NEEDS_APPROVAL. */
+export type CountLifecycle = 'DRAFT' | 'ACTIVE' | 'NEEDS_APPROVAL' | 'RECONCILED' | 'CANCELLED'
+export const LIFECYCLE_LABEL: Record<CountLifecycle, string> = { DRAFT: 'Draft', ACTIVE: 'Active', NEEDS_APPROVAL: 'Needs approval', RECONCILED: 'Reconciled', CANCELLED: 'Cancelled' }
+export const LIFECYCLE_TONE: Record<CountLifecycle, string> = { DRAFT: '', ACTIVE: 'success', NEEDS_APPROVAL: 'warning', RECONCILED: 'success', CANCELLED: '' }
+const LOCAL_ONLY = new Set<StoredEvent['syncStatus']>(['LOCAL', 'QUEUED', 'FAILED'])
+
+/**
+ * DRAFT is a count only this device knows about: its start has not reached the shared history yet
+ * (offline, or waiting for testnet coins), so nobody else can add to it until it syncs.
+ */
+export function countLifecycle(session: CountSessionProjection, events: StoredEvent[] = []): CountLifecycle {
+  switch (session.status) {
+    case 'SUBMITTED':
+      return 'NEEDS_APPROVAL'
+    case 'RECONCILED':
+      return 'RECONCILED'
+    case 'CANCELLED':
+      return 'CANCELLED'
+    case 'DRAFT':
+      return 'DRAFT'
+    default: {
+      const created = events.find(record => record.event.eventId === session.appliedEventIds[0])
+      return created && LOCAL_ONLY.has(created.syncStatus) ? 'DRAFT' : 'ACTIVE'
+    }
+  }
+}
+
+// ---------- who counts what (spec §13: different people, different categories) ----------
+
+/** Each assigned size is one engine assignment; this keeps the start-of-count record well under the chain's record size limit. */
+export const MAX_ASSIGNED_SIZES = 150
+
+/** One assignment per active size in each assigned category: people think in categories, the engine assigns sizes. */
+export function categoryAssignments(inventory: InventoryProjection[], assignees: ReadonlyMap<string, string>): CountAssignment[] {
+  return inventory
+    .filter(item => item.active && assignees.get(item.category))
+    .map(item => ({ assignmentId: `assign:${item.entityId}`, itemId: item.entityId, scope: item.category, assignedTo: assignees.get(item.category)! }))
+}
+
+/** Category → the person assigned to count it in this session. */
+export function categoryAssignees(session: CountSessionProjection) {
+  const assignees = new Map<string, string>()
+  for (const assignment of session.assignments) if (assignment.assignedTo && !assignees.has(assignment.scope)) assignees.set(assignment.scope, assignment.assignedTo)
+  return assignees
+}
+
+/** Categories that have something to count, in inventory order. */
+export const countableCategories = (inventory: InventoryProjection[]) => [...new Set(inventory.filter(item => item.active).map(item => item.category))]
+
+/** Late work, split so the summary can say "2 late contributions, 1 late correction". */
+export function lateWork(session: CountSessionProjection) {
+  const contributions = session.observations.filter(observation => observation.status === 'LATE').length
+  return { contributions, corrections: session.lateEventIds.length - contributions }
+}
+
+export const lateWorkText = (late: { contributions: number; corrections: number }) =>
+  [
+    late.contributions ? `${late.contributions} late contribution${late.contributions === 1 ? '' : 's'}` : '',
+    late.corrections ? `${late.corrections} late correction${late.corrections === 1 ? '' : 's'}` : '',
+  ]
+    .filter(Boolean)
+    .join(', ')
 
 /** Contributions that make up the shared total (LATE and SUPERSEDED ones are history only). */
 export const countsTowardTotal = (observation: CountObservation) =>

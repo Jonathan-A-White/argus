@@ -70,6 +70,7 @@ export class DistributedAppController {
   correctCount(sessionId: string, originalEventId: string, replacementQuantity: number, reason: string) { return this.run(r => r.correctCount(sessionId, originalEventId, replacementQuantity, reason)) }
   recount(sessionId: string, assignmentId: string, quantity: number, reason: string) { return this.run(r => r.recount(sessionId, assignmentId, quantity, reason)) }
   submitCountSession(sessionId: string) { return this.run(r => r.submitCountSession(sessionId)) }
+  reopenCountSession(sessionId: string, reason: string) { return this.run(r => r.reopenCountSession(sessionId, reason)) }
   reconcileCountSession(sessionId: string) { return this.run(r => r.reconcileCountSession(sessionId)) }
   finalizeCountSession(sessionId: string) { return this.run(r => r.finalizeCountSession(sessionId)) }
   cancelCountSession(sessionId: string, reason: string) { return this.run(r => r.cancelCountSession(sessionId, reason)) }

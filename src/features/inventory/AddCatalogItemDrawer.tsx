@@ -4,6 +4,7 @@ import { Drawer } from '../../components/Drawer'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
 import { SIZE_SCHEMES } from '../../stage3/sizes'
 import { MAX_COUNT_INCREMENT, MAX_COUNT_QUANTITY, categoriesOf, errorMessage, parseWhole } from './catalogModel'
+import { describeDuplicate, findLikelyDuplicates } from './duplicates'
 
 type Props = {
   projection: ArgusAppProjection
@@ -12,13 +13,15 @@ type Props = {
   notify: (message: string) => void
   /** Called after a successful save with the new catalog item, so its sizes can be set up next. */
   onCreated: (catalogId: string | undefined) => void
+  /** Opens an existing item the person recognises in the likely-duplicate warning. */
+  onOpenExisting?: (catalogId: string) => void
   close: () => void
 }
 
 type FieldErrors = Partial<Record<'name' | 'category' | 'niin' | 'threshold' | 'increment', string>>
 
 /** Adds a catalog item. The drawer only closes once the signed event has been saved. */
-export function AddCatalogItemDrawer({ projection, controller, onProjection, notify, onCreated, close }: Props) {
+export function AddCatalogItemDrawer({ projection, controller, onProjection, notify, onCreated, onOpenExisting, close }: Props) {
   const ids = useId()
   const [name, setName] = useState('')
   const [category, setCategory] = useState('')
@@ -30,7 +33,8 @@ export function AddCatalogItemDrawer({ projection, controller, onProjection, not
   const [errors, setErrors] = useState<FieldErrors>({})
   const [formError, setFormError] = useState('')
   const [busy, setBusy] = useState(false)
-  const duplicate = projection.catalog.find(item => name.trim() && item.name.trim().toLowerCase() === name.trim().toLowerCase())
+  // Warn, never block: case, punctuation, plurals, abbreviations, the same NIIN or mostly the same words.
+  const duplicates = findLikelyDuplicates({ name, niin }, projection.catalog)
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -91,13 +95,29 @@ export function AddCatalogItemDrawer({ projection, controller, onProjection, not
         <p className="catalog-section-text">
           New items start at 0 on hand. Quantities only come from counts and received stock, never from this form.
         </p>
-        {duplicate && (
-          <p className="workflow-warning">
+        {duplicates.length > 0 && (
+          <div className="workflow-warning catalog-duplicates" role="status">
             <AlertTriangle />
-            <span>
-              “{duplicate.name}” already exists in {duplicate.category}. If it just needs another size, open it and add sizes instead.
-            </span>
-          </p>
+            <div>
+              <strong>This may already be in the catalog</strong>
+              <ul aria-label="Likely duplicates">
+                {duplicates.map(duplicate => (
+                  <li key={duplicate.item.catalogId}>
+                    <span>
+                      “{duplicate.item.name}” · {duplicate.item.category}
+                      {duplicate.item.active ? '' : ' (inactive)'} — {describeDuplicate(duplicate)}
+                    </span>
+                    {onOpenExisting && (
+                      <button type="button" className="secondary-button" aria-label={`Open ${duplicate.item.name}`} onClick={() => onOpenExisting(duplicate.item.catalogId)}>
+                        Open
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <small>You can still add it. If it only needs another size, open the existing item and add sizes instead.</small>
+            </div>
+          </div>
         )}
         <div className="field catalog-field">
           <label htmlFor={`${ids}-name`}>Item name</label>

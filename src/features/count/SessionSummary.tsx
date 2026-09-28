@@ -1,7 +1,7 @@
 import { useId } from 'react'
 import { AlertTriangle, History } from 'lucide-react'
 import type { CountSessionProjection, InventoryProjection } from '../../distributed/types'
-import { countedRows, initials, relativeTime, signed, useNow } from './countModel'
+import { LIFECYCLE_LABEL, LIFECYCLE_TONE, countLifecycle, countedRows, initials, lateWork, lateWorkText, relativeTime, signed, useNow } from './countModel'
 
 const differenceClass = (difference: number) => (difference === 0 ? 'count-diff zero' : difference > 0 ? 'count-diff up' : 'count-diff down')
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
@@ -109,13 +109,14 @@ export function FinalizedSummary({
   const rows = countedRows(session, inventory).filter(row => row.itemId in session.totals)
   const labelFor = (itemId: string) => rows.find(row => row.itemId === itemId)?.label ?? 'Removed item'
   const moved = (session.movementWarnings ?? []).map(labelFor)
-  const late = session.lateEventIds.length
+  const late = lateWorkText(lateWork(session))
   return (
     <section className="table-card count-summary count-finalized" aria-labelledby={headingId}>
       <div className="count-summary-head">
         <div>
           <small className="operational-label">Last finalized count</small>
           <h3 id={headingId}>{session.scope}</h3>
+          <em className={`status-badge ${LIFECYCLE_TONE.RECONCILED}`}>{LIFECYCLE_LABEL.RECONCILED}</em>
           <p>
             Finalized{session.reconciledBy ? ` by ${memberName(session.reconciledBy)}` : ''}
             {session.reconciledAt ? ` · ${relativeTime(session.reconciledAt, now)}` : ''} · {plural(rows.length, 'size')} updated
@@ -131,11 +132,11 @@ export function FinalizedSummary({
           </div>
         </div>
       )}
-      {late > 0 && (
+      {late && (
         <div className="workflow-warning count-callout">
           <History />
           <div>
-            <strong>{plural(late, 'late contribution')}</strong>
+            <strong>{late}</strong>
             <p>Arrived after the count was finalized. They are kept in history and did not change stock — start a new count if they matter.</p>
           </div>
         </div>
@@ -171,5 +172,37 @@ export function FinalizedSummary({
       )}
       <People participants={session.participants} memberName={memberName} />
     </section>
+  )
+}
+
+/** Every finished count with its lifecycle label, newest first. */
+export function CountHistory({ sessions, memberName }: { sessions: CountSessionProjection[]; memberName: (publicIdentity: string) => string }) {
+  const now = useNow()
+  const finished = sessions
+    .filter(session => session.status === 'RECONCILED' || session.status === 'CANCELLED')
+    .sort((a, b) => (b.reconciledAt ?? b.createdAt ?? '').localeCompare(a.reconciledAt ?? a.createdAt ?? ''))
+  if (!finished.length) return null
+  return (
+    <details className="table-card count-history">
+      <summary>Earlier counts ({finished.length})</summary>
+      <ul aria-label="Earlier counts">
+        {finished.map(session => {
+          const lifecycle = countLifecycle(session)
+          return (
+            <li key={session.sessionId}>
+              <span>
+                <b>{session.scope}</b>
+                <small>
+                  {lifecycle === 'RECONCILED'
+                    ? `Finalized${session.reconciledBy ? ` by ${memberName(session.reconciledBy)}` : ''} ${relativeTime(session.reconciledAt, now)}`
+                    : `Started ${relativeTime(session.createdAt, now)} · no stock changed`}
+                </small>
+              </span>
+              <em className={`status-badge ${LIFECYCLE_TONE[lifecycle]}`}>{LIFECYCLE_LABEL[lifecycle]}</em>
+            </li>
+          )
+        })}
+      </ul>
+    </details>
   )
 }

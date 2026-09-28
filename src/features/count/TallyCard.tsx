@@ -104,7 +104,7 @@ export function TallyCard({ sessionId, variant, canContribute, readOnlyReason, c
         </div>
       </div>
       <div className="count-display">
-        <small>YOUR COUNT (NOT YET ADDED)</small>
+        <small>YOUR DRAFT COUNT (NOT YET ADDED)</small>
         <output aria-label="Your count">{tally}</output>
         <span>ONLY ON THIS DEVICE UNTIL YOU ADD IT</span>
       </div>

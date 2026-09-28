@@ -1,13 +1,14 @@
 import type { AuthorizationService } from '../auth/authorization'
 import { canonicalize } from './canonical'
 import type { ArgusIdentityProvider } from '../identity/identity'
-import type { ArgusPermission, AuthorityCredential, AuthorityRevocation, CalendarEventProjection, CalendarTaskProjection, CatalogItemProjection, NsLevel, SupplyEventKind, ConflictRecord, CountAssignment, CountObservation, CountSessionProjection, DistributedEventType, InventoryProjection, MissingIssueLine, SignedArgusEvent, SupplyTransactionLine, UnsignedArgusEvent } from './types'
+import type { ArgusPermission, AuthorityCredential, AuthorityRevocation, CalendarEventProjection, CalendarTaskProjection, CatalogItemProjection, NsLevel, SupplyEventKind, ConflictRecord, CountAssignment, CountCorrection, CountObservation, CountSessionProjection, DistributedEventType, InventoryProjection, MissingIssueLine, SignedArgusEvent, SupplyTransactionLine, UnsignedArgusEvent } from './types'
 import type { ArgusRepository, RepositoryState } from '../storage/repository'
 import type { EventSyncProvider } from '../sync/mock'
 import type { BundleVersionProjection, CadetProjection, StillNeededProjection } from './types'
 import { FACTORY_BUNDLES, GENESIS_CATALOG, GENESIS_INVENTORY, ONE_SIZE_LABEL, generateCadetCode, oneSizeVariantId, validateBundle, validateCadet, validateRequirement } from '../stage3/domain'
 import { normalizeSizeLabel } from '../stage3/sizes'
 import { SUPPLY_EVENT_KINDS, templateFor } from '../stage3/calendar'
+import { stockMovedSince } from '../stage3/inventoryStatus'
 import { parseKeyGrantRecord } from '../private-sync/schema'
 import type { KeyGrantRecord } from '../private-sync/types'
 
@@ -16,7 +17,7 @@ const PERMISSION_FOR: Partial<Record<DistributedEventType, ArgusPermission>> = {
   CATALOG_ITEM_CREATED: 'inventory.create', CATALOG_ITEM_UPDATED: 'inventory.adjust', CATALOG_SIZES_ADDED: 'inventory.create',
   ITEM_ISSUED: 'inventory.issue', ITEM_RETURNED: 'inventory.return', INVENTORY_COUNT_SUBMITTED: 'inventory.count',
   COUNT_SESSION_CREATED: 'inventory.count', COUNT_CONTRIBUTED: 'inventory.count', COUNT_CORRECTED: 'inventory.count', COUNT_RECOUNTED: 'inventory.count', COUNT_SESSION_SUBMITTED: 'inventory.count',
-  COUNT_SESSION_RECONCILED: 'inventory.adjust', COUNT_SESSION_CANCELLED: 'inventory.adjust', RECORD_CORRECTED: 'inventory.adjust', CONFLICT_RESOLVED: 'conflicts.resolve',
+  COUNT_SESSION_RECONCILED: 'inventory.adjust', COUNT_SESSION_REOPENED: 'inventory.adjust', COUNT_SESSION_CANCELLED: 'inventory.adjust', RECORD_CORRECTED: 'inventory.adjust', CONFLICT_RESOLVED: 'conflicts.resolve',
   CADET_CREATED: 'cadets.manage', CADET_UPDATED: 'cadets.manage', BUNDLE_CREATED: 'bundles.manage', BUNDLE_UPDATED: 'bundles.manage', BUNDLE_DEACTIVATED: 'bundles.manage',
   STILL_NEEDED_ADDED: 'cadets.manage', STILL_NEEDED_UPDATED: 'cadets.manage', STILL_NEEDED_CANCELLED: 'cadets.manage', STILL_NEEDED_FULFILLED: 'cadets.manage',
   AUTHORITY_GRANTED: 'users.authorize', AUTHORITY_REVOKED: 'users.revoke', ROLE_CHANGED: 'users.manageRoles',
@@ -137,7 +138,7 @@ export class ArgusReplica {
     const state = await this.repository.snapshot(), item = state.catalog.find(candidate => candidate.catalogId === catalogId); if (!item) throw new Error('Catalog item was not found.')
     const payload = pick<CatalogItemProjection>(changes, CATALOG_EDITABLE); validateCatalog({ ...item, ...payload })
     await this.actor('inventory.adjust', options.timestamp)
-    return this.commit({ eventType: 'CATALOG_ITEM_UPDATED', entityId: catalogId, payload, ...options })
+    return this.commit({ eventType: 'CATALOG_ITEM_UPDATED', entityId: catalogId, baseVersion: item.version, payload, ...options })
   }
   /** Adds sizes (new zero-quantity variants) to a sized catalog item in one event, however many sizes are chosen. */
   async addCatalogSizes(catalogId: string, labels: string[], options: CommandOptions = {}) {
@@ -225,19 +226,28 @@ export class ArgusReplica {
     if (!session || !['DRAFT', 'ACTIVE'].includes(session.status)) throw new Error('Count session is not open.')
     await this.actor('inventory.count', options.timestamp)
     const acceptedEventIds = session.observations.filter(o => o.status !== 'LATE').map(o => o.eventId).sort()
-    return this.commit({ eventType: 'COUNT_SESSION_SUBMITTED', entityId: sessionId, payload: { acceptedEventIds }, ...options })
+    return this.commit({ eventType: 'COUNT_SESSION_SUBMITTED', entityId: sessionId, payload: { acceptedEventIds, acceptedCorrectionIds: appliedCorrectionIds(session.observations) }, ...options })
+  }
+  /** An officer sends a count that is waiting for approval back for more counting; late contributions and corrections count again. */
+  async reopenCountSession(sessionId: string, reason: string, options: CommandOptions = {}) {
+    const session = (await this.repository.snapshot()).countSessions.find(s => s.sessionId === sessionId)
+    if (!session || session.status !== 'SUBMITTED') throw new Error('Only a count waiting for approval can be sent back.')
+    if (!reason.trim() || reason.length > 500) throw new Error('Give a reason (up to 500 characters) for sending the count back.')
+    await this.actor('inventory.adjust', options.timestamp)
+    return this.commit({ eventType: 'COUNT_SESSION_REOPENED', entityId: sessionId, payload: { reason: reason.trim() }, ...options })
   }
   async reconcileCountSession(sessionId: string, options: CommandOptions = {}) {
     const session = (await this.repository.snapshot()).countSessions.find(s => s.sessionId === sessionId)
     if (!session || session.status !== 'SUBMITTED') throw new Error('Count session is not ready for reconciliation.')
     if (session.lateEventIds.length) throw new Error('Submitted session has unresolved late work.')
     await this.actor('inventory.adjust', options.timestamp)
-    return this.commit({ eventType: 'COUNT_SESSION_RECONCILED', entityId: sessionId, payload: { acceptedEventIds: session.acceptedEventIds, totals: session.totals }, ...options })
+    return this.commit({ eventType: 'COUNT_SESSION_RECONCILED', entityId: sessionId, payload: { acceptedEventIds: session.acceptedEventIds, acceptedCorrectionIds: appliedCorrectionIds(session.observations), totals: session.totals }, ...options })
   }
   /**
-   * Officer finalization in one step: freezes exactly the contributions this device has seen and
-   * replaces on-hand for every counted size with the shared total. Contributions that reach the
-   * chain afterwards stay visible as LATE and never silently change stock.
+   * Officer finalization in one step: freezes exactly the contributions and corrections this device
+   * has seen and replaces on-hand for every counted size with the shared total. Contributions,
+   * corrections or recounts the officer had not seen stay visible as LATE and never silently change
+   * stock — or undo the finalization.
    */
   async finalizeCountSession(sessionId: string, options: CommandOptions = {}) {
     const session = (await this.repository.snapshot()).countSessions.find(s => s.sessionId === sessionId)
@@ -245,7 +255,7 @@ export class ArgusReplica {
     if (session.status === 'SUBMITTED' && session.lateEventIds.length) throw new Error('Submitted session has unresolved late work.')
     await this.actor('inventory.adjust', options.timestamp)
     const acceptedEventIds = session.acceptedEventIds ?? session.observations.filter(o => o.status !== 'LATE').map(o => o.eventId).sort()
-    return this.commit({ eventType: 'COUNT_SESSION_RECONCILED', entityId: sessionId, payload: { acceptedEventIds, totals: totalsFor(session.observations, new Set(acceptedEventIds)) }, ...options })
+    return this.commit({ eventType: 'COUNT_SESSION_RECONCILED', entityId: sessionId, payload: { acceptedEventIds, acceptedCorrectionIds: appliedCorrectionIds(session.observations), totals: totalsFor(session.observations, new Set(acceptedEventIds)) }, ...options })
   }
   async cancelCountSession(sessionId: string, reason: string, options: CommandOptions = {}) {
     const session = (await this.repository.snapshot()).countSessions.find(s => s.sessionId === sessionId)
@@ -423,6 +433,9 @@ export class ArgusReplica {
       case 'CATALOG_ITEM_UPDATED': {
         const item = state.catalog.find(candidate => candidate.catalogId === event.entityId); if (!item) throw new Error('Catalog projection is missing.')
         const changes = pick<CatalogItemProjection>(event.payload, CATALOG_EDITABLE); validateCatalog({ ...item, ...changes })
+        // Two offline edits of the same field are a visible conflict (the first in canonical order stands); edits of different fields merge. Legacy events without baseVersion apply in order.
+        const rivals = event.baseVersion !== undefined && event.baseVersion !== item.version ? concurrentSameFieldEdits(state, event, item.appliedEventIds) : []
+        if (rivals.length) { this.addEditConflict(state, event, rivals, 'Concurrent catalog item edits require reconciliation.'); return }
         Object.assign(item, changes); item.version++; item.appliedEventIds.push(event.eventId)
         for (const variant of state.inventory.filter(candidate => candidate.catalogId === item.catalogId)) { variant.name = item.name; variant.category = item.category; variant.niin = item.niin; variant.countIncrement = item.countIncrement; if (changes.active === false) variant.active = false; variant.version++; variant.appliedEventIds.push(event.eventId) }
         return
@@ -467,10 +480,10 @@ export class ArgusReplica {
         state.countSessions.push({ sessionId: event.entityId, scope: payload.scope, status: 'ACTIVE', createdBy: event.actorPublicIdentity, createdAt: event.timestamp, baseline: structuredClone(baseline), assignments: structuredClone(assignments), participants: [], observations: [], totals: {}, lateEventIds: [], appliedEventIds: [event.eventId] })
         return
       }
-      case 'COUNT_CONTRIBUTED': case 'COUNT_RECOUNTED': case 'COUNT_CORRECTED': case 'COUNT_SESSION_SUBMITTED': this.applyCountEvent(state, event); return
+      case 'COUNT_CONTRIBUTED': case 'COUNT_RECOUNTED': case 'COUNT_CORRECTED': case 'COUNT_SESSION_SUBMITTED': case 'COUNT_SESSION_REOPENED': this.applyCountEvent(state, event); return
       case 'COUNT_SESSION_CANCELLED': { const session = state.countSessions.find(s => s.sessionId === event.entityId); if (!session || session.status === 'RECONCILED') throw new Error('Count session cannot be cancelled.'); session.status = 'CANCELLED'; session.appliedEventIds.push(event.eventId); return }
       case 'COUNT_SESSION_RECONCILED': this.applyCountReconciliation(state, event); return
-      case 'INVENTORY_COUNT_SUBMITTED': { const item = state.inventory.find(i => i.entityId === event.entityId); const counted = event.payload.countedQuantity; if (!item || !Number.isInteger(counted) || Number(counted) < 0) throw new Error('Corrupted count event.'); if (event.baseVersion !== item.version) this.addConflict(state, event, 'Physical count was based on a stale inventory version.'); else { item.onHand = Number(counted); item.version++; item.appliedEventIds.push(event.eventId) } return }
+      case 'INVENTORY_COUNT_SUBMITTED': { const item = state.inventory.find(i => i.entityId === event.entityId); const counted = event.payload.countedQuantity; if (!item || !Number.isInteger(counted) || Number(counted) < 0) throw new Error('Corrupted count event.'); if (event.baseVersion !== item.version) this.addConflict(state, event, 'Physical count was based on a stale inventory version.'); else { item.onHand = Number(counted); item.version++; item.appliedEventIds.push(event.eventId); item.lastCountedAt = event.timestamp; item.lastCountEventId = event.eventId } return }
       case 'CADET_CREATED': {
         const value = pick<CadetProjection & { cadetCode: string }>(event.payload, ['fullName', 'gender', 'nsLevel', 'status', 'sizes', 'cadetCode']) as Pick<CadetProjection, 'fullName'|'gender'|'nsLevel'|'status'|'sizes'> & { cadetCode?: string }
         const cadet = { fullName: typeof value.fullName === 'string' ? value.fullName : '', gender: value.gender, nsLevel: value.nsLevel, status: value.status, sizes: value.sizes ?? {}, ...(typeof value.cadetCode === 'string' ? { cadetCode: value.cadetCode } : {}) }
@@ -611,22 +624,33 @@ export class ArgusReplica {
       if (typeof itemId !== 'string' || !Number.isInteger(quantity) || Number(quantity) < 0 || Number(quantity) > MAX_COUNT_QUANTITY) throw new Error('Corrupted count contribution.')
       if (assignmentId !== undefined) { const assignment = session.assignments.find(a => a.assignmentId === assignmentId); if (!assignment || assignment.itemId !== itemId) throw new Error('Corrupted count contribution.') }
       else if (!state.inventory.some(item => item.entityId === itemId)) throw new Error('Inventory projection is missing.')
-      const supersedes = event.eventType === 'COUNT_RECOUNTED' && Array.isArray(event.payload.supersedesEventIds) ? event.payload.supersedesEventIds as string[] : []
-      const observation: CountObservation = { eventId: event.eventId, itemId, assignmentId: typeof assignmentId === 'string' ? assignmentId : '', actorPublicIdentity: event.actorPublicIdentity, quantity: Number(quantity), effectiveQuantity: Number(quantity), status: frozen && !session.acceptedEventIds!.includes(event.eventId) ? 'LATE' : 'ACCEPTED', ...(typeof event.payload.note === 'string' ? { note: event.payload.note } : {}), timestamp: event.timestamp }
+      const supersedes = event.eventType === 'COUNT_RECOUNTED' && Array.isArray(event.payload.supersedesEventIds) ? (event.payload.supersedesEventIds as unknown[]).filter((id): id is string => typeof id === 'string') : []
+      const observation: CountObservation = { eventId: event.eventId, itemId, assignmentId: typeof assignmentId === 'string' ? assignmentId : '', actorPublicIdentity: event.actorPublicIdentity, quantity: Number(quantity), effectiveQuantity: Number(quantity), status: frozen && !session.acceptedEventIds!.includes(event.eventId) ? 'LATE' : 'ACCEPTED', ...(typeof event.payload.note === 'string' ? { note: event.payload.note } : {}), timestamp: event.timestamp, ...(supersedes.length ? { supersedes } : {}) }
       if (observation.status !== 'LATE') for (const prior of session.observations) if (supersedes.includes(prior.eventId) && prior.status !== 'LATE') prior.status = 'SUPERSEDED'
       session.observations.push(observation)
     } else if (event.eventType === 'COUNT_CORRECTED') {
       const original = session.observations.find(o => o.eventId === event.payload.originalEventId), replacement = event.payload.replacementQuantity
       if (!original || !Number.isInteger(replacement) || Number(replacement) < 0 || Number(replacement) > MAX_COUNT_QUANTITY) throw new Error('Corrupted or missing count correction dependency.')
-      if (frozen) return // corrections after the cutoff are retained as history but cannot change a frozen total
-      original.effectiveQuantity = Number(replacement); if (original.status === 'ACCEPTED') original.status = 'CORRECTED'
+      const correction = { eventId: event.eventId, quantity: Number(replacement) }
+      // After the cutoff a correction is kept as late history: it cannot change a frozen total.
+      if (frozen || original.status === 'LATE') original.corrections = [...(original.corrections ?? []), { ...correction, late: true }]
+      else { original.corrections = [...(original.corrections ?? []), correction]; original.effectiveQuantity = correction.quantity; if (original.status === 'ACCEPTED') original.status = 'CORRECTED' }
+    } else if (event.eventType === 'COUNT_SESSION_REOPENED') {
+      const reason = event.payload.reason
+      if (typeof reason !== 'string' || !reason.trim() || reason.length > 500) throw new Error('Corrupted count send-back event.')
+      if (session.status !== 'SUBMITTED') throw new Error('Only a count waiting for approval can be sent back.')
+      // Back to counting: late contributions and corrections count again.
+      session.observations = observationsAt(session.observations)
+      session.status = 'ACTIVE'; delete session.acceptedEventIds; delete session.submittedBy; delete session.submittedAt
+      session.sentBack = { by: event.actorPublicIdentity, at: event.timestamp, reason: reason.trim(), eventId: event.eventId }
     } else {
-      const accepted = event.payload.acceptedEventIds
-      if (!Array.isArray(accepted) || accepted.some(id => typeof id !== 'string')) throw new Error('Corrupted count-session cutoff.')
+      const accepted = event.payload.acceptedEventIds, corrections = parseIdList(event.payload.acceptedCorrectionIds)
+      if (!Array.isArray(accepted) || accepted.some(id => typeof id !== 'string') || corrections === null) throw new Error('Corrupted count-session cutoff.')
       if (session.status === 'RECONCILED') throw new Error('Count session is closed.')
-      if ((accepted as string[]).some(id => !session.observations.some(o => o.eventId === id))) throw new Error('Count session dependency is missing.')
-      session.status = 'SUBMITTED'; session.acceptedEventIds = [...new Set(accepted as string[])].sort()
-      for (const observation of session.observations) if (!session.acceptedEventIds.includes(observation.eventId)) observation.status = 'LATE'
+      if ((accepted as string[]).some(id => !session.observations.some(o => o.eventId === id)) || corrections?.some(id => !hasCorrection(session.observations, id))) throw new Error('Count session dependency is missing.')
+      const acceptedIds = [...new Set(accepted as string[])].sort()
+      session.observations = observationsAt(session.observations, { observations: new Set(acceptedIds), ...(corrections ? { corrections: new Set(corrections) } : {}) })
+      session.status = 'SUBMITTED'; session.acceptedEventIds = acceptedIds; session.submittedBy = event.actorPublicIdentity; session.submittedAt = event.timestamp
     }
     this.refreshCountSession(session)
     if (!session.appliedEventIds.includes(event.eventId)) session.appliedEventIds.push(event.eventId)
@@ -635,24 +659,31 @@ export class ArgusReplica {
     session.observations.sort((a, b) => a.eventId.localeCompare(b.eventId))
     session.totals = totalsFor(session.observations)
     session.participants = [...new Set(session.observations.map(o => o.actorPublicIdentity))].sort()
-    session.lateEventIds = session.observations.filter(o => o.status === 'LATE').map(o => o.eventId)
+    session.lateEventIds = [...session.observations.filter(o => o.status === 'LATE').map(o => o.eventId), ...session.observations.flatMap(o => (o.corrections ?? []).filter(c => c.late).map(c => c.eventId))].sort()
   }
   private applyCountReconciliation(state: RepositoryState, event: SignedArgusEvent) {
     const session = state.countSessions.find(s => s.sessionId === event.entityId)
     if (!session) throw new Error('Count session dependency is missing.')
     if (!['ACTIVE', 'SUBMITTED'].includes(session.status) || session.reconciledEventId) throw new Error('Count session is not ready for reconciliation.')
-    const accepted = event.payload.acceptedEventIds
-    if (!Array.isArray(accepted) || accepted.some(id => typeof id !== 'string')) throw new Error('Corrupted count-session cutoff.')
+    const accepted = event.payload.acceptedEventIds, corrections = parseIdList(event.payload.acceptedCorrectionIds)
+    if (!Array.isArray(accepted) || accepted.some(id => typeof id !== 'string') || corrections === null) throw new Error('Corrupted count-session cutoff.')
     const acceptedIds = new Set(accepted as string[])
-    if ([...acceptedIds].some(id => !session.observations.some(o => o.eventId === id))) throw new Error('Count session dependency is missing.')
+    if ([...acceptedIds].some(id => !session.observations.some(o => o.eventId === id)) || corrections?.some(id => !hasCorrection(session.observations, id))) throw new Error('Count session dependency is missing.')
     if (session.acceptedEventIds && canonicalize([...acceptedIds].sort()) !== canonicalize(session.acceptedEventIds)) throw new Error('Count reconciliation does not match the accepted cutoff.')
-    const totals = totalsFor(session.observations, acceptedIds)
+    // A submitted count is already frozen at its cutoff. Otherwise freeze at exactly what the finalizer had seen, so a
+    // correction or recount they had not seen becomes late history instead of invalidating the finalization.
+    const observations = session.acceptedEventIds ? session.observations : observationsAt(session.observations, { observations: acceptedIds, ...(corrections ? { corrections: new Set(corrections) } : {}) })
+    const totals = totalsFor(observations, acceptedIds)
     if (canonicalize(event.payload.totals) !== canonicalize(totals)) throw new Error('Count reconciliation does not match the accepted cutoff.')
     const missingItems = Object.keys(totals).filter(itemId => !state.inventory.some(i => i.entityId === itemId)); if (missingItems.length) throw new Error('Counted inventory projection is missing.')
+    session.observations = observations
     session.acceptedEventIds = [...acceptedIds].sort()
     for (const observation of session.observations) if (!acceptedIds.has(observation.eventId)) observation.status = 'LATE'
-    session.movementWarnings = Object.keys(totals).filter(itemId => { const baseline = session.baseline[itemId], item = state.inventory.find(i => i.entityId === itemId)!; return baseline !== undefined && item.version !== baseline.inventoryVersion })
-    for (const [itemId, total] of Object.entries(totals)) { const item = state.inventory.find(i => i.entityId === itemId)!; item.onHand = total; item.version++; item.appliedEventIds.push(event.eventId) }
+    // Only stock-moving events count: renaming an item mid-count bumps its version but moves nothing.
+    const eventType = (eventId: string) => state.events.find(record => record.event.eventId === eventId)?.event.eventType
+    session.movementWarnings = Object.keys(totals).filter(itemId => { const baseline = session.baseline[itemId], item = state.inventory.find(i => i.entityId === itemId)!; return baseline !== undefined && stockMovedSince(item, baseline.inventoryVersion, eventType) })
+    // The count time is the finalizing event's own timestamp, so every device agrees on when each size was last counted.
+    for (const [itemId, total] of Object.entries(totals)) { const item = state.inventory.find(i => i.entityId === itemId)!; item.onHand = total; item.version++; item.appliedEventIds.push(event.eventId); item.lastCountedAt = event.timestamp; item.lastCountEventId = event.eventId }
     session.status = 'RECONCILED'; session.reconciledEventId = event.eventId; session.reconciledBy = event.actorPublicIdentity; session.reconciledAt = event.timestamp; session.appliedEventIds.push(event.eventId)
     this.refreshCountSession(session); session.totals = totals
   }
@@ -686,6 +717,11 @@ export class ArgusReplica {
     const related = state.transactions.filter(transaction => transaction.lines.some(line => inventoryItemIds.includes(line.itemId))).map(transaction => transaction.eventId)
     const eventIds = [...new Set([...related, event.eventId])].sort(); const entityId = inventoryItemIds[0] ?? event.entityId
     const conflict: ConflictRecord = { id: `conflict:${event.eventId}`, entityId, eventIds, status: 'OPEN', reason, transactionId: event.entityId, inventoryItemIds, cadetId }
+    if (!state.conflicts.some(candidate => candidate.id === conflict.id)) state.conflicts.push(conflict)
+  }
+  /** Named after the edit that lost and listing only already-folded rivals, so every device derives the same record whatever order it received the events in. */
+  private addEditConflict(state: RepositoryState, event: SignedArgusEvent, rivals: string[], reason: string) {
+    const conflict: ConflictRecord = { id: 'conflict:' + event.eventId, entityId: event.entityId, eventIds: [...new Set([...rivals, event.eventId])].sort(), status: 'OPEN', reason }
     if (!state.conflicts.some(candidate => candidate.id === conflict.id)) state.conflicts.push(conflict)
   }
   private addConflict(state: RepositoryState, event: SignedArgusEvent, reason: string) { const related = state.events.filter(e => e.event.entityId === event.entityId && e.event.baseVersion === event.baseVersion).map(e => e.event.eventId); const ids = [...new Set([...related, event.eventId])].sort(); const conflict = { id: `conflict:${ids.join(':')}`, entityId: event.entityId, eventIds: ids, status: 'OPEN' as const, reason }; if (!state.conflicts.some(c => c.id === conflict.id)) state.conflicts.push(conflict) }
@@ -794,6 +830,44 @@ function totalsFor(observations: CountObservation[], accepted?: Set<string>) {
   }
   return totals
 }
+/** Corrections that currently count toward a total: not late, on an observation that is not late. */
+function appliedCorrectionIds(observations: CountObservation[]) {
+  return observations.flatMap(observation => observation.status === 'LATE' ? [] : (observation.corrections ?? []).filter(correction => !correction.late).map(correction => correction.eventId)).sort()
+}
+const hasCorrection = (observations: CountObservation[], eventId: string) => observations.some(observation => observation.corrections?.some(correction => correction.eventId === eventId))
+/** undefined when absent (legacy events), null when malformed. */
+function parseIdList(value: unknown): string[] | undefined | null {
+  if (value === undefined) return undefined
+  return Array.isArray(value) && value.every(id => typeof id === 'string') ? value as string[] : null
+}
+/**
+ * Re-derives every observation's status and effective quantity at a cutoff: the contributions
+ * (and, when named, the corrections) the submitter or finalizer had seen. Anything else is LATE.
+ * Without a cutoff the count is open again and everything counts. Pure, so a rejected event never
+ * leaves a half-changed session behind; deterministic, so every device derives the same result.
+ */
+function observationsAt(observations: CountObservation[], cutoff?: { observations: Set<string>; corrections?: Set<string> }): CountObservation[] {
+  const live = (observation: CountObservation) => !cutoff || cutoff.observations.has(observation.eventId)
+  const seen = (correction: CountCorrection) => !cutoff || (cutoff.corrections ? cutoff.corrections.has(correction.eventId) : !correction.late)
+  const superseded = new Set(observations.filter(live).flatMap(observation => observation.supersedes ?? []))
+  // Projections stored before recounts recorded what they supersede keep their SUPERSEDED marks.
+  const referenced = new Set(observations.flatMap(observation => observation.supersedes ?? []))
+  for (const observation of observations) if (observation.status === 'SUPERSEDED' && !referenced.has(observation.eventId)) superseded.add(observation.eventId)
+  return observations.map(observation => {
+    const next: CountObservation = { ...observation }
+    if (!live(observation)) {
+      if (observation.corrections) next.corrections = observation.corrections.map(correction => ({ ...correction, late: true }))
+      return { ...next, effectiveQuantity: observation.quantity, status: 'LATE' }
+    }
+    let effective = observation.quantity, applied = false
+    if (observation.corrections) next.corrections = observation.corrections.map(correction => {
+      if (!seen(correction)) return { ...correction, late: true }
+      effective = correction.quantity; applied = true
+      return { eventId: correction.eventId, quantity: correction.quantity }
+    })
+    return { ...next, effectiveQuantity: effective, status: superseded.has(observation.eventId) ? 'SUPERSEDED' : applied ? 'CORRECTED' : 'ACCEPTED' }
+  })
+}
 function validateInventoryChanges(changes: Partial<InventoryProjection>) {
   if (changes.name !== undefined && (typeof changes.name !== 'string' || !changes.name.trim() || changes.name.length > 80)) throw new Error('Item name must be 1–80 characters.')
   if (changes.category !== undefined && (typeof changes.category !== 'string' || !changes.category.trim() || changes.category.length > 40)) throw new Error('Category must be 1–40 characters.')
@@ -826,8 +900,9 @@ function validateTask(task: { title: string; dueOffsetDays: number }) {
  * had not seen (an already-applied edit whose base version is not older than this one's). Stock
  * movements also bump versions, but they never make a profile or catalog edit ambiguous.
  */
-function concurrentEditOfSameFields(state: RepositoryState, event: SignedArgusEvent, appliedEventIds: string[]) {
+function concurrentSameFieldEdits(state: RepositoryState, event: SignedArgusEvent, appliedEventIds: string[]) {
   const fields = Object.keys(event.payload)
-  return state.events.some(record => record.event.eventType === event.eventType && record.event.entityId === event.entityId && record.event.eventId !== event.eventId && appliedEventIds.includes(record.event.eventId) && record.event.baseVersion !== undefined && record.event.baseVersion >= (event.baseVersion ?? 0) && Object.keys(record.event.payload).some(field => fields.includes(field)))
+  return state.events.filter(record => record.event.eventType === event.eventType && record.event.entityId === event.entityId && record.event.eventId !== event.eventId && appliedEventIds.includes(record.event.eventId) && record.event.baseVersion !== undefined && record.event.baseVersion >= (event.baseVersion ?? 0) && Object.keys(record.event.payload).some(field => fields.includes(field))).map(record => record.event.eventId)
 }
+const concurrentEditOfSameFields = (state: RepositoryState, event: SignedArgusEvent, appliedEventIds: string[]) => concurrentSameFieldEdits(state, event, appliedEventIds).length > 0
 

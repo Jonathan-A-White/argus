@@ -1,12 +1,26 @@
-import { useState, type JSX } from 'react'
+import { useId, useMemo, useState, type JSX } from 'react'
 import { ArrowRight, PackagePlus, Search, X } from 'lucide-react'
 import { Summary } from '../../components/Drawer'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
 import type { ArgusPermission, CatalogItemProjection, InventoryProjection } from '../../distributed/types'
-import { matchesSearch } from '../../domain'
+import { matchesItemSearch } from '../../domain'
+import { useNow } from '../count/countModel'
 import { AddCatalogItemDrawer } from './AddCatalogItemDrawer'
 import { ItemEditorDrawer } from './ItemEditorDrawer'
-import { catalogStatus, categoriesOf, needsAttention, plural, sumOf, toneClass, variantsOf, type CatalogStatus } from './catalogModel'
+import {
+  DEFAULT_COUNT_INTERVAL_DAYS,
+  catalogFlags,
+  catalogStatus,
+  categoriesOf,
+  inventoryStatuses,
+  needsAttention,
+  plural,
+  sumOf,
+  toneClass,
+  variantsOf,
+  type CatalogFlags,
+  type CatalogStatus,
+} from './catalogModel'
 import './inventory.css'
 
 export type InventoryCatalogViewProps = {
@@ -17,15 +31,22 @@ export type InventoryCatalogViewProps = {
   notify: (message: string) => void
   /** Jump to the Count tab with this size selected. */
   onCount: (itemId: string) => void
+  /** Open the unit's conflicts, from a size that needs reconciliation. */
+  onOpenConflicts?: () => void
+  /** A size is Count Due after this many days without a count (a per-device preference). */
+  countIntervalDays?: number
+  /** Clock override for deterministic rendering; defaults to a shared, coarse clock. */
+  now?: number
 }
 
-type CatalogRowData = { item: CatalogItemProjection; variants: InventoryProjection[]; status: CatalogStatus }
+type CatalogRowData = { item: CatalogItemProjection; variants: InventoryProjection[]; status: CatalogStatus; flags: CatalogFlags }
+type StatusFilter = 'attention' | 'countDue' | 'reconcile'
 
 /** The unit's catalog: every kind of gear, its sizes and stock, with editing for officers. */
-export function InventoryCatalogView({ projection, controller, can, onProjection, notify, onCount }: InventoryCatalogViewProps): JSX.Element {
+export function InventoryCatalogView({ projection, controller, can, onProjection, notify, onCount, onOpenConflicts, countIntervalDays = DEFAULT_COUNT_INTERVAL_DAYS, now: fixedNow }: InventoryCatalogViewProps): JSX.Element {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<string>()
-  const [attentionOnly, setAttentionOnly] = useState(false)
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>()
   const [editingId, setEditingId] = useState<string>()
   const [adding, setAdding] = useState(false)
 
@@ -33,26 +54,34 @@ export function InventoryCatalogView({ projection, controller, can, onProjection
   const onHand = sumOf(activeVariants, 'onHand')
   const issued = sumOf(activeVariants, 'issued')
   const attention = activeVariants.filter(needsAttention).length
+  const clock = useNow()
+  const now = fixedNow ?? clock
+  const statuses = useMemo(() => inventoryStatuses(projection.inventory, projection, now, { countIntervalDays }), [projection, now, countIntervalDays])
   const rows: CatalogRowData[] = projection.catalog.map(item => {
     const variants = variantsOf(projection.inventory, item.catalogId)
-    return { item, variants, status: catalogStatus(item, variants) }
+    return { item, variants, status: catalogStatus(item, variants), flags: catalogFlags(item.active ? variants : [], statuses) }
   })
+  const countDueItems = rows.filter(row => row.flags.countDue > 0).length
+  const reconcileItems = rows.filter(row => row.flags.reconcile > 0).length
   const withoutSizes = rows.filter(row => row.item.active && row.status.label === 'Sizes not set').length
   const categories = categoriesOf(projection.catalog)
   const visible = rows.filter(
-    ({ item, variants, status }) =>
+    ({ item, variants, status, flags }) =>
       (!category || item.category === category) &&
-      (!attentionOnly || status.tone === 'warning' || status.tone === 'danger') &&
-      matchesSearch(query, [item.name, item.category, item.niin, ...variants.map(variant => variant.variant)].join(' ')),
+      (statusFilter !== 'attention' || status.tone === 'warning' || status.tone === 'danger') &&
+      (statusFilter !== 'countDue' || flags.countDue > 0) &&
+      (statusFilter !== 'reconcile' || flags.reconcile > 0) &&
+      matchesItemSearch(query, { name: item.name, category: item.category, niin: item.niin, sizes: variants.map(variant => variant.variant) }),
   )
   const activeRows = visible.filter(row => row.item.active)
   const inactiveRows = visible.filter(row => !row.item.active)
-  const filtering = Boolean(query || category || attentionOnly)
+  const filtering = Boolean(query || category || statusFilter)
   const clearFilters = () => {
     setQuery('')
     setCategory(undefined)
-    setAttentionOnly(false)
+    setStatusFilter(undefined)
   }
+  const toggleStatus = (value: StatusFilter) => setStatusFilter(current => (current === value ? undefined : value))
 
   return (
     <div className="content inventory-catalog">
@@ -83,7 +112,7 @@ export function InventoryCatalogView({ projection, controller, can, onProjection
         <div className="table-tools catalog-tools">
           <div className="inline-search">
             <Search />
-            <input aria-label="Search catalog" value={query} placeholder="Search name, size, category or NIIN…" onChange={event => setQuery(event.target.value)} />
+            <input aria-label="Search catalog" value={query} placeholder="Search name, size (34R, M), category or NIIN…" onChange={event => setQuery(event.target.value)} />
             {query && (
               <button type="button" className="catalog-clear" aria-label="Clear search" onClick={() => setQuery('')}>
                 <X />
@@ -107,9 +136,17 @@ export function InventoryCatalogView({ projection, controller, can, onProjection
                 </button>
               ))}
             </div>
-            <button type="button" className="catalog-chip attention" aria-pressed={attentionOnly} onClick={() => setAttentionOnly(value => !value)}>
-              Needs attention
-            </button>
+            <div role="group" aria-label="Filter by status" className="catalog-status-filters">
+              <button type="button" className="catalog-chip attention" aria-pressed={statusFilter === 'attention'} onClick={() => toggleStatus('attention')}>
+                Needs attention
+              </button>
+              <button type="button" className="catalog-chip" aria-pressed={statusFilter === 'countDue'} onClick={() => toggleStatus('countDue')}>
+                Count due ({countDueItems})
+              </button>
+              <button type="button" className="catalog-chip" aria-pressed={statusFilter === 'reconcile'} onClick={() => toggleStatus('reconcile')}>
+                Reconciliation required ({reconcileItems})
+              </button>
+            </div>
           </div>
         </div>
         {activeRows.length ? (
@@ -148,10 +185,20 @@ export function InventoryCatalogView({ projection, controller, can, onProjection
           can={can}
           onProjection={onProjection}
           notify={notify}
+          statuses={statuses}
+          countIntervalDays={countIntervalDays}
           onCount={itemId => {
             setEditingId(undefined)
             onCount(itemId)
           }}
+          {...(onOpenConflicts
+            ? {
+                onOpenConflicts: () => {
+                  setEditingId(undefined)
+                  onOpenConflicts()
+                },
+              }
+            : {})}
           close={() => setEditingId(undefined)}
         />
       )}
@@ -166,6 +213,10 @@ export function InventoryCatalogView({ projection, controller, can, onProjection
             setAdding(false)
             setEditingId(catalogId)
           }}
+          onOpenExisting={catalogId => {
+            setAdding(false)
+            setEditingId(catalogId)
+          }}
         />
       )}
     </div>
@@ -173,7 +224,9 @@ export function InventoryCatalogView({ projection, controller, can, onProjection
 }
 
 function CatalogRow({ row, open }: { row: CatalogRowData; open: () => void }) {
-  const { item, variants, status } = row
+  const { item, variants, status, flags } = row
+  const flagsId = useId()
+  const flagged = flags.countDue > 0 || flags.reconcile > 0
   const active = variants.filter(variant => variant.active)
   const onHand = sumOf(active, 'onHand')
   const sizes = !item.sized ? 'One size' : variants.length ? String(active.length) : '—'
@@ -184,6 +237,7 @@ function CatalogRow({ row, open }: { row: CatalogRowData; open: () => void }) {
         type="button"
         className="inventory-row catalog-row"
         aria-label={`${item.name}: ${onHand} on hand, ${sizeSummary}, ${status.label}`}
+        aria-describedby={flagged ? flagsId : undefined}
         onClick={open}
       >
         <span className="category-mark" aria-hidden="true">
@@ -194,6 +248,14 @@ function CatalogRow({ row, open }: { row: CatalogRowData; open: () => void }) {
           <small>
             {item.category} · {item.niin || 'No NIIN'}
           </small>
+          {flagged && (
+            <span className="catalog-flags" id={flagsId}>
+              {flags.reconcile > 0 && (
+                <span className="status-badge danger">Reconciliation required{variants.length > 1 ? ` · ${plural(flags.reconcile, 'size')}` : ''}</span>
+              )}
+              {flags.countDue > 0 && <span className="status-badge warning">Count due{variants.length > 1 ? ` · ${plural(flags.countDue, 'size')}` : ''}</span>}
+            </span>
+          )}
         </span>
         <span>
           <small>SIZES</small>

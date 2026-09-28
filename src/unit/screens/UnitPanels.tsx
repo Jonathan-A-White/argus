@@ -8,6 +8,8 @@ import { DEFAULT_MEMBER_TOP_UP_SATOSHIS, type UnitRuntime, type UnitStatus } fro
 import { roleLabel, syncLabel } from './labels'
 
 const explorer = (kind: 'address' | 'tx', value: string) => `https://test.whatsonchain.com/${kind}/${value}`
+/** A public BSV testnet faucet; the coins it sends have no value. */
+const TESTNET_FAUCET_URL = 'https://witnessonchain.com/faucet/tbsv'
 const shortId = (value: string) => value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value
 
 async function shareOrCopy(text: string, title: string) {
@@ -107,6 +109,7 @@ export function WalletPanel({ runtime, status, close, notify }: { runtime: UnitR
       <div className="modal-actions">
         <button onClick={() => void navigator.clipboard.writeText(address).then(() => setCopied(true), () => undefined)}>{copied ? 'Address copied ✓' : 'Copy address'}</button>
         <a className="secondary-button" href={explorer('address', address)} target="_blank" rel="noreferrer">View on explorer</a>
+        <a className="secondary-button" href={TESTNET_FAUCET_URL} target="_blank" rel="noreferrer">Get testnet coins</a>
         <button onClick={() => void refresh()} disabled={busy}>{busy ? 'Checking…' : 'Refresh balance'}</button>
       </div>
       {error && <div className="workflow-error" role="alert">{error}</div>}

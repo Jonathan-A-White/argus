@@ -63,6 +63,8 @@ export class ChainTransport {
   private rerun = false
   private current: TransportStatus
   private readonly online = () => this.poke()
+  /** Phones pause timers in the background: catch up the moment the app is on screen again. */
+  private readonly visible = () => { if (globalThis.document?.visibilityState !== 'hidden') void this.poke() }
 
   constructor(private readonly deps: ChainTransportDependencies) {
     this.anchorAddress = unitAnchorAddress(deps.unitId)
@@ -76,9 +78,10 @@ export class ChainTransport {
     if (this.timer) return
     this.timer = setInterval(() => this.poke(), intervalMs)
     globalThis.addEventListener?.('online', this.online)
+    globalThis.document?.addEventListener('visibilitychange', this.visible)
     this.poke()
   }
-  stop() { if (this.timer) clearInterval(this.timer); this.timer = undefined; globalThis.removeEventListener?.('online', this.online) }
+  stop() { if (this.timer) clearInterval(this.timer); this.timer = undefined; globalThis.removeEventListener?.('online', this.online); globalThis.document?.removeEventListener('visibilitychange', this.visible) }
   /** Runs one publish+scan cycle now (coalescing overlapping requests into one follow-up run). */
   poke(): Promise<void> {
     if (this.running) { this.rerun = true; return this.running }

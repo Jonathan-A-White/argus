@@ -1,8 +1,27 @@
 import type { AuthorizationService } from '../auth/authorization'
+import type { EventDelivery } from '../distributed/delivery'
 import type { AuthorityCredential, AuthorityRevocation, SignedArgusEvent } from '../distributed/types'
 import type { EventSyncProvider } from '../sync/mock'
 import { openEnvelope, sealEnvelope } from './envelope'
-import type { LedgerStore } from './ledgerStore'
+import type { LedgerStore, StoredEnvelope } from './ledgerStore'
+
+/**
+ * Master spec §22 statuses from the ledger's envelope status:
+ *   QUEUED               → QUEUED        (waiting for a wallet transaction: offline, or no testnet coins)
+ *   QUEUED + lastError   → FAILED        (the network refused the transaction and the wallet rolled it back; it is retried)
+ *   PUBLISHING           → SYNCING       (a transaction is built and being broadcast)
+ *   BROADCAST            → SYNCHRONIZED  (the network accepted it)
+ *   CONFIRMED, height 0  → SYNCHRONIZED  (seen on the unit's anchor history, in the mempool)
+ *   CONFIRMED, height >0 → SYNCHRONIZED and mined: VERIFIED in that block
+ */
+export function envelopeDelivery(record: Pick<StoredEnvelope, 'status' | 'txid' | 'height' | 'lastError'>): EventDelivery {
+  const onChain = record.txid ? { transactionId: record.txid } : {}
+  if ((record.status === 'QUEUED' || record.status === 'PUBLISHING') && record.lastError) return { syncStatus: 'FAILED', auditStatus: 'FAILED', lastError: record.lastError }
+  if (record.status === 'QUEUED') return { syncStatus: 'QUEUED', auditStatus: 'PENDING' }
+  if (record.status === 'PUBLISHING') return { syncStatus: 'SYNCING', auditStatus: 'PENDING' }
+  if (record.status === 'CONFIRMED' && (record.height ?? 0) > 0) return { syncStatus: 'SYNCHRONIZED', auditStatus: 'CONFIRMED', ...onChain, blockHeight: record.height }
+  return { syncStatus: 'SYNCHRONIZED', auditStatus: 'BROADCAST', ...onChain }
+}
 
 export type UnitSyncProviderDependencies = {
   unitId: string
@@ -90,6 +109,13 @@ export class UnitEventSyncProvider implements EventSyncProvider {
   async transactionIds(eventIds: string[]) {
     const found: Record<string, string> = {}
     for (const eventId of eventIds) { const txid = (await this.deps.store.envelope(eventId))?.txid; if (txid) found[eventId] = txid }
+    return found
+  }
+
+  /** Each record's delivery, read from its envelope in the durable ledger (so it survives a restart unchanged). */
+  async deliveryStatus(eventIds: string[]) {
+    const wanted = new Set(eventIds), found: Record<string, EventDelivery> = {}
+    for (const record of await this.deps.store.envelopes()) if (wanted.has(record.eventId)) found[record.eventId] = envelopeDelivery(record)
     return found
   }
 

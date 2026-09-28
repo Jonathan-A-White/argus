@@ -30,6 +30,8 @@ export type ChainTransportDependencies = {
   onRemoteEnvelopes: (records: StoredEnvelope[]) => Promise<void>
   /** Our own events reached the network (txid known). */
   onPublished?: (eventIds: string[], txid: string) => Promise<void>
+  /** Records changed state on their way to the chain without a new broadcast (rolled back, re-queued, still pending, seen on chain, mined): show it. */
+  onDelivery?: (eventIds: string[]) => Promise<void>
   onStatus?: (status: TransportStatus) => void
   /**
    * Authenticates an envelope with the unit key before it is stored. Event IDs are public, so an
@@ -43,6 +45,14 @@ export type ChainTransportDependencies = {
 /** Records in one transaction are capped both by count and by total size so a transaction stays small and cheap to relay. */
 const MAX_BATCH_BYTES = 90 * 1024
 const MAX_HISTORY_PAGES_PER_SCAN = 20
+/**
+ * A transaction the network accepted must appear on the anchor history. One still missing after
+ * this many successful scans, spread over at least LOST_AFTER_MS (indexers lag a fresh
+ * broadcast), was lost: its records are queued and published again. A duplicate is harmless —
+ * every device keeps the first copy of an event ID — but a lost record would never reach anyone.
+ */
+export const LOST_AFTER_SCANS = 3
+export const LOST_AFTER_MS = 60_000
 
 /**
  * Moves the unit's encrypted history between this device and BSV TESTNET — no server involved.
@@ -62,6 +72,8 @@ export class ChainTransport {
   private running?: Promise<void>
   private rerun = false
   private current: TransportStatus
+  /** Broadcast transactions not yet seen on the anchor history: consecutive scans that missed them, and when the first miss was. */
+  private readonly missing = new Map<string, { scans: number; since: number }>()
   private readonly online = () => this.poke()
   /** Phones pause timers in the background: catch up the moment the app is on screen again. */
   private readonly visible = () => { if (globalThis.document?.visibilityState !== 'hidden') void this.poke() }
@@ -106,8 +118,15 @@ export class ChainTransport {
   /** Builds and broadcasts transactions for every queued envelope. */
   async publishOnce() {
     const { store, wallet } = this.deps
+    const changed = new Set<string>()
     // Crash recovery: a transaction the wallet already built owns its envelopes even if we died before recording that.
-    for (const pending of await wallet.pending()) await store.updateEnvelopes(pending.correlationIds, { status: 'PUBLISHING', txid: pending.txid })
+    // Only envelopes still waiting are claimed; one already seen on chain (an ambiguous broadcast that did land) is never set back.
+    const pendingTxs = await wallet.pending()
+    if (pendingTxs.length) {
+      const waiting = new Set((await store.envelopes()).filter(record => record.status === 'QUEUED' || record.status === 'PUBLISHING').map(record => record.eventId))
+      for (const pending of pendingTxs) { const ids = pending.correlationIds.filter(id => waiting.has(id)); if (ids.length) await store.updateEnvelopes(ids, { status: 'PUBLISHING', txid: pending.txid }) }
+    }
+    await this.recoverOrphans(new Set(pendingTxs.map(pending => pending.txid)), changed)
     let queued = (await store.envelopes()).filter(record => record.origin === 'local' && record.status === 'QUEUED').sort((a, b) => a.addedAt < b.addedAt ? -1 : a.addedAt > b.addedAt ? 1 : a.eventId < b.eventId ? -1 : 1)
     let needsFunding: TransportStatus['needsFunding']
     while (queued.length) {
@@ -125,13 +144,52 @@ export class ChainTransport {
     const flushed = await wallet.flush()
     const pendingByTxid = new Map((await wallet.pending()).map(entry => [entry.txid, entry.correlationIds]))
     for (const txid of flushed.broadcast) {
-      const eventIds = (await store.envelopes()).filter(record => record.txid === txid).map(record => record.eventId)
-      await store.updateEnvelopes(eventIds, { status: 'BROADCAST', lastError: undefined })
+      const records = (await store.envelopes()).filter(record => record.txid === txid), eventIds = records.map(record => record.eventId)
+      const notYetSeen = records.filter(record => record.status !== 'CONFIRMED').map(record => record.eventId)
+      if (notYetSeen.length) await store.updateEnvelopes(notYetSeen, { status: 'BROADCAST', lastError: undefined })
       await this.deps.onPublished?.(eventIds, txid)
     }
-    for (const rolledBack of flushed.rolledBack) await store.updateEnvelopes(rolledBack.correlationIds, { status: 'QUEUED', clearTxid: true, lastError: rolledBack.reason })
-    for (const txid of flushed.stillPending) { const ids = pendingByTxid.get(txid); if (ids) await store.updateEnvelopes(ids, { status: 'PUBLISHING', txid }) }
+    for (const rolledBack of flushed.rolledBack) { await store.updateEnvelopes(rolledBack.correlationIds, { status: 'QUEUED', clearTxid: true, lastError: rolledBack.reason }); for (const id of rolledBack.correlationIds) changed.add(id) }
+    for (const txid of flushed.stillPending) { const ids = pendingByTxid.get(txid); if (ids) { await store.updateEnvelopes(ids, { status: 'PUBLISHING', txid }); for (const id of ids) changed.add(id) } }
     this.emit({ needsFunding, ...(flushed.broadcast.length ? { lastPublishAt: this.now() } : {}) })
+    if (changed.size) await this.deps.onDelivery?.([...changed])
+  }
+
+  /**
+   * A PUBLISHING envelope whose transaction the wallet no longer holds as pending (rolled back
+   * while recording that failed, or broadcast behind the transport's back) would never be
+   * published again. Settle each one from what is actually known about its transaction.
+   */
+  private async recoverOrphans(pendingTxids: Set<string>, changed: Set<string>) {
+    const { store, wallet } = this.deps
+    const orphans = new Map<string, string[]>()
+    for (const record of await store.envelopes()) if (record.origin === 'local' && record.status === 'PUBLISHING' && record.txid && !pendingTxids.has(record.txid)) orphans.set(record.txid, [...(orphans.get(record.txid) ?? []), record.eventId])
+    for (const [txid, eventIds] of orphans) {
+      const seen = await store.seen(txid)
+      if (seen) await store.updateEnvelopes(eventIds, { status: 'CONFIRMED', height: seen.height, lastError: undefined })
+      else if (await wallet.ownTxHex(txid)) { await store.updateEnvelopes(eventIds, { status: 'BROADCAST', lastError: undefined }); await this.deps.onPublished?.(eventIds, txid) }
+      else await store.updateEnvelopes(eventIds, { status: 'QUEUED', clearTxid: true, lastError: 'The transaction carrying this record was withdrawn before it reached the network; publishing it again.' })
+      for (const id of eventIds) changed.add(id)
+    }
+  }
+
+  /** Our broadcasts must show up on the anchor history: confirms the ones the scan saw, republishes one missing for too long (see LOST_AFTER_SCANS). */
+  private async checkBroadcasts(changed: Set<string>) {
+    const { store } = this.deps
+    const byTxid = new Map<string, string[]>()
+    for (const record of await store.envelopes()) if (record.origin === 'local' && record.status === 'BROADCAST' && record.txid) byTxid.set(record.txid, [...(byTxid.get(record.txid) ?? []), record.eventId])
+    for (const txid of [...this.missing.keys()]) if (!byTxid.has(txid)) this.missing.delete(txid)
+    const now = (this.deps.now?.() ?? new Date()).getTime()
+    for (const [txid, eventIds] of byTxid) {
+      const seen = await store.seen(txid)
+      if (seen) { await store.updateEnvelopes(eventIds, { status: 'CONFIRMED', height: seen.height }); this.missing.delete(txid); for (const id of eventIds) changed.add(id); continue }
+      const miss = this.missing.get(txid) ?? { scans: 0, since: now }
+      miss.scans++
+      if (miss.scans < LOST_AFTER_SCANS || now - miss.since < LOST_AFTER_MS) { this.missing.set(txid, miss); continue }
+      await store.updateEnvelopes(eventIds, { status: 'QUEUED', clearTxid: true, lastError: `The network accepted transaction ${txid.slice(0, 12)}… but it never appeared on chain; publishing again.` })
+      this.missing.delete(txid); for (const id of eventIds) changed.add(id)
+      this.rerun = true // publish the re-queued records in this same pass
+    }
   }
 
   /** Walks the anchor address history and stores any unit envelopes this device has not seen. */
@@ -146,12 +204,15 @@ export class ChainTransport {
     } while (token && pages < MAX_HISTORY_PAGES_PER_SCAN)
     const mempool = (await api.unconfirmedHistory(this.anchorAddress)).filter(txid => !confirmed.some(item => item.txid === txid)).map(txid => ({ txid, height: 0 }))
     const discovered: StoredEnvelope[] = []
+    const changed = new Set<string>()
     for (const item of [...confirmed, ...mempool]) {
       const seen = await store.seen(item.txid)
       if (seen && (seen.height === item.height || (seen.height > 0 && item.height === 0))) continue
       if (seen) { // first seen in the mempool, now mined: just record the height
         await store.updateEnvelopes(seen.eventIds, { status: 'CONFIRMED', height: item.height })
-        await store.markSeen({ ...seen, height: item.height, scannedAt: this.now() }); continue
+        await store.markSeen({ ...seen, height: item.height, scannedAt: this.now() })
+        for (const id of seen.eventIds) changed.add(id)
+        continue
       }
       const hex = await wallet.ownTxHex(item.txid) ?? await api.txHex(item.txid)
       const eventIds: string[] = []
@@ -167,7 +228,7 @@ export class ChainTransport {
         const existing = await store.envelope(envelope.eventId)
         if (existing) {
           // Same event ID with different bytes is a collision (a replay or forgery attempt): the first stored copy wins.
-          if (canonicalize(existing.envelope) === canonicalize(envelope)) await store.updateEnvelopes([envelope.eventId], { status: 'CONFIRMED', txid: item.txid, height: item.height })
+          if (canonicalize(existing.envelope) === canonicalize(envelope)) { await store.updateEnvelopes([envelope.eventId], { status: 'CONFIRMED', txid: item.txid, height: item.height, lastError: undefined }); changed.add(envelope.eventId) }
           continue
         }
         const stored: StoredEnvelope = { eventId: envelope.eventId, envelope, origin: 'chain', status: 'CONFIRMED', txid: item.txid, height: item.height, addedAt: this.now() }
@@ -177,7 +238,9 @@ export class ChainTransport {
     }
     const highest = confirmed.reduce((max, item) => Math.max(max, item.height), cursor.confirmedHeight)
     await store.setCursor({ confirmedHeight: highest, lastScanAt: this.now() })
+    await this.checkBroadcasts(changed)
     this.emit({ lastScanAt: this.now(), tipHeight: highest || this.current.tipHeight })
+    if (changed.size) await this.deps.onDelivery?.([...changed])
     if (discovered.length) await this.deps.onRemoteEnvelopes(discovered)
   }
 }

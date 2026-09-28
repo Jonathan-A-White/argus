@@ -6,7 +6,6 @@ import {
   CalendarRange,
   ChevronDown,
   ClipboardCheck,
-  ExternalLink,
   History,
   Home,
   KeyRound,
@@ -24,11 +23,7 @@ import {
   DistributedAppController,
   type ArgusAppProjection,
 } from "./distributed/appIntegration";
-import type {
-  ArgusPermission,
-  ArgusRole,
-  StoredEvent,
-} from "./distributed/types";
+import type { ArgusPermission, ArgusRole } from "./distributed/types";
 import { ROLE_PERMISSIONS } from "./auth/authorization";
 import {
   LocalSettingsStorage,
@@ -47,6 +42,7 @@ import { Dashboard } from "./features/dashboard";
 import { CalendarView } from "./features/calendar";
 import { BundleEditorPanel } from "./features/bundles";
 import { RolloverPanel, RosterImportPanel } from "./features/admin";
+import { ActivityView } from "./features/activity";
 import { cadetLabel } from "./stage3/domain";
 import { UnitGate } from "./unit/screens/UnitGate";
 import { MembersPanel, WalletPanel } from "./unit/screens/UnitPanels";
@@ -173,7 +169,7 @@ function AuthenticatedApp({
   const [status, setStatus] = useState<UnitStatus | undefined>(() =>
     runtime?.status(),
   );
-  const [tab, setTab] = useState<Tab>(preferences.defaultSection);
+  const [selectedTab, setTab] = useState<Tab>(preferences.defaultSection);
   const [panel, setPanel] = useState<Panel>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notice, setNotice] = useState("");
@@ -240,6 +236,13 @@ function AuthenticatedApp({
       ).includes(permission),
     [role, revoked, runtime, credential],
   );
+  // The audit trail is for people with audit.read (not Supply Assistants): no tab, no route.
+  const canViewActivity = can("audit.read");
+  const tab: Tab =
+    selectedTab === "activity" && !canViewActivity ? "home" : selectedTab;
+  const sections = nav.filter(
+    (item) => item.id !== "activity" || canViewActivity,
+  );
   const memberName = useCallback(
     (publicIdentity: string) => {
       if (projection && publicIdentity === projection.actor) return "You";
@@ -293,7 +296,7 @@ function AuthenticatedApp({
         <aside className="sidebar">
           <Brand />
           <nav aria-label="Primary navigation">
-            {nav.map(({ id, label, icon: Icon }) => (
+            {sections.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 className={tab === id ? "nav-item active" : "nav-item"}
@@ -396,6 +399,7 @@ function AuthenticatedApp({
             unitName={
               runtime?.device.record.unit?.unitName ?? "A.R.G.U.S. demo"
             }
+            canViewActivity={canViewActivity}
             navigate={({ tab: next, panel: nextPanel }) => {
               setTab(next);
               setPanel(nextPanel ?? null);
@@ -568,6 +572,7 @@ function AuthenticatedApp({
       )}
       {settingsOpen && (
         <SettingsPanel
+          sections={sections}
           value={preferences}
           change={setPreferences}
           close={() => setSettingsOpen(false)}
@@ -584,212 +589,6 @@ function Brand() {
       <div>
         <strong>A.R.G.U.S.</strong>
         <span>ASSET READINESS SYSTEM</span>
-      </div>
-    </div>
-  );
-}
-
-/** Plain-language description of one event. Cadets appear only by cadet ID; names never appear here. */
-function describeEvent(
-  projection: ArgusAppProjection,
-  record: StoredEvent,
-  memberName: (publicIdentity: string) => string,
-) {
-  const { event } = record,
-    payload = event.payload;
-  const item = (id: unknown) => {
-    const found = projection.inventory.find((i) => i.entityId === id);
-    return found ? `${found.name} · ${found.variant}` : "an item";
-  };
-  const session = projection.countSessions.find(
-    (s) => s.sessionId === event.entityId,
-  );
-  const cadet = (id: unknown) => {
-    const found = projection.cadets.find((c) => c.cadetId === id);
-    return found ? cadetLabel(found) : "a cadet";
-  };
-  switch (event.eventType) {
-    case "COUNT_CONTRIBUTED":
-      return `Counted ${payload.quantity} × ${item(payload.itemId)}`;
-    case "COUNT_CORRECTED":
-      return `Corrected a count to ${payload.replacementQuantity}`;
-    case "COUNT_SESSION_CREATED":
-      return `Started shared count “${payload.scope}”`;
-    case "COUNT_SESSION_RECONCILED":
-      return `Finalized count “${session?.scope ?? "count"}” — on-hand updated`;
-    case "COUNT_SESSION_CANCELLED":
-      return `Cancelled count “${session?.scope ?? "count"}”`;
-    case "INVENTORY_RECEIVED":
-      return `Received ${payload.quantity} × ${item(event.entityId)}`;
-    case "CATALOG_SIZES_ADDED": {
-      const catalog = projection.catalog.find(
-        (c) => c.catalogId === event.entityId,
-      );
-      const sizes = Array.isArray(payload.sizes)
-        ? (payload.sizes as Array<{ label: string }>).map((s) => s.label)
-        : [];
-      return `Added sizes ${sizes.slice(0, 6).join(", ")}${sizes.length > 6 ? "…" : ""} to ${catalog?.name ?? "an item"}`;
-    }
-    case "CATALOG_ITEM_CREATED":
-      return `Added catalog item ${String(payload.name)}`;
-    case "CATALOG_ITEM_UPDATED":
-    case "INVENTORY_ITEM_UPDATED":
-      return `Updated item details`;
-    case "CADET_CREATED":
-      return `Added cadet ${cadet(event.entityId)}`;
-    case "CADET_UPDATED":
-      return `Updated cadet ${cadet(event.entityId)}`;
-    case "ITEM_ISSUED":
-    case "ITEM_RETURNED": {
-      const applied = projection.transactions.some(
-        (t) => t.eventId === event.eventId,
-      );
-      const quantity = Array.isArray(payload.lines)
-        ? (payload.lines as Array<{ quantity: number }>).reduce(
-            (sum, line) => sum + line.quantity,
-            0,
-          )
-        : Number(payload.quantity ?? 0);
-      const issued = event.eventType === "ITEM_ISSUED";
-      return `${issued ? "Issued" : "Returned"} ${quantity} item${quantity === 1 ? "" : "s"} ${issued ? "to" : "from"} ${cadet(payload.cadetId)}${applied || !Array.isArray(payload.lines) ? "" : " (not applied — see conflicts)"}`;
-    }
-    case "AUTHORITY_GRANTED":
-      return `Admitted ${String(payload.displayName)} as ${roleLabel(String((payload.credential as { role?: string } | undefined)?.role ?? ""))}`;
-    case "AUTHORITY_REVOKED":
-      return `Revoked access for ${memberName(event.entityId)}`;
-    case "CONFLICT_RESOLVED":
-      return "Resolved a conflict";
-    default:
-      return event.eventType.replaceAll("_", " ").toLowerCase();
-  }
-}
-const statusText = (record: StoredEvent, rejected?: string) =>
-  rejected
-    ? "NOT APPLIED"
-    : record.syncStatus === "SYNCHRONIZED"
-      ? "VERIFIED"
-      : record.syncStatus === "SYNCING"
-        ? "PUBLISHING"
-        : record.syncStatus;
-
-function ActivityView({
-  projection,
-  memberName,
-  runtime,
-  status,
-}: {
-  projection: ArgusAppProjection;
-  memberName: (publicIdentity: string) => string;
-  runtime?: UnitRuntime;
-  status?: UnitStatus;
-}) {
-  const events = [...projection.events].sort((a, b) =>
-    a.event.timestamp < b.event.timestamp ? 1 : -1,
-  );
-  const rejected = new Map(
-    projection.rejected.map((r) => [r.eventId, r.reason]),
-  );
-  return (
-    <div className="content">
-      <section className="page-intro">
-        <div>
-          <p className="eyebrow">AUDIT TRAIL</p>
-          <h2>Nothing changes silently.</h2>
-          <p>
-            Every change is signed by the person who made it, encrypted, and
-            written to the BSV testnet chain. VERIFIED means this device checked
-            the signature and the person&apos;s role.
-          </p>
-        </div>
-      </section>
-      <section
-        className="distributed-panel"
-        aria-label="A.R.G.U.S. distributed system"
-      >
-        <strong>
-          {runtime
-            ? `SHARED ON BSV TESTNET · ${runtime.device.record.unit?.unitName ?? ""}`
-            : "MOCK BLOCKCHAIN · THIS DEVICE ONLY"}
-        </strong>
-        <div>
-          <span>
-            <small>YOU</small>
-            {runtime?.device.record.displayName ?? "Demo user"}
-          </span>
-          <span>
-            <small>EVENTS</small>
-            {projection.events.length}
-          </span>
-          <span>
-            <small>WAITING TO PUBLISH</small>
-            {status?.queued ?? projection.sync.outbox}
-          </span>
-          <span>
-            <small>CONFLICTS</small>
-            {projection.sync.openConflicts}
-          </span>
-          <span>
-            <small>LOCAL COPY</small>Encrypted
-          </span>
-          {status && (
-            <span>
-              <small>HISTORY</small>
-              <a
-                href={`https://test.whatsonchain.com/address/${status.anchorAddress}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                On chain <ExternalLink size={12} />
-              </a>
-            </span>
-          )}
-        </div>
-      </section>
-      <div className="timeline">
-        {events.length ? (
-          events.map((r) => (
-            <div className="event" key={r.event.eventId}>
-              <span className="event-icon">
-                <Activity />
-              </span>
-              <div>
-                <strong>{describeEvent(projection, r, memberName)}</strong>
-                <p>
-                  {memberName(r.event.actorPublicIdentity)} ·{" "}
-                  <b>{statusText(r, rejected.get(r.event.eventId))}</b>
-                  {rejected.get(r.event.eventId) &&
-                    ` · ${rejected.get(r.event.eventId)}`}
-                </p>
-                <details className="audit-metadata">
-                  <summary>Technical details</summary>
-                  <span>
-                    <b>Event</b>
-                    {r.event.eventType} · {r.event.eventId}
-                  </span>
-                  <span>
-                    <b>Signed by</b>
-                    {r.event.actorPublicIdentity.slice(0, 24)}…
-                  </span>
-                  {r.transactionId && (
-                    <span>
-                      <b>Testnet transaction</b>
-                      <a
-                        href={`https://test.whatsonchain.com/tx/${r.transactionId}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {r.transactionId.slice(0, 16)}…
-                      </a>
-                    </span>
-                  )}
-                </details>
-              </div>
-              <time>{new Date(r.event.timestamp).toLocaleString()}</time>
-            </div>
-          ))
-        ) : (
-          <p className="empty-state">No changes recorded yet.</p>
-        )}
       </div>
     </div>
   );
@@ -1067,10 +866,12 @@ function DiagnosticsPanel({
 }
 
 function SettingsPanel({
+  sections,
   value,
   change,
   close,
 }: {
+  sections: typeof nav;
   value: UserSettings;
   change: (v: UserSettings) => void;
   close: () => void;
@@ -1140,7 +941,7 @@ function SettingsPanel({
           value={value.defaultSection}
           onChange={(e) => set("defaultSection", e.target.value as Tab)}
         >
-          {nav.map((n) => (
+          {sections.map((n) => (
             <option key={n.id} value={n.id}>
               {pageTitle(n.id)}
             </option>

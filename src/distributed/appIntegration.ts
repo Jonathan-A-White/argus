@@ -8,6 +8,7 @@ import { ArgusReplica } from './replica'
 import type { AuthorityCredential, AuthorityRevocation, BundleProjection, CalendarEventProjection, PropertyCorrection, RolloverRecord, CadetProjection, CatalogItemProjection, ConflictRecord, CountSessionProjection, InventoryProjection, KeyEpochProjection, MemberProjection, RecoveryKeyProjection, RejectedEventRecord, StillNeededProjection, StoredEvent, SupplyTransaction } from './types'
 import { cadetReadiness, requirementAvailability } from '../stage3/domain'
 import { inspectRepository, type IntegrityReport } from '../integrity'
+import { conflictLosers, withConflictStatus } from './delivery'
 
 const auditFrom = (state: Awaited<ReturnType<ArgusRepository['snapshot']>>): AuditEvent[] => state.events.map(({ event, auditStatus }) => ({
   eventVersion: 1, eventId: event.eventId, timestamp: event.timestamp, actorId: event.actorPublicIdentity, type: event.eventType as AuditEvent['type'], summary: event.eventType.replaceAll('_', ' ').toLowerCase(), entityId: event.entityId,
@@ -100,6 +101,8 @@ export class DistributedAppController {
   rotateUnitKey(input: Parameters<ArgusReplica['rotateUnitKey']>[0]) { return this.run(r => r.rotateUnitKey(input)) }
   registerRecoveryKey(input: Parameters<ArgusReplica['registerRecoveryKey']>[0]) { return this.run(r => r.registerRecoveryKey(input)) }
   async markPublished(eventIds: string[], transactionId: string) { await this.ready().markPublished(eventIds, transactionId); return this.project() }
+  /** Re-reads the delivery of these records (or every unverified one) from the sync provider: queued, publishing, on chain, mined, rolled back. */
+  async refreshDelivery(eventIds?: string[]) { await this.ready().refreshDelivery(eventIds); return this.project() }
   async rebuild() { await this.ready().rebuildNow(); return this.project() }
   async sync() { await this.ready().sync(); return this.project() }
   /** Polling bridge for React: folds anything the chain transport has delivered since the last poll. */
@@ -121,7 +124,7 @@ export class DistributedAppController {
       cadets: state.cadets.map(cadet => { const needs = state.stillNeeded.filter(item => item.cadetId === cadet.cadetId); return { ...cadet, propertyCount: cadet.currentProperty.reduce((sum, item) => sum + item.quantity, 0), stillNeededCount: openNeeds.filter(item => item.cadetId === cadet.cadetId).length, readiness: cadetReadiness(needs) } }),
       bundles: state.bundles.map(bundle => ({ ...bundle, mapping: bundleMapping(bundle, state.inventory) })),
       stillNeeded: openNeeds.map(requirement => ({ ...requirement, availability: requirementAvailability(requirement, state.inventory) })),
-      transactions: state.transactions, conflicts: state.conflicts, members: state.members, keyEpochs: state.keyEpochs, ...(state.recoveryKey ? { recoveryKey: state.recoveryKey } : {}), calendar: state.calendar, corrections: state.corrections, rollovers: state.rollovers, rejected: state.rejected, events: state.events, audit: auditFrom(state),
+      transactions: state.transactions, conflicts: state.conflicts, members: state.members, keyEpochs: state.keyEpochs, ...(state.recoveryKey ? { recoveryKey: state.recoveryKey } : {}), calendar: state.calendar, corrections: state.corrections, rollovers: state.rollovers, rejected: state.rejected, events: withConflictStatus(state.events, conflictLosers(state)), audit: auditFrom(state),
       sync: { mode: this.syncMode, outbox, openConflicts: state.conflicts.filter(conflict => conflict.status === 'OPEN').length },
       integrity: inspectRepository(state),
     }

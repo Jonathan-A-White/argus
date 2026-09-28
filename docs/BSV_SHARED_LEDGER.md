@@ -120,6 +120,16 @@ Status indicators: the top-right pill shows `SYNCHRONIZED`, `N QUEUED`, `SYNCING
 WORKING LOCALLY`, `NEEDS TESTNET COINS`, or `CONFLICT · ACTION REQUIRED`. Work done offline is
 kept (encrypted) and published when the device is back online and funded.
 
+Per-record status (Activity, spec §22/§36) comes from the record's envelope in the local ledger, so
+it survives a restart: `QUEUED` (waiting for a wallet transaction — offline or unfunded),
+`SYNCING` (transaction built, broadcasting), `SYNCHRONIZED` (the network accepted it), `FAILED`
+(the network refused it and the wallet rolled it back; retried), `CONFLICT` (it lost an open
+conflict), `LOCAL` (mock mode, this device only). Verification is a separate label: **VERIFIED in
+block N** only once the record's transaction is mined; until then it reads *on chain · waiting for
+a block* or *not yet on chain*. Audit readiness counts only VERIFIED records. A broadcast that the
+network accepted but that never shows up on the anchor history (3 scans over at least a minute) is
+queued and published again; so is a record left PUBLISHING after its transaction was withdrawn.
+
 ## Live testnet check
 
 ```bash
@@ -188,7 +198,8 @@ the 1,534-byte setup transaction and 7 for the 6,038-byte one. The network accep
   records this way before real cadet data is entered.
 * **Timestamps are device-claimed.** Authorization windows (expiry/revocation) use them; a dishonest
   device could backdate. Keep credential lifetimes bounded.
-* **Merkle-proof (SPV) verification is not wired in.** `VERIFIED` means signature and role were
-  checked by this device; `src/blockchain/spv.ts` is ready for adding chain-inclusion proofs.
+* **Merkle-proof (SPV) verification is not wired in.** `VERIFIED` means the record's transaction
+  was reported mined at a known block height by the chain index (and its signature and role were
+  checked by this device); `src/blockchain/spv.ts` is ready for adding chain-inclusion proofs.
 * **Passphrases cannot be recovered.** Losing one means erasing the device and being re-admitted;
   unpublished changes on that device are lost.

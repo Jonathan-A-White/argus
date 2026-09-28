@@ -1,7 +1,11 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+import { installNotificationRouter } from './notifications/routing'
 import './styles.css'
+
+// Before the unit gate renders, so a notification click on a locked app is routed after unlock.
+installNotificationRouter()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

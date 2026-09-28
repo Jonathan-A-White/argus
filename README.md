@@ -14,6 +14,8 @@ This repository currently contains the first functional front-end prototype. It 
 - **Zeroed catalog, real sizes:** a new unit starts with the 25 items from the master specification's bundles at zero on hand and no sizes; staff add sizes from Supply Manual presets (34R, 7 1/4, S–3XL…) or custom labels.
 - **Cadets by ID:** cadets are shown as short IDs (e.g. `C-4F7K`); names are optional, encrypted, and revealed only on tap.
 - Issue/return with gender-aware bundles and per-line sizes, Still Needed tracking, receive stock, append-only corrections, visible conflict resolution, activity log with signature verification, offline queueing.
+- **Home dashboard** with the readiness tree and actionable alerts, a **supply calendar** (NCO, BLT, AMI, Military Ball, End-of-Year templates with preparation tasks), **roster import** by cadet ID and **annual rollover**.
+- **Optional device notifications** for critical alerts and deadlines under 24 hours while A.R.G.U.S. is open or in a background tab — generic wording, rate-limited, no server. A fully closed app gets only a best-effort check (installed Chrome/Edge apps). See [device notifications](docs/DEVICE_NOTIFICATIONS.md).
 
 ## Local development
 
@@ -53,4 +55,4 @@ The build uses relative asset paths so the installed app, manifest, icon, and se
 
 ## Product boundary
 
-Testnet only; mainnet is impossible in this build. Live testnet operation depends on WhatsOnChain's public API for discovery and broadcast. Key rotation after revoking a member, SPV inclusion proofs, the dashboard readiness tree, the supply calendar, alerts, roster import and annual rollover are not built yet. Encrypted records on a public chain are permanent; obtain school/command approval before entering real cadet data. See [known limits](docs/BSV_SHARED_LEDGER.md#known-limits-and-open-decisions) and [ADR 010](docs/adr/010-bsv-shared-ledger.md).
+Testnet only; mainnet is impossible in this build. Live testnet operation depends on WhatsOnChain's public API for discovery and broadcast. SPV inclusion proofs are not built yet. Notifications for a fully closed app would need a push server, which A.R.G.U.S. deliberately does not have ([why](docs/DEVICE_NOTIFICATIONS.md#why-a-closed-app-cannot-be-notified-reliably)). Encrypted records on a public chain are permanent; obtain school/command approval before entering real cadet data. See [known limits](docs/BSV_SHARED_LEDGER.md#known-limits-and-open-decisions) and [ADR 010](docs/adr/010-bsv-shared-ledger.md).

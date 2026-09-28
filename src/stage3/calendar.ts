@@ -53,3 +53,6 @@ export const SUPPLY_EVENT_TEMPLATES: SupplyEventTemplate[] = [
 export const templateFor = (kind: SupplyEventKind) => SUPPLY_EVENT_TEMPLATES.find(template => template.kind === kind)
 export const SUPPLY_EVENT_KINDS: SupplyEventKind[] = ['NCO', 'BLT', 'AMI', 'MILITARY_BALL', 'END_OF_YEAR', 'CUSTOM']
 export const taskDueDate = (startsAt: string, dueOffsetDays: number) => new Date(new Date(startsAt).getTime() + dueOffsetDays * 86_400_000).toISOString()
+const localMidnight = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+/** Whole local calendar days from `now` until `when` (negative = in the past); the same count the calendar shows. */
+export const calendarDaysUntil = (when: string | Date, now: Date) => Math.round((localMidnight(new Date(when)) - localMidnight(now)) / 86_400_000)

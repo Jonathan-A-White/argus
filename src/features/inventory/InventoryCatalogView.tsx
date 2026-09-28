@@ -17,16 +17,20 @@ export type InventoryCatalogViewProps = {
   notify: (message: string) => void
   /** Jump to the Count tab with this size selected. */
   onCount: (itemId: string) => void
+  /** Open with the "Needs attention" filter on (e.g. from the dashboard STOCK node or a stock alert). */
+  initialAttentionOnly?: boolean
+  /** Open the editor of the catalog item this size belongs to. */
+  initialItemId?: string
 }
 
 type CatalogRowData = { item: CatalogItemProjection; variants: InventoryProjection[]; status: CatalogStatus }
 
 /** The unit's catalog: every kind of gear, its sizes and stock, with editing for officers. */
-export function InventoryCatalogView({ projection, controller, can, onProjection, notify, onCount }: InventoryCatalogViewProps): JSX.Element {
+export function InventoryCatalogView({ projection, controller, can, onProjection, notify, onCount, initialAttentionOnly = false, initialItemId }: InventoryCatalogViewProps): JSX.Element {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<string>()
-  const [attentionOnly, setAttentionOnly] = useState(false)
-  const [editingId, setEditingId] = useState<string>()
+  const [attentionOnly, setAttentionOnly] = useState(initialAttentionOnly)
+  const [editingId, setEditingId] = useState<string | undefined>(() => projection.inventory.find(item => item.entityId === initialItemId)?.catalogId)
   const [adding, setAdding] = useState(false)
 
   const activeVariants = projection.inventory.filter(variant => variant.active)

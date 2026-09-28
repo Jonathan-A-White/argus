@@ -4,6 +4,8 @@ import { Drawer } from '../../components/Drawer'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
 import type { ArgusPermission, RolloverRecord } from '../../distributed/types'
 import { cadetLabel } from '../../stage3/domain'
+import { endOfYearReview } from '../../stage3/endOfYear'
+import { RolloverChecklist } from '../readiness/ReadinessParts'
 import { memberLabel } from '../cadets/cadetDisplay'
 import { NEXT_LEVEL_LABEL, NS_LEVELS, defaultSchoolYear, plural, rolloverPreview, schoolYearError } from './rolloverModel'
 import './admin.css'
@@ -41,6 +43,7 @@ export function RolloverPanel({ projection, controller, can, onProjection, notif
   const yearProblem = schoolYearError(schoolYear, projection.rollovers)
   const preview = rolloverPreview(projection.cadets)
   const holding = preview.graduatingWithProperty
+  const checklist = endOfYearReview(projection).checklist
   const past = [...projection.rollovers].sort((a, b) => b.schoolYear.localeCompare(a.schoolYear))
 
   const changeYear = (value: string) => {
@@ -75,6 +78,12 @@ export function RolloverPanel({ projection, controller, can, onProjection, notif
       <p className="admin-intro">
         At the end of the school year every active cadet moves up one NS level. NS4 cadets graduate: they become inactive but keep their record and any issued property until it is returned. This runs once per school year and every device applies it.
       </p>
+
+      <section className="admin-section" aria-labelledby={`${ids}-readiness`}>
+        <h3 id={`${ids}-readiness`}>Rollover readiness</h3>
+        <RolloverChecklist checklist={checklist} />
+        {checklist.some(check => !check.done) && <p className="admin-hint">These are recommendations from the End-of-Year review; the rollover itself is not blocked.</p>}
+      </section>
 
       {result && (
         <div className="validation admin-result" role="status">

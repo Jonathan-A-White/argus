@@ -22,6 +22,10 @@ export type CadetsViewProps = {
   onIssue: (cadetId: string) => void
   /** Called after the cadet drawer closes; the host opens the return workflow for this cadet. */
   onReturn: (cadetId: string) => void
+  /** Open this cadet's record on arrival (e.g. from a dashboard alert). */
+  initialCadetId?: string
+  /** Start on this status filter instead of Active. */
+  initialFilter?: StatusFilter
 }
 
 const FILTERS: Array<{ value: StatusFilter; label: string }> = [
@@ -37,10 +41,10 @@ const byCode = (a: Cadet, b: Cadet) => cadetLabel(a).localeCompare(cadetLabel(b)
  * cadet only by the opaque cadet ID. Names can be searched but are shown only in the record drawer
  * after an explicit per-cadet "Show name".
  */
-export function CadetsView({ projection, controller, can, onProjection, notify, onIssue, onReturn }: CadetsViewProps) {
+export function CadetsView({ projection, controller, can, onProjection, notify, onIssue, onReturn, initialCadetId, initialFilter = 'ACTIVE' }: CadetsViewProps) {
   const [query, setQuery] = useState('')
-  const [filter, setFilter] = useState<StatusFilter>('ACTIVE')
-  const [openCadetId, setOpenCadetId] = useState<string>()
+  const [filter, setFilter] = useState<StatusFilter>(initialFilter)
+  const [openCadetId, setOpenCadetId] = useState<string | undefined>(initialCadetId)
   const [adding, setAdding] = useState(false)
   const canManage = can('cadets.manage')
   const counts: Record<StatusFilter, number> = {

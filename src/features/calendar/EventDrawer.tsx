@@ -3,6 +3,7 @@ import { Ban, CalendarClock, Circle, CircleCheck, RotateCcw, Shirt, TriangleAler
 import { Drawer } from '../../components/Drawer'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
 import type { CalendarEventProjection, CalendarTaskProjection } from '../../distributed/types'
+import type { AlertTarget, SyncSnapshot } from '../../stage3/readinessTypes'
 import {
   KIND_LABEL,
   STOCKED_KINDS,
@@ -25,6 +26,7 @@ import {
   toTimeInput,
   type TaskTone,
 } from './calendarModel'
+import { EventReadinessSection } from './EventReadinessSection'
 
 export type EventDrawerProps = {
   event: CalendarEventProjection
@@ -37,6 +39,10 @@ export type EventDrawerProps = {
   onProjection: (projection: ArgusAppProjection) => void
   notify: (message: string) => void
   close: () => void
+  /** This device's sync state, for AMI readiness. */
+  sync?: SyncSnapshot
+  /** Opens a record elsewhere in the app from the readiness section (a cadet, the rollover panel). */
+  navigate?: (target: AlertTarget) => void
 }
 
 type Mutations = Pick<EventDrawerProps, 'controller' | 'onProjection' | 'notify'>
@@ -75,7 +81,7 @@ function InlineError({ message }: { message: string }) {
 }
 
 /** Supply event detail: countdown, preparation checklist, bundle stock readiness and (with calendar.write) editing. */
-export function EventDrawer({ event, projection, controller, canWrite, memberName, now, onProjection, notify, close }: EventDrawerProps): JSX.Element {
+export function EventDrawer({ event, projection, controller, canWrite, memberName, now, onProjection, notify, close, sync, navigate }: EventDrawerProps): JSX.Element {
   const progress = eventProgress(event)
   const days = daysUntil(event.startsAt, now)
   const leaf = dateBlock(event.startsAt)
@@ -137,6 +143,7 @@ export function EventDrawer({ event, projection, controller, canWrite, memberNam
       <TaskList event={event} canWrite={editable} now={now} memberName={memberName} {...mutations} />
       {editable && <AddTaskForm event={event} {...mutations} />}
       <EventBundles event={event} projection={projection} />
+      <EventReadinessSection event={event} projection={projection} now={now} sync={sync} navigate={navigate} />
       {event.cadetIds.length > 0 && (
         <p className="calendar-cadets">
           <Users aria-hidden="true" />

@@ -22,4 +22,15 @@ describe('local settings storage', () => {
     local.setItem(LEGACY_SETTINGS_KEY, JSON.stringify({ defaultSection: 'inventory' }))
     expect(new LocalSettingsStorage(local).load().defaultSection).toBe('inventory')
   })
+
+  it('keeps valid per-device readiness weights and replaces invalid ones with equal weights', () => {
+    const local = storage()
+    local.setItem(SETTINGS_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, readinessWeights: { cadets: 2, inventory: 1, events: 0, audit: 0.5, extra: 9 } }))
+    expect(new LocalSettingsStorage(local).load().readinessWeights).toEqual({ cadets: 2, inventory: 1, events: 0, audit: 0.5 })
+    for (const invalid of [{ cadets: 0, inventory: 0, events: 0, audit: 0 }, { cadets: -1, inventory: 1, events: 1, audit: 1 }, 'heavy', null]) {
+      local.setItem(SETTINGS_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, readinessWeights: invalid }))
+      expect(new LocalSettingsStorage(local).load().readinessWeights).toEqual({ cadets: 1, inventory: 1, events: 1, audit: 1 })
+    }
+    expect(new LocalSettingsStorage(storage()).load().readinessWeights).toEqual({ cadets: 1, inventory: 1, events: 1, audit: 1 })
+  })
 })

@@ -102,6 +102,20 @@ describe('RolloverPanel', () => {
     expect((await controller.project()).rollovers).toHaveLength(1)
   })
 
+  it('shows the End-of-Year rollover checklist first', async () => {
+    const { controller, projection } = await roster()
+    render(<Harness controller={controller} initial={projection} toasts={[]} />)
+    const checklist = screen.getByRole('list', { name: 'Rollover readiness checklist' })
+    expect(within(checklist).getAllByRole('listitem').map(item => item.querySelector('strong')?.textContent)).toEqual([
+      'Done: No open conflicts',
+      'Done: No count sessions left open',
+      'Not done: No return-pending cadets',
+      'Not done: Full physical count finalized',
+    ])
+    expect(within(checklist).getByText('1 cadet still holds property.')).toBeInTheDocument()
+    expect(checklist.compareDocumentPosition(screen.getByRole('list', { name: 'Rollover preview' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('validates the school year and lets people without cadets.manage only look', async () => {
     const { controller, projection } = await roster()
     render(<Harness controller={controller} initial={projection} toasts={[]} can={permission => permission !== 'cadets.manage'} />)

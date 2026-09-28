@@ -5,7 +5,7 @@ import { MockSyncProvider, type EventSyncProvider } from '../sync/mock'
 import type { ArgusIdentityProvider } from '../identity/identity'
 import type { AuditEvent } from '../types'
 import { ArgusReplica } from './replica'
-import type { AuthorityCredential, AuthorityRevocation, BundleProjection, CalendarEventProjection, PropertyCorrection, RolloverRecord, CadetProjection, CatalogItemProjection, ConflictRecord, CountSessionProjection, InventoryProjection, MemberProjection, RejectedEventRecord, StillNeededProjection, StoredEvent, SupplyTransaction } from './types'
+import type { AuthorityCredential, AuthorityRevocation, BundleProjection, CalendarEventProjection, PropertyCorrection, RolloverRecord, CadetProjection, CatalogItemProjection, ConflictRecord, CountSessionProjection, InventoryProjection, KeyEpochProjection, MemberProjection, RecoveryKeyProjection, RejectedEventRecord, StillNeededProjection, StoredEvent, SupplyTransaction } from './types'
 import { cadetReadiness, requirementAvailability } from '../stage3/domain'
 import { inspectRepository, type IntegrityReport } from '../integrity'
 
@@ -94,8 +94,11 @@ export class DistributedAppController {
   importCadets(rows: Parameters<ArgusReplica['importCadets']>[0]) { return this.run(r => r.importCadets(rows)) }
   updateBundleDefinition(id: string, input: Parameters<ArgusReplica['updateBundle']>[1]) { return this.run(r => r.updateBundle(id, input)) }
   createBundle(id: string, input: Parameters<ArgusReplica['createBundle']>[1]) { return this.run(r => r.createBundle(id, input)) }
-  async recordAdmission(input: { credential: AuthorityCredential; displayName: string; walletAddress?: string }) { await this.authorization?.acceptCredential(input.credential); return this.run(r => r.recordAdmission(input)) }
+  async recordAdmission(input: { credential: AuthorityCredential; displayName: string; walletAddress?: string; ecdhPublicKey?: string }) { await this.authorization?.acceptCredential(input.credential); return this.run(r => r.recordAdmission(input)) }
   async recordRevocation(revocation: AuthorityRevocation) { await this.authorization?.acceptRevocation(revocation); return this.run(r => r.recordRevocation(revocation)) }
+  async changeRole(input: { credential: AuthorityCredential; revocation: AuthorityRevocation }) { await this.authorization?.acceptCredential(input.credential); await this.authorization?.acceptRevocation(input.revocation); return this.run(r => r.changeRole(input)) }
+  rotateUnitKey(input: Parameters<ArgusReplica['rotateUnitKey']>[0]) { return this.run(r => r.rotateUnitKey(input)) }
+  registerRecoveryKey(input: Parameters<ArgusReplica['registerRecoveryKey']>[0]) { return this.run(r => r.registerRecoveryKey(input)) }
   async markPublished(eventIds: string[], transactionId: string) { await this.ready().markPublished(eventIds, transactionId); return this.project() }
   async rebuild() { await this.ready().rebuildNow(); return this.project() }
   async sync() { await this.ready().sync(); return this.project() }
@@ -118,7 +121,7 @@ export class DistributedAppController {
       cadets: state.cadets.map(cadet => { const needs = state.stillNeeded.filter(item => item.cadetId === cadet.cadetId); return { ...cadet, propertyCount: cadet.currentProperty.reduce((sum, item) => sum + item.quantity, 0), stillNeededCount: openNeeds.filter(item => item.cadetId === cadet.cadetId).length, readiness: cadetReadiness(needs) } }),
       bundles: state.bundles.map(bundle => ({ ...bundle, mapping: bundleMapping(bundle, state.inventory) })),
       stillNeeded: openNeeds.map(requirement => ({ ...requirement, availability: requirementAvailability(requirement, state.inventory) })),
-      transactions: state.transactions, conflicts: state.conflicts, members: state.members, calendar: state.calendar, corrections: state.corrections, rollovers: state.rollovers, rejected: state.rejected, events: state.events, audit: auditFrom(state),
+      transactions: state.transactions, conflicts: state.conflicts, members: state.members, keyEpochs: state.keyEpochs, ...(state.recoveryKey ? { recoveryKey: state.recoveryKey } : {}), calendar: state.calendar, corrections: state.corrections, rollovers: state.rollovers, rejected: state.rejected, events: state.events, audit: auditFrom(state),
       sync: { mode: this.syncMode, outbox, openConflicts: state.conflicts.filter(conflict => conflict.status === 'OPEN').length },
       integrity: inspectRepository(state),
     }
@@ -129,4 +132,4 @@ export class DistributedAppController {
 export type BundleMapping = { status: 'FULLY_MAPPED'|'PARTIALLY_MAPPED'|'UNMAPPED'; mapped: number; total: number }
 /** A bundle line is ready to issue when its exact SKU exists, or its catalog item has at least one active size. */
 export const bundleMapping = (bundle: BundleProjection, inventory: InventoryProjection[]): BundleMapping => { const current = bundle.versions.find(version => version.version === bundle.currentVersion); const mapped = current?.lines.filter(line => (line.itemId && inventory.some(item => item.entityId === line.itemId)) || (line.catalogId && inventory.some(item => item.catalogId === line.catalogId && item.active))).length ?? 0; const total = current?.lines.length ?? 0; return { status: mapped === total && total > 0 ? 'FULLY_MAPPED' : mapped ? 'PARTIALLY_MAPPED' : 'UNMAPPED', mapped, total } }
-export type ArgusAppProjection = { actor: string; inventory: InventoryProjection[]; catalog: CatalogItemProjection[]; countSessions: CountSessionProjection[]; cadets: Array<CadetProjection & { propertyCount: number; stillNeededCount: number; readiness: ReturnType<typeof cadetReadiness> }>; bundles: Array<BundleProjection & { mapping: BundleMapping }>; stillNeeded: Array<StillNeededProjection & { availability: ReturnType<typeof requirementAvailability> }>; transactions: SupplyTransaction[]; conflicts: ConflictRecord[]; members: MemberProjection[]; calendar: CalendarEventProjection[]; corrections: PropertyCorrection[]; rollovers: RolloverRecord[]; rejected: RejectedEventRecord[]; events: StoredEvent[]; audit: AuditEvent[]; sync: { mode: 'local'|'remote'; outbox: number; openConflicts: number }; integrity: IntegrityReport }
+export type ArgusAppProjection = { actor: string; inventory: InventoryProjection[]; catalog: CatalogItemProjection[]; countSessions: CountSessionProjection[]; cadets: Array<CadetProjection & { propertyCount: number; stillNeededCount: number; readiness: ReturnType<typeof cadetReadiness> }>; bundles: Array<BundleProjection & { mapping: BundleMapping }>; stillNeeded: Array<StillNeededProjection & { availability: ReturnType<typeof requirementAvailability> }>; transactions: SupplyTransaction[]; conflicts: ConflictRecord[]; members: MemberProjection[]; keyEpochs: KeyEpochProjection[]; recoveryKey?: RecoveryKeyProjection; calendar: CalendarEventProjection[]; corrections: PropertyCorrection[]; rollovers: RolloverRecord[]; rejected: RejectedEventRecord[]; events: StoredEvent[]; audit: AuditEvent[]; sync: { mode: 'local'|'remote'; outbox: number; openConflicts: number }; integrity: IntegrityReport }

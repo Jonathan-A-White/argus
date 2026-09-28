@@ -28,7 +28,7 @@ async function createUnitThroughUi(chain: FakeChain, storage = memoryStorage()) 
   fireEvent.change(screen.getByLabelText('Passphrase'), { target: { value: PASS } })
   fireEvent.change(screen.getByLabelText('Confirm passphrase'), { target: { value: PASS } })
   fireEvent.click(screen.getByRole('button', { name: 'Create unit' }))
-  await screen.findByText('BSV TESTNET', {}, { timeout: 20_000 })
+  await screen.findByRole('button', { name: /Signed in as/ }, { timeout: 20_000 })
   return storage
 }
 
@@ -95,6 +95,15 @@ describe('application shell', { timeout: 60_000 }, () => {
 })
 
 describe('unit onboarding over a (fake) BSV testnet chain', { timeout: 120_000 }, () => {
+  it('shows the testnet safety banner before sign-in too (spec §30), and offers restoring a Master from a recovery file', async () => {
+    render(<App runtimeOptions={runtimeOptions(new FakeChain())} storage={memoryStorage()} settingsStorage={new LocalSettingsStorage(memoryStorage())} />)
+    expect(await screen.findByText('BSV TESTNET')).toBeInTheDocument()
+    expect(screen.getByText('Development Environment · No Production Transactions')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Restore Master from a recovery file/ }))
+    expect(await screen.findByRole('form', { name: 'Restore Master from a recovery file' })).toBeInTheDocument()
+    expect(screen.getByText('BSV TESTNET')).toBeInTheDocument()
+  })
+
   it('creates a unit, shows the real person and role, and refuses mismatched passphrases', async () => {
     const chain = new FakeChain(), storage = memoryStorage()
     render(<App runtimeOptions={runtimeOptions(chain)} storage={storage} settingsStorage={new LocalSettingsStorage(memoryStorage())} />)
@@ -107,7 +116,7 @@ describe('unit onboarding over a (fake) BSV testnet chain', { timeout: 120_000 }
     expect(await screen.findByRole('alert')).toHaveTextContent('do not match')
     fireEvent.change(screen.getByLabelText('Confirm passphrase'), { target: { value: PASS } })
     fireEvent.click(screen.getByRole('button', { name: 'Create unit' }))
-    expect(await screen.findByText('BSV TESTNET', {}, { timeout: 20_000 })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /Signed in as/ }, { timeout: 20_000 })).toBeInTheDocument()
     expect(screen.getAllByText('Chief').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Master').length).toBeGreaterThan(0)
     expect(loadDeviceVault(storage)?.unit?.unitName).toBe('Bethel NJROTC')
@@ -142,7 +151,7 @@ describe('unit onboarding over a (fake) BSV testnet chain', { timeout: 120_000 }
     await waitFor(() => expect(joinCodeBox.value).toMatch(/^ARGUS-JOIN-1:/), { timeout: 20_000 })
     fireEvent.change(screen.getByLabelText('Admission code'), { target: { value: code } })
     fireEvent.click(screen.getByRole('button', { name: 'Join unit' }))
-    expect(await screen.findByText('BSV TESTNET', {}, { timeout: 20_000 })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /Signed in as/ }, { timeout: 20_000 })).toBeInTheDocument()
     expect(screen.getAllByText('Supply Officer').length).toBeGreaterThan(0)
     expect(loadDeviceVault(joinerStorage)?.unit?.unitId).toBe(loadDeviceVault(masterStorage)?.unit?.unitId)
   })

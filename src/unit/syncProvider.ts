@@ -9,8 +9,8 @@ export type UnitSyncProviderDependencies = {
   store: LedgerStore
   currentEpoch: () => string
   keyFor: (epochId: string) => Promise<CryptoKey | undefined>
-  /** This device's own Master-signed credential; it travels inside every envelope this device writes. */
-  credential: AuthorityCredential
+  /** This device's own current credential (it changes when a Master changes this person's role); it travels inside every envelope this device writes. */
+  credential: () => AuthorityCredential
   authorization: AuthorizationService
   /** Called after a local event is durably queued so the chain transport can publish promptly. */
   onQueued?: () => void
@@ -32,6 +32,10 @@ export class UnitEventSyncProvider implements EventSyncProvider {
   private readonly backlog = new Set<string>()
   private readonly acceptedCredentials = new Set<string>()
   private readonly acceptedRevocations = new Set<string>()
+  /** Credentials whose issuer (a delegated Master) is not known yet; retried after every pull until their issuer's credential arrives. */
+  private readonly pendingCredentials = new Map<string, AuthorityCredential>()
+  /** Revocations can arrive before the credential they revoke (history is not delivered in causal order); they are retried the same way. */
+  private readonly pendingRevocations = new Map<string, AuthorityRevocation>()
   /** Envelopes that could not be opened yet (no key for their epoch, damaged): retried on each pull. */
   readonly unreadable = new Map<string, string>()
 
@@ -43,9 +47,10 @@ export class UnitEventSyncProvider implements EventSyncProvider {
 
   async publish(event: SignedArgusEvent) {
     if (this.delivered.has(event.eventId) || await this.deps.store.envelope(event.eventId)) { this.delivered.add(event.eventId); this.backlog.delete(event.eventId); return }
-    const epochId = this.deps.currentEpoch(), key = await this.deps.keyFor(epochId)
+    // A new key generation is announced under the previous key: remaining members can read it, and only they can unwrap their copy.
+    const epochId = event.eventType === 'UNIT_KEY_ROTATED' && typeof event.payload.previousEpoch === 'string' ? event.payload.previousEpoch : this.deps.currentEpoch(), key = await this.deps.keyFor(epochId)
     if (!key) throw new Error(`This device has no unit key for ${epochId}.`)
-    const envelope = await sealEnvelope({ unitId: this.deps.unitId, epochId, key, plaintext: { event, credential: this.deps.credential } })
+    const envelope = await sealEnvelope({ unitId: this.deps.unitId, epochId, key, plaintext: { event, credential: this.deps.credential() } })
     await this.deps.store.addEnvelope({ eventId: event.eventId, envelope, origin: 'local', status: 'QUEUED', addedAt: new Date().toISOString() })
     this.delivered.add(event.eventId); this.backlog.delete(event.eventId)
     this.deps.onQueued?.()
@@ -64,7 +69,21 @@ export class UnitEventSyncProvider implements EventSyncProvider {
         this.delivered.add(eventId); this.backlog.delete(eventId); this.unreadable.delete(eventId)
       } catch (error) { this.unreadable.set(eventId, error instanceof Error ? error.message : 'Unreadable record.') }
     }
+    await this.retryPendingCredentials()
     return events
+  }
+
+  /** Accepts a credential now if its issuer is known, otherwise keeps it until the issuer's own credential arrives. */
+  async offerCredential(credential: AuthorityCredential) { await this.acceptCredential(credential); await this.retryPendingCredentials() }
+  private async retryPendingCredentials() {
+    for (let progress = true; progress && (this.pendingCredentials.size || this.pendingRevocations.size);) {
+      progress = false
+      for (const credential of [...this.pendingCredentials.values()]) { if (await this.tryAccept(credential)) { this.pendingCredentials.delete(credential.credentialId); progress = true } }
+      for (const revocation of [...this.pendingRevocations.values()]) { if (await this.tryRevoke(revocation)) { this.pendingRevocations.delete(revocation.revocationId); progress = true } }
+    }
+  }
+  private async tryRevoke(revocation: AuthorityRevocation) {
+    try { await this.deps.authorization.acceptRevocation(revocation); this.acceptedRevocations.add(revocation.revocationId); return true } catch { return false }
   }
 
   /** The transaction each event arrived in (or was published in), so every device links every change to the chain. */
@@ -76,15 +95,21 @@ export class UnitEventSyncProvider implements EventSyncProvider {
 
   private async acceptCredential(credential: AuthorityCredential) {
     if (this.acceptedCredentials.has(credential.credentialId)) return
-    // An invalid or foreign credential is simply not accepted; the replica then rejects that author's events as unauthorized.
-    try { await this.deps.authorization.acceptCredential(credential); this.acceptedCredentials.add(credential.credentialId) } catch { /* recorded by the replica as an authorization rejection */ }
+    // An invalid or foreign credential is simply not accepted; the replica then rejects that author's events as unauthorized
+    // (and re-folds them once a later credential makes them valid). Unknown issuers are retried; the list is bounded.
+    if (!(await this.tryAccept(credential)) && this.pendingCredentials.size < 1_000) this.pendingCredentials.set(credential.credentialId, credential)
+  }
+  private async tryAccept(credential: AuthorityCredential) {
+    try { await this.deps.authorization.acceptCredential(credential); this.acceptedCredentials.add(credential.credentialId); return true } catch { return false }
   }
   private async acceptAuthorityPayload(event: SignedArgusEvent) {
     if (event.eventType === 'AUTHORITY_GRANTED' && event.payload.credential) await this.acceptCredential(event.payload.credential as AuthorityCredential)
-    if (event.eventType === 'AUTHORITY_REVOKED' && event.payload.revocation) {
+    if (event.eventType === 'ROLE_CHANGED' && event.payload.credential) await this.acceptCredential(event.payload.credential as AuthorityCredential)
+    if ((event.eventType === 'AUTHORITY_REVOKED' || event.eventType === 'ROLE_CHANGED') && event.payload.revocation) {
       const revocation = event.payload.revocation as AuthorityRevocation
       if (this.acceptedRevocations.has(revocation.revocationId)) return
-      try { await this.deps.authorization.acceptRevocation(revocation); this.acceptedRevocations.add(revocation.revocationId) } catch { /* unknown credential or bad signature: ignored, and the replica shows the event as rejected */ }
+      // Unknown credential (not delivered yet) or bad signature: retried after each pull; a forged one simply never applies.
+      if (!(await this.tryRevoke(revocation)) && this.pendingRevocations.size < 1_000) this.pendingRevocations.set(revocation.revocationId, revocation)
     }
   }
 }

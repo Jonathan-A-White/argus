@@ -16,12 +16,25 @@ async function shareOrCopy(text: string, title: string) {
   try { if (navigator.share) { await navigator.share({ title, text }); return 'shared' } await navigator.clipboard.writeText(text); return 'copied' } catch { return 'cancelled' }
 }
 
-/** Who is in the unit, and (Master only) admitting and revoking people. */
+const ROLE_CHOICES: Array<{ role: ArgusRole; label: string }> = [
+  { role: 'SUPPLY_ASSISTANT', label: 'Supply Assistant' },
+  { role: 'SUPPLY_OFFICER', label: 'Supply Officer' },
+  { role: 'INSTRUCTOR', label: 'Instructor' },
+  { role: 'MASTER', label: 'Master (delegated)' },
+]
+function downloadText(fileName: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' })), link = document.createElement('a')
+  link.href = url; link.download = fileName; document.body.append(link); link.click(); link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1_000)
+}
+
+/** Who is in the unit and, for Masters, admitting people, changing roles, removing people and the recovery file. */
 export function MembersPanel({ runtime, projection, close, onProjection, notify }: { runtime: UnitRuntime; projection: ArgusAppProjection; close: () => void; onProjection: (projection: ArgusAppProjection) => void; notify: (message: string) => void }) {
-  const record = runtime.device.record, isMaster = record.role === 'MASTER'
-  const [joinCode, setJoinCode] = useState(''), [role, setRole] = useState<Exclude<ArgusRole, 'MASTER'>>('SUPPLY_ASSISTANT'), [name, setName] = useState(''), [expires, setExpires] = useState(''), [topUp, setTopUp] = useState(true), [topUpAmount, setTopUpAmount] = useState(String(DEFAULT_MEMBER_TOP_UP_SATOSHIS))
+  const record = runtime.device.record, status = runtime.status(), isMaster = record.role === 'MASTER' && !status.revoked, holdsAuthority = status.holdsAuthority
+  const roleChoices = ROLE_CHOICES.filter(choice => choice.role !== 'MASTER' || holdsAuthority)
+  const [joinCode, setJoinCode] = useState(''), [role, setRole] = useState<ArgusRole>('SUPPLY_ASSISTANT'), [name, setName] = useState(''), [expires, setExpires] = useState(''), [topUp, setTopUp] = useState(true), [topUpAmount, setTopUpAmount] = useState(String(DEFAULT_MEMBER_TOP_UP_SATOSHIS))
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [result, setResult] = useState<{ code: string; name: string; topUpTxid?: string; topUpError?: string }>(), [shared, setShared] = useState('')
-  const [revoking, setRevoking] = useState(''), [confirmRevoke, setConfirmRevoke] = useState('')
+  const [revoking, setRevoking] = useState(''), [confirmRevoke, setConfirmRevoke] = useState(''), [changing, setChanging] = useState(''), [newRole, setNewRole] = useState<ArgusRole>('SUPPLY_OFFICER'), [working, setWorking] = useState('')
   const admit = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true); setError(''); setResult(undefined); setShared('')
     try {
@@ -32,38 +45,67 @@ export function MembersPanel({ runtime, projection, close, onProjection, notify 
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'This person could not be admitted.') } finally { setBusy(false) }
   }
   const revoke = async (publicIdentity: string) => {
-    try { onProjection(await runtime.revoke(publicIdentity)); notify('Access revoked. Their earlier work stays in the record.'); setRevoking(''); setConfirmRevoke('') }
-    catch (cause) { notify(cause instanceof Error ? cause.message : 'Access could not be revoked.') }
+    setWorking(publicIdentity)
+    try {
+      const { rotation, ...next } = await runtime.revoke(publicIdentity)
+      onProjection(next); setRevoking(''); setConfirmRevoke('')
+      notify(`Access removed. A new unit key went to ${rotation.recipients} ${rotation.recipients === 1 ? 'person' : 'people'}; they cannot read anything written from now on.${rotation.missing.length ? ` ${rotation.missing.join(', ')} joined before key hand-over existed and must be admitted again to keep reading.` : ''}`)
+    } catch (cause) { notify(cause instanceof Error ? cause.message : 'Access could not be removed.') } finally { setWorking('') }
   }
-  const members = projection.members
+  const changeRole = async (publicIdentity: string, displayName: string) => {
+    setWorking(publicIdentity)
+    try { onProjection(await runtime.changeRole(publicIdentity, newRole)); setChanging(''); notify(`${displayName} is now ${roleLabel(newRole)}. Their device picks this up on its next sync.`) }
+    catch (cause) { notify(cause instanceof Error ? cause.message : 'The role could not be changed.') } finally { setWorking('') }
+  }
+  const members = [...projection.members].sort((a, b) => Number(b.status === 'ACTIVE') - Number(a.status === 'ACTIVE') || a.displayName.localeCompare(b.displayName))
   return (
     <Drawer title="Members & access" icon={<KeyRound />} close={close}>
       <div className="panel-rows">
         <p><small>UNIT</small><br /><strong>{record.unit?.unitName}</strong> · <code title={record.unit?.unitId}>{record.unit?.unitId}</code></p>
-        <p><small>YOU</small><br /><strong>{record.displayName}</strong> · {roleLabel(record.role)}</p>
+        <p><small>YOU</small><br /><strong>{record.displayName}</strong> · {status.revoked ? 'Access removed' : roleLabel(record.role)}{holdsAuthority ? ' · holds the unit authority' : ''}</p>
       </div>
       <h3>People in this unit</h3>
       <ul className="panel-rows" aria-label="People in this unit">
-        {isMaster && <li><p><strong>{record.displayName}</strong> · Master (this device)</p></li>}
-        {members.map(member => (
-          <li key={member.publicIdentity}>
-            <p>
-              <strong>{member.publicIdentity === projection.actor ? `${member.displayName} (you)` : member.displayName}</strong> · {roleLabel(member.role)} · {member.status === 'ACTIVE' ? `admitted ${new Date(member.issuedAt).toLocaleDateString()}` : `revoked ${member.revokedAt ? new Date(member.revokedAt).toLocaleDateString() : ''}`}
-              {member.walletAddress && <><br /><small>Wallet <a href={explorer('address', member.walletAddress)} target="_blank" rel="noreferrer">{shortId(member.walletAddress)}</a></small></>}
-            </p>
-            {isMaster && member.status === 'ACTIVE' && (revoking === member.publicIdentity
-              ? <div className="modal-actions"><input aria-label={`Type REVOKE to remove ${member.displayName}`} placeholder="Type REVOKE" value={confirmRevoke} onChange={event => setConfirmRevoke(event.target.value)} /><button disabled={confirmRevoke !== 'REVOKE'} onClick={() => void revoke(member.publicIdentity)}>Revoke</button><button onClick={() => setRevoking('')}>Cancel</button></div>
-              : <button className="secondary-button" onClick={() => { setRevoking(member.publicIdentity); setConfirmRevoke('') }}>Revoke access…</button>)}
-          </li>
-        ))}
+        {members.map(member => {
+          const isYou = member.publicIdentity === record.signingIdentity, manageable = isMaster && !isYou && member.status === 'ACTIVE' && (member.role !== 'MASTER' || holdsAuthority)
+          return (
+            <li key={member.publicIdentity}>
+              <p>
+                <strong>{isYou ? `${member.displayName} (you)` : member.displayName}</strong> · {roleLabel(member.role)} · {member.status === 'ACTIVE' ? `since ${new Date(member.roleChangedAt ?? member.issuedAt).toLocaleDateString()}` : `access removed ${member.revokedAt ? new Date(member.revokedAt).toLocaleDateString() : ''}`}
+                {member.walletAddress && <><br /><small>Wallet <a href={explorer('address', member.walletAddress)} target="_blank" rel="noreferrer">{shortId(member.walletAddress)}</a></small></>}
+              </p>
+              {manageable && changing === member.publicIdentity && (
+                <div className="modal-actions">
+                  <select aria-label={`New role for ${member.displayName}`} value={newRole} onChange={event => setNewRole(event.target.value as ArgusRole)}>{roleChoices.filter(choice => choice.role !== member.role).map(choice => <option key={choice.role} value={choice.role}>{choice.label}</option>)}</select>
+                  <button disabled={working === member.publicIdentity} onClick={() => void changeRole(member.publicIdentity, member.displayName)}>Change role</button>
+                  <button onClick={() => setChanging('')}>Cancel</button>
+                </div>
+              )}
+              {manageable && revoking === member.publicIdentity && (
+                <div className="modal-actions">
+                  <input aria-label={`Type REVOKE to remove ${member.displayName}`} placeholder="Type REVOKE" value={confirmRevoke} onChange={event => setConfirmRevoke(event.target.value)} />
+                  <button disabled={confirmRevoke !== 'REVOKE' || working === member.publicIdentity} onClick={() => void revoke(member.publicIdentity)}>{working === member.publicIdentity ? 'Removing…' : 'Remove access'}</button>
+                  <button onClick={() => setRevoking('')}>Cancel</button>
+                </div>
+              )}
+              {manageable && changing !== member.publicIdentity && revoking !== member.publicIdentity && (
+                <div className="modal-actions">
+                  <button className="secondary-button" onClick={() => { setChanging(member.publicIdentity); setRevoking(''); setNewRole(roleChoices.find(choice => choice.role !== member.role)!.role) }}>Change role…</button>
+                  <button className="secondary-button" onClick={() => { setRevoking(member.publicIdentity); setChanging(''); setConfirmRevoke('') }}>Remove access…</button>
+                </div>
+              )}
+            </li>
+          )
+        })}
         {!members.length && <li><p>No one else has been admitted yet.</p></li>}
       </ul>
+      {isMaster && <p className="safe-note">Removing someone also replaces the unit key for everyone else, so they cannot read anything written afterwards. Their earlier work stays in the record.</p>}
       {isMaster ? (
         <form className="panel-rows" aria-label="Admit a person" onSubmit={admit}>
           <h3>Admit a person</h3>
           <p>Ask them to open A.R.G.U.S., choose <em>Join my unit</em>, and send you their join code.</p>
           <label className="field">JOIN CODE<textarea aria-label="Join code" rows={3} value={joinCode} onChange={event => setJoinCode(event.target.value)} required /></label>
-          <label className="field">ROLE<select aria-label="Role" value={role} onChange={event => setRole(event.target.value as Exclude<ArgusRole, 'MASTER'>)}><option value="SUPPLY_ASSISTANT">Supply Assistant</option><option value="SUPPLY_OFFICER">Supply Officer</option><option value="INSTRUCTOR">Instructor</option></select></label>
+          <label className="field">ROLE<select aria-label="Role" value={role} onChange={event => setRole(event.target.value as ArgusRole)}>{roleChoices.map(choice => <option key={choice.role} value={choice.role}>{choice.label}</option>)}</select>{role === 'MASTER' && <small>A delegated Master can admit, re-role and remove people (not other Masters). Choose someone you trust fully.</small>}</label>
           <label className="field">DISPLAY NAME (OPTIONAL)<input aria-label="Display name" value={name} onChange={event => setName(event.target.value)} maxLength={60} placeholder="Defaults to the name in their join code" /></label>
           <label className="field">ACCESS EXPIRES (OPTIONAL)<input type="date" aria-label="Access expires" value={expires} onChange={event => setExpires(event.target.value)} /></label>
           <label className="checkbox-field"><input type="checkbox" checked={topUp} onChange={event => setTopUp(event.target.checked)} /> Send them testnet satoshis from this device&apos;s wallet so they can publish right away</label>
@@ -83,8 +125,36 @@ export function MembersPanel({ runtime, projection, close, onProjection, notify 
             </div>
           )}
         </form>
-      ) : <p className="safe-note">Only the unit Master can admit or remove people.</p>}
+      ) : <p className="safe-note">Only a unit Master can admit or remove people.</p>}
+      {isMaster && holdsAuthority && <RecoveryFileSection runtime={runtime} registeredAt={projection.recoveryKey?.registeredAt} notify={notify} onProjection={onProjection} />}
     </Drawer>
+  )
+}
+
+/** Original (or recovered) Master only: a passphrase-encrypted file that restores Master authority on a new device. */
+function RecoveryFileSection({ runtime, registeredAt, notify, onProjection }: { runtime: UnitRuntime; registeredAt?: string; notify: (message: string) => void; onProjection: (projection: ArgusAppProjection) => void }) {
+  const [phrase, setPhrase] = useState(''), [confirm, setConfirm] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('')
+  const create = async (event: React.FormEvent) => {
+    event.preventDefault(); setError('')
+    if (phrase !== confirm) { setError('The recovery passphrases do not match.'); return }
+    setBusy(true)
+    try {
+      const fileText = await runtime.exportRecovery(phrase)
+      downloadText(`argus-recovery-${runtime.device.record.unit!.unitId}.txt`, fileText)
+      setPhrase(''); setConfirm(''); onProjection(await runtime.controller.project())
+      notify('Recovery file downloaded. Store it offline (USB stick or printed) and keep the recovery passphrase somewhere else.')
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'The recovery file could not be created.') } finally { setBusy(false) }
+  }
+  return (
+    <form className="panel-rows" aria-label="Recovery file" onSubmit={create}>
+      <h3>Recovery file</h3>
+      <p>If this device is lost or its passphrase forgotten, a recovery file lets a new device take the Master role back, remove this one, and keep reading everything, including data written after the file was made.</p>
+      {registeredAt && <p className="safe-note">A recovery key has been set up for this unit since {new Date(registeredAt).toLocaleDateString()}. Making a new file re-uses it.</p>}
+      <label className="field">RECOVERY PASSPHRASE<input type="password" aria-label="Recovery passphrase" value={phrase} onChange={event => setPhrase(event.target.value)} minLength={12} required autoComplete="new-password" /><small>Different from this device&apos;s passphrase. At least 12 characters with a letter and a number.</small></label>
+      <label className="field">CONFIRM RECOVERY PASSPHRASE<input type="password" aria-label="Confirm recovery passphrase" value={confirm} onChange={event => setConfirm(event.target.value)} minLength={12} required autoComplete="new-password" /></label>
+      {error && <div className="workflow-error" role="alert">{error}</div>}
+      <div className="modal-actions"><button className="primary-button" type="submit" disabled={busy}>{busy ? 'Encrypting…' : 'Download recovery file'}</button></div>
+    </form>
   )
 }
 

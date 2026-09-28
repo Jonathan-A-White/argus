@@ -65,7 +65,7 @@ describe('device vault and admission', { timeout: 60_000 }, () => {
     const joined = await acceptAdmission(alice, forAlice.admissionCode, memoryStorage())
     const fromOther = await admitMember(other, await encodeJoinRequest(alice), 'SUPPLY_ASSISTANT', { storage: memoryStorage() })
     await expect(acceptAdmission(joined, fromOther.admissionCode, memoryStorage())).rejects.toThrow(/different unit/)
-    await expect(admitMember(joined, await encodeJoinRequest(bob), 'SUPPLY_ASSISTANT')).rejects.toThrow(/Only the unit Master/)
+    await expect(admitMember(joined, await encodeJoinRequest(bob), 'SUPPLY_ASSISTANT')).rejects.toThrow(/Only a unit Master/)
   })
 })
 

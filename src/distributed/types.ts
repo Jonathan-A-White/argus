@@ -29,7 +29,7 @@ export type AuthorityRevocation = {
   signature: string
 }
 
-export type DistributedEventType = 'INVENTORY_ITEM_CREATED' | 'INVENTORY_ITEM_UPDATED' | 'INVENTORY_RECEIVED' | 'CATALOG_ITEM_CREATED' | 'CATALOG_ITEM_UPDATED' | 'CATALOG_SIZES_ADDED' | 'ITEM_ISSUED' | 'ITEM_RETURNED' | 'INVENTORY_COUNT_SUBMITTED' | 'COUNT_SESSION_CREATED' | 'COUNT_CONTRIBUTED' | 'COUNT_CORRECTED' | 'COUNT_RECOUNTED' | 'COUNT_SESSION_SUBMITTED' | 'COUNT_SESSION_RECONCILED' | 'COUNT_SESSION_CANCELLED' | 'AUTHORITY_GRANTED' | 'AUTHORITY_REVOKED' | 'ROLE_CHANGED' | 'CONFLICT_DETECTED' | 'CONFLICT_RESOLVED' | 'RECORD_CORRECTED' | 'CADET_CREATED' | 'CADET_UPDATED' | 'BUNDLE_CREATED' | 'BUNDLE_UPDATED' | 'BUNDLE_DEACTIVATED' | 'STILL_NEEDED_ADDED' | 'STILL_NEEDED_UPDATED' | 'STILL_NEEDED_CANCELLED' | 'STILL_NEEDED_FULFILLED' | 'CALENDAR_EVENT_CREATED' | 'CALENDAR_EVENT_UPDATED' | 'CALENDAR_TASK_ADDED' | 'TASK_COMPLETED' | 'PROPERTY_CORRECTED' | 'ANNUAL_ROLLOVER_COMPLETED' | 'CADETS_IMPORTED'
+export type DistributedEventType = 'INVENTORY_ITEM_CREATED' | 'INVENTORY_ITEM_UPDATED' | 'INVENTORY_RECEIVED' | 'CATALOG_ITEM_CREATED' | 'CATALOG_ITEM_UPDATED' | 'CATALOG_SIZES_ADDED' | 'ITEM_ISSUED' | 'ITEM_RETURNED' | 'INVENTORY_COUNT_SUBMITTED' | 'COUNT_SESSION_CREATED' | 'COUNT_CONTRIBUTED' | 'COUNT_CORRECTED' | 'COUNT_RECOUNTED' | 'COUNT_SESSION_SUBMITTED' | 'COUNT_SESSION_RECONCILED' | 'COUNT_SESSION_CANCELLED' | 'AUTHORITY_GRANTED' | 'AUTHORITY_REVOKED' | 'ROLE_CHANGED' | 'CONFLICT_DETECTED' | 'CONFLICT_RESOLVED' | 'RECORD_CORRECTED' | 'CADET_CREATED' | 'CADET_UPDATED' | 'BUNDLE_CREATED' | 'BUNDLE_UPDATED' | 'BUNDLE_DEACTIVATED' | 'STILL_NEEDED_ADDED' | 'STILL_NEEDED_UPDATED' | 'STILL_NEEDED_CANCELLED' | 'STILL_NEEDED_FULFILLED' | 'CALENDAR_EVENT_CREATED' | 'CALENDAR_EVENT_UPDATED' | 'CALENDAR_TASK_ADDED' | 'TASK_COMPLETED' | 'PROPERTY_CORRECTED' | 'ANNUAL_ROLLOVER_COMPLETED' | 'CADETS_IMPORTED' | 'UNIT_KEY_ROTATED' | 'RECOVERY_KEY_REGISTERED'
 export type LocalSyncStatus = 'LOCAL' | 'QUEUED' | 'SYNCING' | 'SYNCHRONIZED' | 'CONFLICT' | 'FAILED'
 
 export type UnsignedArgusEvent = {
@@ -66,7 +66,16 @@ export type CatalogItemProjection = { catalogId: string; name: string; category:
 export type ConflictRecord = { id: string; entityId: string; eventIds: string[]; status: 'OPEN' | 'RESOLVED'; reason: string; resolutionEventId?: string; transactionId?: string; inventoryItemIds?: string[]; cadetId?: string }
 /** A signed event that could not be applied in canonical order (missing dependency, invalid, unauthorized). Kept, never dropped: a later event may make it applicable. */
 export type RejectedEventRecord = { eventId: string; eventType: DistributedEventType; reason: string }
-export type MemberProjection = { publicIdentity: string; displayName: string; role: ArgusRole; credentialId: string; issuedAt: string; expiresAt?: string; walletAddress?: string; admittedBy: string; admittedEventId: string; status: 'ACTIVE' | 'REVOKED'; revokedAt?: string }
+/** ecdhPublicKey lets any Master hand this member a new unit key after a rotation, without meeting them again. credentialEventId points at the event carrying the member's current credential. */
+export type MemberProjection = { publicIdentity: string; displayName: string; role: ArgusRole; credentialId: string; credentialEventId?: string; issuedAt: string; expiresAt?: string; walletAddress?: string; ecdhPublicKey?: string; admittedBy: string; admittedEventId: string; status: 'ACTIVE' | 'REVOKED'; revokedAt?: string; roleChangedAt?: string }
+/**
+ * One unit data key generation. The key itself never appears here: the UNIT_KEY_ROTATED event
+ * carries one ECDH-wrapped copy per remaining member (and one for the unit recovery key), and is
+ * itself encrypted under the previous key, so a removed member can read neither.
+ */
+export type KeyEpochProjection = { epochId: string; previousEpoch: string; reason: 'REVOCATION' | 'MANUAL'; rotatedBy: string; rotatedAt: string; eventId: string; recipients: string[] }
+/** Public half of the unit recovery key; every rotation also wraps the new key to it so a recovery file never goes stale. */
+export type RecoveryKeyProjection = { publicKey: string; fingerprint: string; registeredBy: string; registeredAt: string; eventId: string }
 
 export type CountSessionStatus = 'DRAFT' | 'ACTIVE' | 'SUBMITTED' | 'RECONCILED' | 'CANCELLED'
 export type CountAssignment = { assignmentId: string; itemId: string; scope: string; assignedTo?: string }

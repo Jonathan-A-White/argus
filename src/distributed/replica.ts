@@ -8,6 +8,8 @@ import type { BundleVersionProjection, CadetProjection, StillNeededProjection } 
 import { FACTORY_BUNDLES, GENESIS_CATALOG, GENESIS_INVENTORY, ONE_SIZE_LABEL, generateCadetCode, oneSizeVariantId, validateBundle, validateCadet, validateRequirement } from '../stage3/domain'
 import { normalizeSizeLabel } from '../stage3/sizes'
 import { SUPPLY_EVENT_KINDS, templateFor } from '../stage3/calendar'
+import { parseKeyGrantRecord } from '../private-sync/schema'
+import type { KeyGrantRecord } from '../private-sync/types'
 
 const PERMISSION_FOR: Partial<Record<DistributedEventType, ArgusPermission>> = {
   INVENTORY_ITEM_CREATED: 'inventory.create', INVENTORY_ITEM_UPDATED: 'inventory.adjust', INVENTORY_RECEIVED: 'inventory.adjust',
@@ -20,7 +22,10 @@ const PERMISSION_FOR: Partial<Record<DistributedEventType, ArgusPermission>> = {
   AUTHORITY_GRANTED: 'users.authorize', AUTHORITY_REVOKED: 'users.revoke', ROLE_CHANGED: 'users.manageRoles',
   CALENDAR_EVENT_CREATED: 'calendar.write', CALENDAR_EVENT_UPDATED: 'calendar.write', CALENDAR_TASK_ADDED: 'calendar.write', TASK_COMPLETED: 'calendar.write',
   PROPERTY_CORRECTED: 'inventory.adjust', ANNUAL_ROLLOVER_COMPLETED: 'cadets.manage', CADETS_IMPORTED: 'cadets.manage',
+  UNIT_KEY_ROTATED: 'users.revoke', RECOVERY_KEY_REGISTERED: 'users.authorize',
 }
+/** Unit key generations are named e<n>-<random> so two Masters rotating at once never reuse a name. */
+export const EPOCH_ID_PATTERN = /^e[1-9][0-9]{0,5}(-[0-9a-f]{4,16})?$/
 const unsigned = (event: SignedArgusEvent) => { const rest: Partial<SignedArgusEvent> = { ...event }; delete rest.signature; return canonicalize(rest) }
 /** Canonical fold order shared by every device: Lamport clock, then event ID as a stable tie-break. */
 export const eventSortKey = (event: Pick<SignedArgusEvent, 'clock' | 'eventId'>) => `${String(Math.max(0, Math.floor(event.clock ?? 0))).padStart(12, '0')}|${event.eventId}`
@@ -360,14 +365,28 @@ export class ArgusReplica {
 
   // ---------- membership ----------
   /** Publishes an admission to the whole unit so every device learns the member's role, display name and wallet. */
-  async recordAdmission(input: { credential: AuthorityCredential; displayName: string; walletAddress?: string }, options: CommandOptions = {}) {
+  async recordAdmission(input: { credential: AuthorityCredential; displayName: string; walletAddress?: string; ecdhPublicKey?: string }, options: CommandOptions = {}) {
     const displayName = input.displayName.trim(); if (!displayName || displayName.length > 60) throw new Error('Enter a display name of 1–60 characters.')
     await this.actor('users.authorize', options.timestamp)
-    return this.commit({ eventType: 'AUTHORITY_GRANTED', entityId: input.credential.subjectPublicIdentity, payload: { credential: input.credential, displayName, ...(input.walletAddress ? { walletAddress: input.walletAddress } : {}) }, ...options })
+    return this.commit({ eventType: 'AUTHORITY_GRANTED', entityId: input.credential.subjectPublicIdentity, payload: { credential: input.credential, displayName, ...(input.walletAddress ? { walletAddress: input.walletAddress } : {}), ...(input.ecdhPublicKey ? { ecdhPublicKey: input.ecdhPublicKey } : {}) }, ...options })
   }
   async recordRevocation(revocation: AuthorityRevocation, options: CommandOptions = {}) {
     await this.actor('users.revoke', options.timestamp)
     return this.commit({ eventType: 'AUTHORITY_REVOKED', entityId: revocation.subjectPublicIdentity, payload: { revocation }, ...options })
+  }
+  /** A new credential with the new role replaces the old one, which is revoked in the same event, so there is never a moment with two roles or none. */
+  async changeRole(input: { credential: AuthorityCredential; revocation: AuthorityRevocation }, options: CommandOptions = {}) {
+    await this.actor('users.manageRoles', options.timestamp)
+    return this.commit({ eventType: 'ROLE_CHANGED', entityId: input.credential.subjectPublicIdentity, payload: { credential: input.credential, revocation: input.revocation }, ...options })
+  }
+  /** Publishes a new unit key generation: one wrapped copy per remaining member. The envelope is sealed under previousEpoch (see UnitEventSyncProvider). */
+  async rotateUnitKey(input: { epochId: string; previousEpoch: string; reason: 'REVOCATION' | 'MANUAL'; grants: KeyGrantRecord[]; grantorEcdhPublicKey: string }, options: CommandOptions = {}) {
+    await this.actor('users.revoke', options.timestamp)
+    return this.commit({ eventType: 'UNIT_KEY_ROTATED', entityId: input.epochId, payload: { epochId: input.epochId, previousEpoch: input.previousEpoch, reason: input.reason, grants: input.grants, grantorEcdhPublicKey: input.grantorEcdhPublicKey }, ...options })
+  }
+  async registerRecoveryKey(input: { publicKey: string; fingerprint: string }, options: CommandOptions = {}) {
+    await this.actor('users.authorize', options.timestamp)
+    return this.commit({ eventType: 'RECOVERY_KEY_REGISTERED', entityId: `recovery:${input.fingerprint}`, payload: { publicKey: input.publicKey, fingerprint: input.fingerprint }, ...options })
   }
 
   // ---------- canonical fold ----------
@@ -480,12 +499,41 @@ export class ArgusReplica {
         const credential = event.payload.credential as AuthorityCredential | undefined, displayName = event.payload.displayName
         if (!credential || credential.subjectPublicIdentity !== event.entityId || typeof displayName !== 'string' || !displayName.trim()) throw new Error('Corrupted admission event.')
         if (!this.authorization.credentialFor(credential.subjectPublicIdentity, credential.issuedAt) && credential.subjectPublicIdentity !== event.actorPublicIdentity) throw new Error('Admission credential has not been verified.')
-        const member = { publicIdentity: credential.subjectPublicIdentity, displayName: displayName.trim().slice(0, 60), role: credential.role, credentialId: credential.credentialId, issuedAt: credential.issuedAt, ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}), ...(typeof event.payload.walletAddress === 'string' ? { walletAddress: event.payload.walletAddress } : {}), admittedBy: event.actorPublicIdentity, admittedEventId: event.eventId, status: 'ACTIVE' as const }
+        const previous = state.members.find(existing => existing.publicIdentity === credential.subjectPublicIdentity)
+        const ecdhPublicKey = typeof event.payload.ecdhPublicKey === 'string' ? event.payload.ecdhPublicKey : previous?.ecdhPublicKey
+        const member = { publicIdentity: credential.subjectPublicIdentity, displayName: displayName.trim().slice(0, 60), role: credential.role, credentialId: credential.credentialId, credentialEventId: event.eventId, issuedAt: credential.issuedAt, ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}), ...(typeof event.payload.walletAddress === 'string' ? { walletAddress: event.payload.walletAddress } : {}), ...(ecdhPublicKey ? { ecdhPublicKey } : {}), admittedBy: event.actorPublicIdentity, admittedEventId: event.eventId, status: 'ACTIVE' as const }
         state.members = [...state.members.filter(existing => existing.publicIdentity !== member.publicIdentity), member]; return
       }
       case 'AUTHORITY_REVOKED': {
         const revocation = event.payload.revocation as AuthorityRevocation | undefined; if (!revocation || revocation.subjectPublicIdentity !== event.entityId) throw new Error('Corrupted revocation event.')
-        const member = state.members.find(candidate => candidate.publicIdentity === event.entityId); if (member) { member.status = 'REVOKED'; member.revokedAt = revocation.effectiveAt } return
+        // Revoking a credential the member no longer uses (replaced by a role change) does not remove them.
+        const member = state.members.find(candidate => candidate.publicIdentity === event.entityId); if (member && member.credentialId === revocation.credentialId) { member.status = 'REVOKED'; member.revokedAt = revocation.effectiveAt } return
+      }
+      case 'ROLE_CHANGED': {
+        const credential = event.payload.credential as AuthorityCredential | undefined, revocation = event.payload.revocation as AuthorityRevocation | undefined
+        if (!credential || !revocation || credential.subjectPublicIdentity !== event.entityId || revocation.subjectPublicIdentity !== event.entityId) throw new Error('Corrupted role change event.')
+        const member = state.members.find(candidate => candidate.publicIdentity === event.entityId)
+        if (!member || member.status !== 'ACTIVE') throw new Error('Role change for someone who is not an active member.')
+        if (revocation.credentialId !== member.credentialId) throw new Error('Role change does not replace the member’s current credential.')
+        if (!this.authorization.hasCredential(credential.credentialId)) throw new Error('New role credential has not been verified.')
+        Object.assign(member, { role: credential.role, credentialId: credential.credentialId, credentialEventId: event.eventId, issuedAt: credential.issuedAt, roleChangedAt: event.timestamp })
+        if (credential.expiresAt) member.expiresAt = credential.expiresAt; else delete member.expiresAt
+        return
+      }
+      case 'UNIT_KEY_ROTATED': {
+        const value = event.payload as { epochId?: unknown; previousEpoch?: unknown; reason?: unknown; grants?: unknown; grantorEcdhPublicKey?: unknown }
+        if (typeof value.epochId !== 'string' || value.epochId !== event.entityId || !EPOCH_ID_PATTERN.test(value.epochId) || typeof value.previousEpoch !== 'string' || !EPOCH_ID_PATTERN.test(value.previousEpoch) || (value.reason !== 'REVOCATION' && value.reason !== 'MANUAL') || typeof value.grantorEcdhPublicKey !== 'string' || !Array.isArray(value.grants) || !value.grants.length) throw new Error('Corrupted key rotation event.')
+        if (state.keyEpochs.some(epoch => epoch.epochId === value.epochId)) throw new Error('Unit key generation already exists.')
+        const grants = value.grants.map(grant => parseKeyGrantRecord(grant))
+        if (grants.some(grant => grant.epochId !== value.epochId || grant.organizationId !== this.organizationId || grant.grantorPublicIdentity !== event.actorPublicIdentity)) throw new Error('Key rotation contains a foreign key grant.')
+        state.keyEpochs.push({ epochId: value.epochId, previousEpoch: value.previousEpoch, reason: value.reason, rotatedBy: event.actorPublicIdentity, rotatedAt: event.timestamp, eventId: event.eventId, recipients: [...new Set(grants.map(grant => grant.granteePublicIdentity))].sort() })
+        return
+      }
+      case 'RECOVERY_KEY_REGISTERED': {
+        const { publicKey, fingerprint } = event.payload as { publicKey?: unknown; fingerprint?: unknown }
+        if (typeof publicKey !== 'string' || typeof fingerprint !== 'string' || !/^[0-9a-f]{16}$/.test(fingerprint) || event.entityId !== `recovery:${fingerprint}`) throw new Error('Corrupted recovery key event.')
+        state.recoveryKey = { publicKey, fingerprint, registeredBy: event.actorPublicIdentity, registeredAt: event.timestamp, eventId: event.eventId }
+        return
       }
       case 'CALENDAR_EVENT_CREATED': {
         if (state.calendar.some(candidate => candidate.calendarEventId === event.entityId)) throw new Error('Supply event ID already exists.')
@@ -646,7 +694,7 @@ export class ArgusReplica {
   private rebuild(state: RepositoryState) {
     const genesis = state.genesis ?? { inventory: [], catalog: [] }
     state.inventory = structuredClone(genesis.inventory); state.catalog = structuredClone(genesis.catalog)
-    state.countSessions = []; state.cadets = []; state.stillNeeded = []; state.transactions = []; state.conflicts = []; state.members = []; state.rejected = []; state.calendar = []; state.corrections = []; state.rollovers = []
+    state.countSessions = []; state.cadets = []; state.stillNeeded = []; state.transactions = []; state.conflicts = []; state.members = []; state.rejected = []; state.calendar = []; state.corrections = []; state.rollovers = []; state.keyEpochs = []; delete state.recoveryKey
     state.bundles = FACTORY_BUNDLES.map(source => factoryBundle(source, state.inventory))
     const ordered = [...state.events].sort((a, b) => eventSortKey(a.event) < eventSortKey(b.event) ? -1 : 1)
     for (const record of ordered) this.tryApply(state, record.event)
@@ -670,7 +718,7 @@ export class ArgusReplica {
     const receivedAt = new Date().toISOString()
     for (const event of fresh) { state.events.push({ event, syncStatus: status.syncStatus, auditStatus: 'PENDING', receivedAt, ...(status.transactionId ? { transactionId: status.transactionId } : {}) }); state.clock = Math.max(state.clock, Math.floor(event.clock ?? 0)) }
     // A revocation can invalidate already-applied events of the revoked member, so it always re-folds history.
-    const inOrder = !state.rejected.length && !fresh.some(event => event.eventType === 'AUTHORITY_REVOKED') && (state.lastAppliedKey === undefined || eventSortKey(fresh[0]) > state.lastAppliedKey)
+    const inOrder = !state.rejected.length && !fresh.some(event => event.eventType === 'AUTHORITY_REVOKED' || event.eventType === 'ROLE_CHANGED') && (state.lastAppliedKey === undefined || eventSortKey(fresh[0]) > state.lastAppliedKey)
     if (inOrder) { for (const event of fresh) this.tryApply(state, event); state.lastAppliedKey = eventSortKey(fresh[fresh.length - 1]) }
     else this.rebuild(state)
     return fresh

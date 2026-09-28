@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { UnitRuntime, type UnitRuntimeOptions } from '../runtime'
-import { acceptAdmission, createJoiningDevice, createMasterDevice, encodeJoinRequest, forgetDevice, loadDeviceVault, unlockDevice, type DeviceVaultRecord, type UnlockedDevice } from '../vault'
+import { acceptAdmission, createJoiningDevice, createMasterDevice, encodeJoinRequest, forgetDevice, loadDeviceVault, restoreFromRecoveryFile, unlockDevice, type DeviceVaultRecord, type UnlockedDevice } from '../vault'
 import './unit-gate.css'
 
-type Step = { kind: 'welcome' } | { kind: 'create' } | { kind: 'join' } | { kind: 'unlock'; record: DeviceVaultRecord } | { kind: 'pending'; device: UnlockedDevice } | { kind: 'opening' } | { kind: 'ready'; runtime: UnitRuntime }
+type Step = { kind: 'welcome' } | { kind: 'create' } | { kind: 'join' } | { kind: 'restore' } | { kind: 'unlock'; record: DeviceVaultRecord } | { kind: 'pending'; device: UnlockedDevice } | { kind: 'opening' } | { kind: 'ready'; runtime: UnitRuntime }
 
 export type UnitGateProps = {
   children: (runtime: UnitRuntime, lock: () => void) => React.ReactNode
@@ -36,17 +36,24 @@ export function UnitGate({ children, runtimeOptions, storage = localStorage }: U
   const lock = () => { if (step.kind === 'ready') step.runtime.stop(); const record = loadDeviceVault(storage); setStep(record ? { kind: 'unlock', record } : { kind: 'welcome' }) }
 
   if (step.kind === 'ready') return <>{children(step.runtime, lock)}</>
-  if (step.kind === 'opening') return <main className="loading-state unit-gate" aria-live="polite"><div className="modal"><h2>Opening your unit…</h2><p>Decrypting this device&apos;s copy and checking BSV testnet for everyone&apos;s latest work.</p></div></main>
+  if (step.kind === 'opening') return <main className="loading-state unit-gate" aria-live="polite"><GateBanner /><div className="modal"><h2>Opening your unit…</h2><p>Decrypting this device&apos;s copy and checking BSV testnet for everyone&apos;s latest work.</p></div></main>
   if (step.kind === 'welcome') return <Welcome choose={kind => { setError(''); setStep({ kind }) }} />
+  if (step.kind === 'restore') return <Restore back={() => setStep({ kind: 'welcome' })} submit={async input => open(await restoreFromRecoveryFile(input, storage))} />
   if (step.kind === 'create') return <CreateOrJoin mode="create" back={() => setStep({ kind: 'welcome' })} submit={async input => open(await createMasterDevice({ passphrase: input.passphrase, displayName: input.displayName, unitName: input.unitName }, storage))} />
   if (step.kind === 'join') return <CreateOrJoin mode="join" back={() => setStep({ kind: 'welcome' })} submit={async input => open(await createJoiningDevice({ passphrase: input.passphrase, displayName: input.displayName }, storage))} />
   if (step.kind === 'pending') return <Pending device={step.device} accept={async code => open(await acceptAdmission(step.device, code, storage))} lock={lock} />
   return <Unlock record={step.record} initialError={error} unlock={async passphrase => { setError(''); await open(await unlockDevice(step.record, passphrase)) }} reset={() => { forgetDevice(storage); setStep({ kind: 'welcome' }) }} />
 }
 
-function Welcome({ choose }: { choose: (kind: 'create' | 'join') => void }) {
+/** Spec §30: every screen of a testnet build says so, including the ones before sign-in. */
+function GateBanner() {
+  return <div className="environment-banner testnet unit-gate-banner" role="note"><strong>BSV TESTNET</strong><span>Development Environment · No Production Transactions</span></div>
+}
+
+function Welcome({ choose }: { choose: (kind: 'create' | 'join' | 'restore') => void }) {
   return (
     <main className="loading-state unit-gate" aria-live="polite">
+      <GateBanner />
       <div className="modal">
         <p className="eyebrow">A.R.G.U.S. · BSV TESTNET</p>
         <h2>Set up this device</h2>
@@ -54,6 +61,7 @@ function Welcome({ choose }: { choose: (kind: 'create' | 'join') => void }) {
         <div className="unit-gate-choices">
           <button className="primary-button" onClick={() => choose('join')}>Join my unit<small>Your Master will admit you</small></button>
           <button onClick={() => choose('create')}>Create a new unit<small>Only the first person, who becomes the unit&apos;s Master</small></button>
+          <button onClick={() => choose('restore')}>Restore Master from a recovery file<small>The Master&apos;s device was lost or its passphrase forgotten</small></button>
         </div>
       </div>
     </main>
@@ -72,6 +80,7 @@ function CreateOrJoin({ mode, back, submit }: { mode: 'create' | 'join'; back: (
   }
   return (
     <main className="loading-state unit-gate" aria-live="polite">
+      <GateBanner />
       <form className="modal" aria-label={title} onSubmit={onSubmit}>
         <h2>{title}</h2>
         {mode === 'create'
@@ -99,6 +108,7 @@ function Unlock({ record, unlock, reset, initialError }: { record: DeviceVaultRe
   }
   return (
     <main className="loading-state unit-gate" aria-live="polite">
+      <GateBanner />
       <form className="modal" aria-label="Unlock A.R.G.U.S." onSubmit={onSubmit}>
         <p className="eyebrow">{record.unit ? record.unit.unitName.toUpperCase() : 'WAITING FOR ADMISSION'}</p>
         <h2>Unlock A.R.G.U.S.</h2>
@@ -132,6 +142,7 @@ function Pending({ device, accept, lock }: { device: UnlockedDevice; accept: (ad
   }
   return (
     <main className="loading-state unit-gate" aria-live="polite">
+      <GateBanner />
       <form className="modal" aria-label="Waiting for admission" onSubmit={onSubmit}>
         <h2>Waiting for admission</h2>
         <p><strong>1.</strong> Send this join code to your unit&apos;s Master (text, email or AirDrop are all fine — it contains no secret).</p>
@@ -145,6 +156,37 @@ function Pending({ device, accept, lock }: { device: UnlockedDevice; accept: (ad
           <button className="primary-button" type="submit" disabled={busy || !admissionCode.trim()}>{busy ? 'Joining…' : 'Join unit'}</button>
         </div>
         <p className="safe-note">This device&apos;s testnet wallet: <code>{device.record.walletAddress}</code></p>
+      </form>
+    </main>
+  )
+}
+
+function Restore({ back, submit }: { back: () => void; submit: (input: { fileText: string; recoveryPassphrase: string; passphrase: string; displayName: string }) => Promise<void> }) {
+  const [fileText, setFileText] = useState(''), [recoveryPassphrase, setRecoveryPassphrase] = useState(''), [displayName, setDisplayName] = useState(''), [passphrase, setPassphrase] = useState(''), [confirm, setConfirm] = useState('')
+  const [error, setError] = useState(''), [busy, setBusy] = useState(false)
+  const readFile = async (file: File | undefined) => { if (file) setFileText((await file.text()).trim()) }
+  const onSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (passphrase !== confirm) { setError('The new passphrases do not match.'); return }
+    setBusy(true); setError('')
+    try { await submit({ fileText, recoveryPassphrase, passphrase, displayName }) } catch (cause) { setError(cause instanceof Error ? cause.message : 'The unit could not be restored.'); setBusy(false) }
+  }
+  return (
+    <main className="loading-state unit-gate" aria-live="polite">
+      <GateBanner />
+      <form className="modal" aria-label="Restore Master from a recovery file" onSubmit={onSubmit}>
+        <h2>Restore Master from a recovery file</h2>
+        <p>This device gets its own new keys and takes the Master role back. Afterwards, open <strong>Members &amp; access</strong> and remove the lost device.</p>
+        <label className="field">RECOVERY FILE<input type="file" accept=".txt,text/plain" aria-label="Recovery file" onChange={event => void readFile(event.target.files?.[0])} /><textarea aria-label="Recovery file text" rows={3} value={fileText} onChange={event => setFileText(event.target.value)} placeholder="…or paste the file's contents (starts with ARGUS-RECOVERY-1:)" required /></label>
+        <label className="field">RECOVERY PASSPHRASE<input type="password" aria-label="Recovery passphrase" value={recoveryPassphrase} onChange={event => setRecoveryPassphrase(event.target.value)} required autoComplete="off" /></label>
+        <label className="field">YOUR NAME OR CALL SIGN<input aria-label="Your name" value={displayName} onChange={event => setDisplayName(event.target.value)} maxLength={60} required autoComplete="nickname" /></label>
+        <label className="field">NEW PASSPHRASE FOR THIS DEVICE<input type="password" aria-label="Passphrase" value={passphrase} onChange={event => setPassphrase(event.target.value)} minLength={12} required autoComplete="new-password" /><small>At least 12 characters with a letter and a number. It cannot be recovered.</small></label>
+        <label className="field">CONFIRM PASSPHRASE<input type="password" aria-label="Confirm passphrase" value={confirm} onChange={event => setConfirm(event.target.value)} minLength={12} required autoComplete="new-password" /></label>
+        {error && <div className="workflow-error" role="alert">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" onClick={back} disabled={busy}>Back</button>
+          <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Restoring…' : 'Restore Master'}</button>
+        </div>
       </form>
     </main>
   )

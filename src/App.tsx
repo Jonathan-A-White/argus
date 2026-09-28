@@ -227,10 +227,18 @@ function AuthenticatedApp({
 
   const role: ArgusRole | "PENDING" =
     runtime?.device.record.role ?? "SUPPLY_OFFICER";
+  // Permissions come from the person's signed credential (spec §4: configurable, not scattered through the UI); a removed person has none.
+  const revoked = Boolean(status?.revoked);
+  const credential = runtime?.device.record.credential;
   const can = useCallback(
     (permission: ArgusPermission) =>
-      role !== "PENDING" && ROLE_PERMISSIONS[role].includes(permission),
-    [role],
+      role !== "PENDING" &&
+      !revoked &&
+      (runtime
+        ? (credential?.permissions ?? [])
+        : ROLE_PERMISSIONS.SUPPLY_OFFICER
+      ).includes(permission),
+    [role, revoked, runtime, credential],
   );
   const memberName = useCallback(
     (publicIdentity: string) => {
@@ -318,6 +326,14 @@ function AuthenticatedApp({
           <strong>{mode === "testnet" ? "BSV TESTNET" : "MOCK BLOCKCHAIN"}</strong>
           <span>Development Environment · No Production Transactions</span>
         </div>
+        {revoked && (
+          <div className="workflow-error" role="alert">
+            A Master removed your access to {status?.unitName}. This device
+            still shows what it already had, but nothing new you record will
+            be accepted, and it cannot read anything written after your
+            removal.
+          </div>
+        )}
         <header className="topbar">
           <div>
             <p className="eyebrow">

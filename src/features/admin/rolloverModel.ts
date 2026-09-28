@@ -8,14 +8,15 @@ const SCHOOL_YEAR = /^(\d{4})-(\d{4})$/
 
 export const schoolYearFor = (startYear: number) => `${startYear}-${startYear + 1}`
 
-/** Month (0-based) by which the school year starting that calendar year is under way: September. */
-export const SCHOOL_YEAR_UNDER_WAY_MONTH = 8
+/** Month (0-based) from which the school year that started this calendar year is well under way: November. */
+export const SCHOOL_YEAR_UNDER_WAY_MONTH = 10
 
 /**
- * The school year the cadets are moving into (the panel's hint), i.e. the next one to start:
- * January–August it is the one starting this year (2026-2027 during spring and summer 2026, when
- * rollovers usually happen); from September that year has started, so it is the following one
- * (2027-2028 in September 2026). Moved forward past any year already rolled over.
+ * The school year the cadets are moving into (the panel's hint). Rollovers happen over the summer
+ * and sometimes in the first weeks of the new year, so through October it is the year starting this
+ * calendar year (2026-2027 from January to October 2026); from November, once that year is well
+ * under way, it is the following one. Always moved forward past any year already rolled over, so a
+ * unit that rolled over in June sees 2027-2028 in September.
  */
 export function defaultSchoolYear(now: Date, rollovers: Pick<RolloverRecord, 'schoolYear'>[]) {
   const done = new Set(rollovers.map(record => record.schoolYear))

@@ -135,12 +135,15 @@ describe('rollover model', () => {
     expect(defaultSchoolYear(new Date('2026-01-15T12:00:00'), [])).toBe('2026-2027')
     expect(defaultSchoolYear(new Date('2026-06-10T12:00:00'), [])).toBe('2026-2027')
     expect(defaultSchoolYear(new Date('2026-08-31T12:00:00'), [])).toBe('2026-2027')
-    // Once 2026-2027 is under way (September on), the next move is into 2027-2028.
-    expect(defaultSchoolYear(new Date('2026-09-01T12:00:00'), [])).toBe('2027-2028')
-    expect(defaultSchoolYear(new Date('2026-09-27T12:00:00'), [])).toBe('2027-2028')
+    // A rollover in the first weeks of the new year still moves into the year just starting…
+    expect(defaultSchoolYear(new Date('2026-09-27T12:00:00'), [])).toBe('2026-2027')
+    expect(defaultSchoolYear(new Date('2026-10-31T12:00:00'), [])).toBe('2026-2027')
+    // …unless that rollover is already done; and from November the next move is into the following year.
+    expect(defaultSchoolYear(new Date('2026-09-27T12:00:00'), [{ schoolYear: '2026-2027' }])).toBe('2027-2028')
+    expect(defaultSchoolYear(new Date('2026-11-01T12:00:00'), [])).toBe('2027-2028')
     expect(defaultSchoolYear(new Date('2026-12-31T12:00:00'), [])).toBe('2027-2028')
     expect(defaultSchoolYear(new Date('2026-05-30T12:00:00'), [{ schoolYear: '2026-2027' }])).toBe('2027-2028')
-    expect(defaultSchoolYear(new Date('2026-09-27T12:00:00'), [{ schoolYear: '2027-2028' }])).toBe('2028-2029')
+    expect(defaultSchoolYear(new Date('2026-11-27T12:00:00'), [{ schoolYear: '2027-2028' }])).toBe('2028-2029')
     expect(schoolYearError('2026-2027', [])).toBe('')
     expect(schoolYearError('2026-2027', [{ schoolYear: '2026-2027' }])).toBe('Rollover for 2026-2027 is already complete.')
     expect(rolloverPreview([])).toMatchObject({ active: 0, advancing: 0, graduating: 0, graduatingWithProperty: [] })

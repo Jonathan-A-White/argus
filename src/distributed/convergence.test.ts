@@ -179,12 +179,27 @@ describe('catalog, sizes and cadet privacy', () => {
     await expect(a.createCadet({ gender: 'Male', nsLevel: 'NS1', status: 'ACTIVE', cadetCode: cadets[0].cadetCode })).rejects.toThrow(/already in use/)
   })
 
-  it('records admissions so every device knows every member', async () => {
+  it('keeps an invitation pending until that device confirms it', async () => {
     const { replicas: [master, officer], authorization } = await unit(['master', 'officer'], ['MASTER', 'SUPPLY_OFFICER'])
     const credential = authorization.credentialFor('mock:officer', '2026-02-01T00:00:00.000Z')!
     await master.recordAdmission({ credential, displayName: 'Luke', walletAddress: 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn' })
     await officer.receiveMany(await events(master))
-    expect((await officer.snapshot()).members).toMatchObject([{ publicIdentity: 'mock:officer', displayName: 'Luke', role: 'SUPPLY_OFFICER', status: 'ACTIVE' }])
+    expect((await officer.snapshot()).members).toMatchObject([{ publicIdentity: 'mock:officer', displayName: 'Luke', role: 'SUPPLY_OFFICER', status: 'INVITED' }])
+    await officer.confirmAdmission(credential.credentialId, { eventId: 'confirmation' })
+    await master.receiveMany(await events(officer))
+    expect((await master.snapshot()).members[0]).toMatchObject({ status: 'ACTIVE', activationEventId: 'confirmation' })
     await expect(officer.recordAdmission({ credential, displayName: 'Self-promoted' })).rejects.toThrow(/users.authorize/)
+  })
+
+  it('converges when confirmation sorts before its invitation and arrives in opposite orders', async () => {
+    const { replicas: [master, officer, fresh], authorization } = await unit(['master', 'officer', 'fresh'], ['MASTER', 'SUPPLY_OFFICER', 'SUPPLY_OFFICER'])
+    const credential = authorization.credentialFor('mock:officer', '2026-02-01T00:00:00.000Z')!
+    await master.recordAdmission({ credential, displayName: 'Luke' }, { eventId: 'z-invitation' })
+    await officer.confirmAdmission(credential.credentialId, { eventId: 'a-confirmation' })
+    const history = [...await events(master), ...await events(officer)]
+    await fresh.receiveMany(history)
+    await master.receiveMany([...history].reverse())
+    for (const replica of [master, fresh]) expect((await replica.snapshot()).members[0]).toMatchObject({ status: 'ACTIVE', activationEventId: 'a-confirmation' })
+    expect(visible(await master.snapshot())).toBe(visible(await fresh.snapshot()))
   })
 })

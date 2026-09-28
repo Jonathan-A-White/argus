@@ -17,7 +17,9 @@ async function join(admitter: UnitRuntime, chain: FakeChain, name: string, role:
   const store = storage(), pending = await createJoiningDevice({ passphrase: 'another pass 77', displayName: name }, store)
   const admitted = await admitter.admit(await encodeJoinRequest(pending), role, { topUpSatoshis })
   expect(admitted.topUpError).toBeUndefined()
-  return open(await acceptAdmission(pending, admitted.admissionCode, store), chain, store)
+  const joined = await open(await acceptAdmission(pending, admitted.admissionCode, store), chain, store)
+  await joined.runtime.confirmAdmission()
+  return joined
 }
 async function unit() {
   const chain = new FakeChain(), store = storage()

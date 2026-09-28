@@ -42,7 +42,13 @@ export function UnitGate({ children, runtimeOptions, storage = localStorage }: U
   if (step.kind === 'restore') return <Restore back={() => setStep({ kind: 'welcome' })} submit={async input => open(await restoreFromRecoveryFile(input, storage))} />
   if (step.kind === 'create') return <CreateOrJoin mode="create" back={() => setStep({ kind: 'welcome' })} submit={async input => open(await createMasterDevice({ passphrase: input.passphrase, displayName: input.displayName, unitName: input.unitName }, storage))} />
   if (step.kind === 'join') return <CreateOrJoin mode="join" back={() => setStep({ kind: 'welcome' })} submit={async input => open(await createJoiningDevice({ passphrase: input.passphrase, displayName: input.displayName }, storage))} />
-  if (step.kind === 'pending') return <Pending device={step.device} accept={async code => open(await acceptAdmission(step.device, code, storage))} lock={lock} />
+  if (step.kind === 'pending') return <Pending device={step.device} accept={async code => {
+    const admitted = await acceptAdmission(step.device, code, storage)
+    const runtime = await UnitRuntime.open(admitted, { ...runtimeOptions, storage: runtimeOptions?.storage ?? storage })
+    await runtime.confirmAdmission()
+    runtime.start()
+    setStep({ kind: 'ready', runtime })
+  }} lock={lock} />
   return <Unlock record={step.record} initialError={error} unlock={async passphrase => { setError(''); await open(await unlockDevice(step.record, passphrase)) }} reset={() => { void forgetDevice(storage).then(() => setStep({ kind: 'welcome' })) }} />
 }
 

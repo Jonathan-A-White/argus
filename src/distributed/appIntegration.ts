@@ -107,6 +107,7 @@ export class DistributedAppController {
   updateBundleDefinition(id: string, input: Parameters<ArgusReplica['updateBundle']>[1]) { return this.run(r => r.updateBundle(id, input)) }
   createBundle(id: string, input: Parameters<ArgusReplica['createBundle']>[1]) { return this.run(r => r.createBundle(id, input)) }
   async recordAdmission(input: { credential: AuthorityCredential; displayName: string; walletAddress?: string; ecdhPublicKey?: string }) { await this.authorization?.acceptCredential(input.credential); return this.run(r => r.recordAdmission(input)) }
+  confirmAdmission(credentialId: string) { return this.run(r => r.confirmAdmission(credentialId)) }
   async recordRevocation(revocation: AuthorityRevocation) { await this.authorization?.acceptRevocation(revocation); return this.run(r => r.recordRevocation(revocation)) }
   async changeRole(input: { credential: AuthorityCredential; revocation: AuthorityRevocation }) { await this.authorization?.acceptCredential(input.credential); await this.authorization?.acceptRevocation(input.revocation); return this.run(r => r.changeRole(input)) }
   rotateUnitKey(input: Parameters<ArgusReplica['rotateUnitKey']>[0]) { return this.run(r => r.rotateUnitKey(input)) }

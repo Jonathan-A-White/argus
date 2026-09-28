@@ -76,7 +76,7 @@ export function MembersPanel({ runtime, projection, close, onProjection, notify 
           return (
             <li key={member.publicIdentity}>
               <p>
-                <strong>{isYou ? `${member.displayName} (you)` : member.displayName}</strong> · {roleLabel(member.role)} · {member.status === 'ACTIVE' ? `since ${new Date(member.roleChangedAt ?? member.issuedAt).toLocaleDateString()}` : `access removed ${member.revokedAt ? new Date(member.revokedAt).toLocaleDateString() : ''}`}
+                <strong>{isYou ? `${member.displayName} (you)` : member.displayName}</strong> · {roleLabel(member.role)} · {member.status === 'INVITED' ? 'Invitation sent — waiting for their device' : member.status === 'ACTIVE' ? `since ${new Date(member.roleChangedAt ?? member.activatedAt ?? member.issuedAt).toLocaleDateString()}` : `access removed ${member.revokedAt ? new Date(member.revokedAt).toLocaleDateString() : ''}`}
                 {member.walletAddress && <><br /><small>Wallet <a href={explorer('address', member.walletAddress)} target="_blank" rel="noreferrer">{shortId(member.walletAddress)}</a></small></>}
               </p>
               {manageable && changing === member.publicIdentity && (
@@ -120,8 +120,8 @@ export function MembersPanel({ runtime, projection, close, onProjection, notify 
           {result && (
             <div className="validation" role="status">
               <div>
-                <strong>Invitation ready for {result.name}.</strong>
-                <p>They become an active member after their device scans this one-time, device-bound QR. Show it in person or share the image directly with them.</p>
+                <strong>Invitation sent — waiting for their device.</strong>
+                <p>{result.name} becomes an active member after their device scans this one-time, device-bound QR. Show it in person or share the image directly with them.</p>
                 {qrVisible ? <img className="admission-qr" src={result.qr} alt={`One-time admission QR code for ${result.name}`} /> : <p className="safe-note">QR hidden on this device.</p>}
                 <div className="modal-actions">
                   <button type="button" onClick={() => void (async () => {

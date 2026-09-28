@@ -29,7 +29,7 @@ maps every section to code and tests). Main capabilities:
   * Device notifications: work only while the app is open or in a background tab, since there is no server.
 * **Access:**
   * Master, Instructor, Supply Officer and Supply Assistant roles.
-  * Admission by public join and admission codes.
+  * Admission by a public join code and a device-bound admission QR image (shareable remotely; text fallback retained).
   * Role changes.
   * Delegated Master authority.
   * Removal that gives everyone who remains a new unit key.

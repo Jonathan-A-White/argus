@@ -4,6 +4,7 @@ import { Drawer } from '../../components/Drawer'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
 import type { ArgusPermission, CatalogItemProjection, InventoryProjection } from '../../distributed/types'
 import { sizeScheme } from '../../stage3/sizes'
+import { ReceiptHistory } from '../corrections/ReceiptHistory'
 import { AddSizesPanel } from './AddSizesPanel'
 import { SizeList } from './SizeList'
 import {
@@ -67,6 +68,7 @@ export function ItemEditorDrawer({ catalogId, projection, controller, can, onPro
           notify={notify}
           onCount={onCount}
         />
+        <ReceiptHistory variants={variants} projection={projection} controller={controller} canCorrect={can('inventory.adjust')} onProjection={onProjection} notify={notify} />
         {item.sized && item.active && canCreate && (
           <AddSizesPanel key={item.catalogId} item={item} variants={variants} controller={controller} onProjection={onProjection} notify={notify} />
         )}

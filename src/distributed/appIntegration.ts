@@ -84,7 +84,10 @@ export class DistributedAppController {
   updateBundle(id: string, input: Parameters<ArgusReplica['updateBundle']>[1]) { return this.run(r => r.updateBundle(id, input)) }
   addStillNeeded(input: Parameters<ArgusReplica['addStillNeeded']>[0]) { return this.run(r => r.addStillNeeded(input)) }
   updateStillNeeded(id: string, changes: Parameters<ArgusReplica['updateStillNeeded']>[1]) { return this.run(r => r.updateStillNeeded(id, changes)) }
-  resolveConflict(conflictId: string, resolution: string) { return this.run(r => r.resolve(conflictId, resolution)) }
+  fulfilStillNeeded(id: string, note = '') { return this.run(r => r.fulfilStillNeeded(id, note)) }
+  cancelStillNeeded(id: string, reason: string) { return this.run(r => r.cancelStillNeeded(id, reason)) }
+  resolveConflict(conflictId: string, resolution: string, outcome?: Parameters<ArgusReplica['resolve']>[2]) { return this.run(r => r.resolve(conflictId, resolution, outcome)) }
+  correctRecord(input: Parameters<ArgusReplica['correctRecord']>[0], options?: Parameters<ArgusReplica['correctRecord']>[1]) { return this.run(r => r.correctRecord(input, options)) }
   createCalendarEvent(input: Parameters<ArgusReplica['createCalendarEvent']>[0]) { return this.run(r => r.createCalendarEvent(input)) }
   updateCalendarEvent(id: string, changes: Parameters<ArgusReplica['updateCalendarEvent']>[1]) { return this.run(r => r.updateCalendarEvent(id, changes)) }
   addCalendarTask(id: string, task: Parameters<ArgusReplica['addCalendarTask']>[1]) { return this.run(r => r.addCalendarTask(id, task)) }

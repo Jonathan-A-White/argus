@@ -1,0 +1,153 @@
+/* Issue / return workflow additions (src/components/SupplyWorkflow.tsx). Builds on the workflow classes in src/styles.css. */
+
+/* ---------- step 2: the cadet's actual record ---------- */
+.workflow-record {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+.workflow-record section {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-bg-surface-raised);
+}
+.workflow-record h4 {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 0 0 8px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+}
+.workflow-record h4 span {
+  min-width: 22px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--color-bg-surface-hover);
+  text-align: center;
+}
+.workflow-record ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.workflow-record li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-top: 1px solid var(--color-border);
+}
+.workflow-record li:first-child {
+  border-top: 0;
+}
+.workflow-record li > span {
+  min-width: 0;
+}
+.workflow-record li b {
+  display: block;
+  font-size: 12px;
+}
+.workflow-record li small {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+.workflow-record li strong {
+  flex: none;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.workflow-record-empty {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+/* ---------- step 6: adding and removing lines ---------- */
+.workflow-add-button,
+.line-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.workflow-add-button {
+  width: 100%;
+  margin: 4px 0 14px;
+}
+.workflow-add-button svg,
+.line-remove svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+.workflow-add-lines {
+  margin: 4px 0 14px;
+  padding: 12px;
+  border: 1px dashed var(--color-border-strong, var(--color-border));
+  border-radius: 12px;
+}
+.workflow-add-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.workflow-add-heading .secondary-button {
+  padding: 0 12px;
+}
+.line-remove {
+  justify-self: start;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-danger);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* ---------- return condition ---------- */
+.workflow-condition-note {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--color-bg-surface-hover);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.line-note {
+  display: grid;
+  gap: 5px;
+  color: var(--color-text-secondary);
+  font-size: 9px;
+  font-weight: 800;
+}
+.line-note input {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+.line-shelf-note {
+  margin: 0;
+  color: var(--color-warning);
+  font-size: 10px;
+  font-weight: 700;
+}
+.review-lines em.review-no-stock {
+  color: var(--color-warning);
+}

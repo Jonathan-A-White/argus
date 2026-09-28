@@ -43,6 +43,7 @@ import { SharedCountView } from "./features/count/SharedCountView";
 import { InventoryCatalogView } from "./features/inventory/InventoryCatalogView";
 import { CadetsView } from "./features/cadets/CadetsView";
 import { ConflictsPanel } from "./features/conflicts/ConflictsPanel";
+import { StillNeededActions } from "./features/needs/StillNeededActions";
 import { Dashboard } from "./features/dashboard";
 import { CalendarView } from "./features/calendar";
 import { BundleEditorPanel } from "./features/bundles";
@@ -530,7 +531,14 @@ function AuthenticatedApp({
         />
       )}
       {panel === "needed" && (
-        <NeededPanel projection={projection} close={() => setPanel(null)} />
+        <NeededPanel
+          projection={projection}
+          close={() => setPanel(null)}
+          controller={controller}
+          canManage={can("cadets.manage")}
+          onProjection={setProjection}
+          notify={notify}
+        />
       )}
       {panel === "conflicts" && (
         <ConflictsPanel
@@ -924,9 +932,17 @@ function CommandCenter({
 function NeededPanel({
   projection,
   close,
+  controller,
+  canManage,
+  onProjection,
+  notify,
 }: {
   projection: ArgusAppProjection;
   close: () => void;
+  controller: DistributedAppController;
+  canManage: boolean;
+  onProjection: (projection: ArgusAppProjection) => void;
+  notify: (message: string) => void;
 }) {
   const requirements = projection.stillNeeded,
     remaining = requirements.reduce(
@@ -1005,6 +1021,17 @@ function NeededPanel({
                         : "Awaiting stock"}
                   </em>
                 </div>
+                {canManage && (
+                  <div className="needed-card-actions">
+                    <StillNeededActions
+                      need={n}
+                      owner={code}
+                      controller={controller}
+                      onProjection={onProjection}
+                      notify={notify}
+                    />
+                  </div>
+                )}
               </article>
             );
           })

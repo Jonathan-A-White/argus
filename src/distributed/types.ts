@@ -63,7 +63,22 @@ export type InventoryProjection = { entityId: string; catalogId?: string; name: 
  * with sizes S/M/L. Unsized gear has exactly one variant labelled ONE_SIZE_LABEL.
  */
 export type CatalogItemProjection = { catalogId: string; name: string; category: string; niin: string; sized: boolean; sizeScheme?: string; reorderAt?: number; countIncrement: number; active: boolean; origin: 'GENESIS' | 'EVENT'; version: number; appliedEventIds: string[] }
-export type ConflictRecord = { id: string; entityId: string; eventIds: string[]; status: 'OPEN' | 'RESOLVED'; reason: string; resolutionEventId?: string; transactionId?: string; inventoryItemIds?: string[]; cadetId?: string }
+export type ConflictRecord = { id: string; entityId: string; eventIds: string[]; status: 'OPEN' | 'RESOLVED'; reason: string; resolutionEventId?: string; transactionId?: string; inventoryItemIds?: string[]; cadetId?: string; losingEventId?: string; shortfalls?: ConflictShortfall[]; outcome?: ConflictOutcome }
+/**
+ * The impossible physical state a conflicting event would have produced, e.g. "would leave −1
+ * SDB Jacket · Medium": STOCK means on-hand, PROPERTY means what the cadet holds.
+ */
+export type ConflictShortfall = { kind: 'STOCK' | 'PROPERTY'; itemId: string; label: string; variant: string; available: number; requested: number }
+/**
+ * How an authorized person settled a conflict (master spec §23). KEEP_AS_IS leaves the losing event
+ * unapplied; RECORD_STILL_NEEDED turns the losing issue's lines into Still Needed for its cadet on
+ * every device. Legacy resolutions without an outcome read as KEEP_AS_IS.
+ */
+export type ConflictOutcome = 'KEEP_AS_IS' | 'RECORD_STILL_NEEDED'
+/** Master spec §12: RECORD_CORRECTED changes exactly one recorded quantity; the original event stays in history. */
+export type RecordCorrectionKind = 'RECEIPT_QUANTITY' | 'ISSUE_QUANTITY' | 'RETURN_QUANTITY'
+/** Only SERVICEABLE returns go back on the shelf; the others clear the cadet's property without adding to on-hand. */
+export type ReturnCondition = 'SERVICEABLE' | 'NEEDS_REPAIR' | 'UNSERVICEABLE' | 'LOST'
 /** A signed event that could not be applied in canonical order (missing dependency, invalid, unauthorized). Kept, never dropped: a later event may make it applicable. */
 export type RejectedEventRecord = { eventId: string; eventType: DistributedEventType; reason: string }
 /** ecdhPublicKey lets any Master hand this member a new unit key after a rotation, without meeting them again. credentialEventId points at the event carrying the member's current credential. */
@@ -114,9 +129,15 @@ export type CadetProjection = { cadetId: string; cadetCode?: string; fullName: s
 export type BundleLineProjection = { lineId: string; itemId?: string; catalogId?: string; displayLabel: string; required: boolean; supportsSizing: boolean; defaultQuantity: number; order: number }
 export type BundleVersionProjection = { bundleId: string; displayName: string; genderApplicability: CadetGender | 'Any'; purpose: string; lines: BundleLineProjection[]; active: boolean; version: number; createdAt: string; actorPublicIdentity: string; priorVersion?: number; eventId: string }
 export type BundleProjection = { bundleId: string; currentVersion: number; versions: BundleVersionProjection[]; appliedEventIds: string[] }
-export type StillNeededProjection = { requirementId: string; cadetId: string; itemId?: string; displayLabel: string; size?: string; quantityNeeded: number; quantityFulfilled: number; status: 'OPEN' | 'PARTIALLY_FULFILLED' | 'FULFILLED' | 'CANCELLED'; firstNeededAt: string; updatedAt: string; source: 'MANUAL' | 'INCOMPLETE_ISSUE' | 'CORRECTION'; relatedTransactionIds?: string[]; relatedBundleId?: string; bundleVersion?: number; version: number; appliedEventIds: string[] }
-export type SupplyTransactionLine = { lineId: string; itemId: string; label: string; variant: string; quantity: number; baseVersion: number; propertyId?: string; requirementId?: string }
-export type MissingIssueLine = { lineId: string; itemId?: string; label: string; variant?: string; quantity: number; required: true }
+/** catalogId names the catalog item when no exact size (itemId) was known; closeReason explains a manual fulfil or cancel. */
+export type StillNeededProjection = { requirementId: string; cadetId: string; itemId?: string; catalogId?: string; displayLabel: string; size?: string; quantityNeeded: number; quantityFulfilled: number; status: 'OPEN' | 'PARTIALLY_FULFILLED' | 'FULFILLED' | 'CANCELLED'; firstNeededAt: string; updatedAt: string; source: 'MANUAL' | 'INCOMPLETE_ISSUE' | 'CORRECTION' | 'CONFLICT_RESOLUTION'; relatedTransactionIds?: string[]; relatedBundleId?: string; bundleVersion?: number; closeReason?: string; version: number; appliedEventIds: string[] }
+/**
+ * quantity is what the signed event recorded; correctedQuantity (projection only) is the value after
+ * RECORD_CORRECTED. Return lines may carry a condition and note; returnedFrom (projection only)
+ * snapshots the property the line returned so a quantity correction can restore it.
+ */
+export type SupplyTransactionLine = { lineId: string; itemId: string; label: string; variant: string; quantity: number; baseVersion: number; propertyId?: string; requirementId?: string; condition?: ReturnCondition; note?: string; correctedQuantity?: number; returnedFrom?: Omit<CurrentPropertyLine, 'quantity'> }
+export type MissingIssueLine = { lineId: string; itemId?: string; catalogId?: string; label: string; variant?: string; quantity: number; required: true }
 export type SupplyTransaction = { transactionId: string; transactionType: 'ISSUE'|'RETURN'; cadetId: string; actorId: string; createdAt: string; eventId: string; bundleId?: string; bundleVersion?: number; bundleSnapshot?: BundleVersionProjection; lines: SupplyTransactionLine[]; missingLines?: MissingIssueLine[] }
 
 /** Supply calendar (master spec §14–19). Dates are entered by hand each year; tasks are due relative to the event date. */

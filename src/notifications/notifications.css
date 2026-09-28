@@ -11,7 +11,7 @@
 .notification-message {
   margin: 0 0 10px;
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
 }
 .notification-toggle {
@@ -43,7 +43,7 @@
   margin: 8px 0 12px;
   padding-left: 18px;
   color: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1.45;
 }
 .notification-test {

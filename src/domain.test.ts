@@ -82,6 +82,18 @@ describe('inventory search (name, abbreviation, size, category, NIIN)', () => {
     expect(find('2345678')).toEqual(['Male SDB Jacket'])
   })
 
+  it('finds footwear by the everyday word and keeps one-letter sizes away from unsized items (minor 8)', () => {
+    const oxfords = { name: 'Black Oxfords', category: 'Footwear', sizes: ['9', '10W'] }
+    const belt = { name: 'Black Belt', category: 'Accessories', sizes: ['One size'] }
+    const socks = { name: 'Black Socks', category: 'Footwear', sizes: ['M', 'L'] }
+    const search = (query: string) => [oxfords, belt, socks].filter(item => matchesItemSearch(query, item)).map(item => item.name)
+    expect(search('shoe')).toEqual(['Black Oxfords'])
+    expect(search('shoes')).toEqual(['Black Oxfords'])
+    expect(search('M')).toEqual(['Black Socks'])
+    expect(search('m')).toEqual(['Black Socks'])
+    expect(search('one size')).toEqual(['Black Belt'])
+  })
+
   it('never treats built-in object keys as abbreviations', () => {
     expect(normalizeSearch('constructor toString')).toBe('constructor tostring')
     expect(matchesItemSearch('constructor', { name: 'PT Shorts' })).toBe(false)

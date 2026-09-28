@@ -1,7 +1,11 @@
-import { useEffect } from "react";
+import { useRef } from "react";
 import { X } from "lucide-react";
+import { useModalDialog } from "./modal";
 
-/** Modal side panel used by every A.R.G.U.S. workflow. Escape or a backdrop click closes it. */
+/**
+ * Modal side panel used by every A.R.G.U.S. workflow. Escape, a backdrop click or the close
+ * button closes it; focus moves in, stays in while it is open, and returns to the opener.
+ */
 export function Drawer({
   title,
   icon,
@@ -13,13 +17,8 @@ export function Drawer({
   close: () => void;
   children: React.ReactNode;
 }) {
-  useEffect(() => {
-    const dismiss = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-    document.addEventListener("keydown", dismiss);
-    return () => document.removeEventListener("keydown", dismiss);
-  }, [close]);
+  const dialog = useRef<HTMLElement>(null);
+  useModalDialog(dialog, close);
   return (
     <div
       className="drawer-backdrop"
@@ -28,10 +27,12 @@ export function Drawer({
       }}
     >
       <aside
+        ref={dialog}
         className="demo-drawer"
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        tabIndex={-1}
       >
         <header>
           <span className="drawer-icon">{icon}</span>

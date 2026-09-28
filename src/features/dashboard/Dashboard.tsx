@@ -194,17 +194,17 @@ export function Dashboard({ projection, sync, unitName, navigate, onQuickAction,
     {
       id: 'readiness',
       label: 'READINESS',
-      value: `${breakdown.overall}%`,
-      caption: 'OVERALL',
-      ariaLabel: `Readiness: ${breakdown.overall}% overall`,
-      tone: readinessTone(breakdown.overall),
+      value: breakdown.overallMeasured ? `${breakdown.overall}%` : '—',
+      caption: breakdown.overallMeasured ? 'OVERALL' : 'NOT MEASURED YET',
+      ariaLabel: breakdown.overallMeasured ? `Readiness: ${breakdown.overall}% overall` : 'Readiness: not measured yet',
+      tone: breakdown.overallMeasured ? readinessTone(breakdown.overall) : 'ok',
       activate: () => setShowReadiness(true),
     },
   ]
 
   return (
     <div className={`content dashboard${amiCard ? ` has-ami${amiOnTop ? ' ami-top' : ''}` : ''}`}>
-      <DashboardHero current={current} unitName={unitName} sync={sync} audit={breakdown.audit} />
+      <DashboardHero current={current} unitName={unitName} sync={sync} audit={breakdown.measured.audit ? breakdown.audit : undefined} />
 
       {amiOnTop && amiCard}
 
@@ -282,7 +282,8 @@ export function Dashboard({ projection, sync, unitName, navigate, onQuickAction,
   )
 }
 
-function DashboardHero({ current, unitName, sync, audit }: { current: Date; unitName: string; sync: DashboardProps['sync']; audit: number }) {
+/** audit: undefined while nothing has been recorded (nothing to verify yet). */
+function DashboardHero({ current, unitName, sync, audit }: { current: Date; unitName: string; sync: DashboardProps['sync']; audit?: number }) {
   const warn = Boolean(sync.needsFunding) || sync.state === 'error'
   return (
     <header className="dash-hero">
@@ -298,7 +299,7 @@ function DashboardHero({ current, unitName, sync, audit }: { current: Date; unit
           {Boolean(sync.queued) && <span className="dash-chip">{sync.queued} waiting to publish</span>}
           <span className="dash-chip">
             <ShieldCheck aria-hidden="true" />
-            Audit {audit}%
+            {audit === undefined ? 'Audit · no records yet' : `Audit ${audit}%`}
           </span>
         </div>
       </div>
@@ -598,6 +599,8 @@ type ReadinessRow = {
   key: keyof ReadinessWeights
   label: string
   percent: number
+  /** False when the category has nothing to measure yet: shown as "Not measured yet", not as a score. */
+  measured: boolean
   explanation: string
   extra?: JSX.Element | string
   link?: string
@@ -646,6 +649,7 @@ function ReadinessDrawer({
       key: 'cadets',
       label: 'Cadets',
       percent: breakdown.cadets,
+      measured: breakdown.measured.cadets,
       explanation: breakdown.activeCadets
         ? `${breakdown.activeCadets - breakdown.cadetsNeedingItems} of ${breakdown.activeCadets} active cadets are fully issued.`
         : 'No active cadets yet — add your roster to track who is fully issued.',
@@ -670,6 +674,7 @@ function ReadinessDrawer({
       key: 'inventory',
       label: 'Inventory',
       percent: breakdown.inventory,
+      measured: breakdown.measured.inventory,
       explanation: breakdown.inventoryNeeded
         ? `${breakdown.inventoryReady} of ${breakdown.inventoryNeeded} sizes the unit’s bundles need are on hand, above their low-stock level and enough for cadets waiting on them.`
         : 'No bundle defines what to stock yet.',
@@ -681,10 +686,15 @@ function ReadinessDrawer({
       key: 'events',
       label: 'Events',
       percent: breakdown.events,
+      measured: breakdown.measured.events,
       explanation:
-        scored && scoredProgress
+        scored && scoredProgress?.total
           ? `${scoredProgress.done} of ${scoredProgress.total} preparation tasks complete for ${scored.title}.`
-          : 'No upcoming supply event — nothing to prepare yet.',
+          : scored
+            ? breakdown.measured.events
+              ? `${scored.title} has no preparation tasks yet.`
+              : `${scored.title} has nothing to prepare yet — add preparation tasks, attendees or bundles.`
+            : 'No upcoming supply event — nothing to prepare yet.',
       extra: scoredParts.length > 1 ? `Event readiness combines ${scoredParts.map(part => `${part.label.toLowerCase()} ${part.percent}%`).join(' and ')}.` : undefined,
       link: scored ? `Open ${scored.title}` : 'Open Calendar',
       target: scored ? { tab: 'calendar', calendarEventId: scored.calendarEventId } : { tab: 'calendar' },
@@ -694,6 +704,7 @@ function ReadinessDrawer({
       key: 'audit',
       label: 'Audit',
       percent: breakdown.audit,
+      measured: breakdown.measured.audit,
       explanation: auditExplanation(projection),
       ...(canViewActivity ? { link: 'Open Activity' } : {}),
       target: { tab: 'activity' },
@@ -703,21 +714,21 @@ function ReadinessDrawer({
   const equal = rows.every(row => weights[row.key] === weights.cadets)
   return (
     <Drawer title="Supply readiness" icon={<Gauge />} close={close}>
-      <section className={`readiness-overall tone-${readinessTone(breakdown.overall)}`}>
-        <strong>{breakdown.overall}%</strong>
+      <section className={`readiness-overall tone-${breakdown.overallMeasured ? readinessTone(breakdown.overall) : 'unmeasured'}`}>
+        <strong>{breakdown.overallMeasured ? `${breakdown.overall}%` : 'Not measured yet'}</strong>
         <p>
-          Overall supply readiness: the {equal ? 'equal-weighted' : 'weighted'} average of the four categories below
+          Overall supply readiness: the {equal ? 'equal-weighted' : 'weighted'} average of the categories below that have something to measure
           {equal ? '' : ` (${rows.map(row => `${row.label} ×${weights[row.key]}`).join(', ')})`}, computed the same way on every device from the
           unit’s shared records. Weights are set per device in Settings.
         </p>
       </section>
       <ul className="readiness-rows">
-        {rows.map(({ key, label, percent, explanation, extra, link, target, icon: Icon }) => (
-          <li key={key} className={`tone-${readinessTone(percent)}`}>
+        {rows.map(({ key, label, percent, measured, explanation, extra, link, target, icon: Icon }) => (
+          <li key={key} className={`tone-${measured ? readinessTone(percent) : 'unmeasured'}`}>
             <div className="readiness-row-head">
               <Icon aria-hidden="true" />
               <strong>{label}</strong>
-              <b>{percent}%</b>
+              <b>{measured ? `${percent}%` : 'Not measured yet'}</b>
             </div>
             <div
               className="dash-meter"
@@ -725,9 +736,9 @@ function ReadinessDrawer({
               aria-label={`${label} readiness`}
               aria-valuemin={0}
               aria-valuemax={100}
-              aria-valuenow={percent}
+              {...(measured ? { 'aria-valuenow': percent } : { 'aria-valuetext': 'Not measured yet' })}
             >
-              <span style={{ width: `${percent}%` }} />
+              <span style={{ width: `${measured ? percent : 0}%` }} />
             </div>
             <p>{explanation}</p>
             {typeof extra === 'string' ? <p>{extra}</p> : extra}

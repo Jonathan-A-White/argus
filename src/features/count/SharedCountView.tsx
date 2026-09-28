@@ -37,6 +37,11 @@ export type SharedCountViewProps = {
   notify: (message: string) => void
   /** Preselects this size, e.g. when jumping here from Inventory's "Count" action. */
   initialItemId?: string
+  /**
+   * Publishes and pulls right now and says what actually happened (the app passes the unit's chain
+   * sync). Without it, Sync now only folds what this device already has.
+   */
+  syncNow?: () => Promise<{ projection: ArgusAppProjection; message: string }>
 }
 
 type Selection = { catalogId?: string; itemId?: string }
@@ -53,7 +58,7 @@ const selectionFor = (projection: ArgusAppProjection, itemId?: string): Selectio
  * Shared, additive physical counting. Each person keeps a private tally for a size and adds it to
  * the session's shared total; an officer finalizes, which replaces on-hand with the totals.
  */
-export function SharedCountView({ projection, controller, can, memberName, onProjection, notify, initialItemId }: SharedCountViewProps): JSX.Element {
+export function SharedCountView({ projection, controller, can, memberName, onProjection, notify, initialItemId, syncNow }: SharedCountViewProps): JSX.Element {
   const [selection, setSelection] = useState<Selection>(() => selectionFor(projection, initialItemId))
   const [seenInitialItemId, setSeenInitialItemId] = useState(initialItemId)
   const [drawer, setDrawer] = useState<SessionDrawer>()
@@ -80,7 +85,14 @@ export function SharedCountView({ projection, controller, can, memberName, onPro
   const sync = async () => {
     setSyncing(true)
     try {
-      onProjection(await controller.sync())
+      if (syncNow) {
+        const result = await syncNow()
+        onProjection(result.projection)
+        notify(result.message)
+      } else {
+        onProjection(await controller.sync())
+        notify('Up to date with the records on this device.')
+      }
     } catch (reason) {
       notify(errorMessage(reason, 'Could not reach the shared history. Your work is saved on this device.'))
     } finally {

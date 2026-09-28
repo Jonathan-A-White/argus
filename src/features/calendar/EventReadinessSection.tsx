@@ -8,6 +8,7 @@ import { PREPARATION_KINDS, RETURNABLE_KINDS, combinedEventReadiness, eventReadi
 import type { AlertTarget, SyncSnapshot } from '../../stage3/readinessTypes'
 import { AmiCategoryList, ReadinessMeter, RolloverChecklist } from '../readiness/ReadinessParts'
 import { daysUntil } from './calendarModel'
+import { plural } from '../../plural'
 
 export type EventReadinessSectionProps = {
   event: CalendarEventProjection
@@ -18,7 +19,6 @@ export type EventReadinessSectionProps = {
   navigate?: (target: AlertTarget) => void
 }
 
-const plural = (count: number, word: string, many = `${word}s`) => `${count} ${count === 1 ? word : many}`
 
 /**
  * The readiness part of an event's drawer (spec §15–19): cadet preparation and stock for bundle

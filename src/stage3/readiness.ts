@@ -6,6 +6,7 @@ import { countDiscrepancies, lateCountSessions, reconciliationIssues } from './c
 import { cadetLabel } from './domain'
 import { combinedEventReadiness, postEventReturns, RETURNABLE_KINDS } from './eventReadiness'
 import type { AlertTarget, SyncSnapshot } from './readinessTypes'
+import { plural } from '../plural'
 import { activeBundleVersions, requiredItemOf, standardIssueBundles, unmetItems, variantFor, variantsOf } from './requirements'
 
 export type { AlertTarget, SyncSnapshot } from './readinessTypes'
@@ -31,6 +32,15 @@ export type ReadinessBreakdown = {
   /** The event the Events component scores: the next active one today or later. */
   scoredEventId?: string
   weights: ReadinessWeights
+  /**
+   * Whether each category has anything to measure (active cadets, stock the unit needs or tracks, an
+   * upcoming event with preparation, recorded changes). A category with nothing to measure keeps its
+   * legacy 100 above but is left out of `overall` and shown as "Not measured yet", so an empty unit
+   * never reads as fully ready.
+   */
+  measured: Record<keyof ReadinessWeights, boolean>
+  /** False when no weighted category has anything to measure yet (overall is then 0 and not shown as a score). */
+  overallMeasured: boolean
 }
 export type AlertSeverity = 'critical' | 'warning' | 'info'
 /**
@@ -53,7 +63,6 @@ export function validReadinessWeights(value: unknown): value is ReadinessWeights
 
 const DAY = 86_400_000
 const percent = (part: number, whole: number) => (whole ? Math.round((100 * part) / whole) : 100)
-const plural = (count: number, word: string, many = `${word}s`) => `${count} ${count === 1 ? word : many}`
 const sortedKey = (values: string[]) => [...values].sort().join(',')
 type Projection = ArgusAppProjection
 type Cadet = Projection['cadets'][number]
@@ -135,13 +144,17 @@ export function readiness(projection: ArgusAppProjection, now = new Date(), opti
   const next = upcomingEvents(projection, now).filter(event => new Date(event.startsAt).getTime() >= now.getTime())
   const activePreparations = next.filter(event => new Date(event.startsAt).getTime() - now.getTime() <= 60 * DAY).length
   const nextEvent = next[0]
-  const events = nextEvent ? combinedEventReadiness(nextEvent, projection, now, options.sync).percent : 100
+  const eventReadiness = nextEvent ? combinedEventReadiness(nextEvent, projection, now, options.sync) : undefined
+  const events = eventReadiness?.percent ?? 100
   // Only records verified in a mined block count (see auditSummary).
   const audit = percent(auditSummary(projection).verified, projection.events.length)
   const parts = { cadets: percent(activeCadets.length - cadetsNeedingItems, activeCadets.length), inventory, events, audit }
-  const weight = READINESS_KEYS.reduce((sum, key) => sum + weights[key], 0)
-  const overall = Math.round(READINESS_KEYS.reduce((sum, key) => sum + parts[key] * weights[key], 0) / weight)
-  return { ...parts, overall, cadetsNeedingItems, stockNeedingAttention, activePreparations, activeCadets: activeCadets.length, inventoryNeeded: needs.length, inventoryReady: needs.filter(line => line.ready).length, ...(nextEvent ? { scoredEventId: nextEvent.calendarEventId } : {}), weights: { ...weights } }
+  const measured = { cadets: activeCadets.length > 0, inventory: needs.length > 0 || tracked.length > 0, events: Boolean(eventReadiness?.parts.length), audit: projection.events.length > 0 }
+  // The weighted average of the categories that have something to measure.
+  const counted = READINESS_KEYS.filter(key => measured[key] && weights[key] > 0)
+  const weight = counted.reduce((sum, key) => sum + weights[key], 0)
+  const overall = weight ? Math.round(counted.reduce((sum, key) => sum + parts[key] * weights[key], 0) / weight) : 0
+  return { ...parts, overall, cadetsNeedingItems, stockNeedingAttention, activePreparations, activeCadets: activeCadets.length, inventoryNeeded: needs.length, inventoryReady: needs.filter(line => line.ready).length, ...(nextEvent ? { scoredEventId: nextEvent.calendarEventId } : {}), weights: { ...weights }, measured, overallMeasured: weight > 0 }
 }
 
 const holding = (cadet: Cadet) => cadet.currentProperty.reduce((sum, line) => sum + line.quantity, 0)
@@ -193,7 +206,7 @@ export function alerts(projection: ArgusAppProjection, sync: SyncSnapshot = {}, 
   if (reconcile.length) add({ id: 'reconciliation-required', severity: 'warning', title: `Reconciliation required: ${plural(reconcile.length, 'count')}`, detail: reconcile.slice(0, 3).map(issue => `${issue.scope} — ${issue.reason === 'SUBMITTED' ? 'submitted, not finalized' : issue.reason === 'LATE_WORK' ? 'late tallies to review' : `open ${issue.days} days`}`).join('; '), target: { tab: 'count' }, condition: sortedKey(reconcile.map(issue => `${issue.sessionId}:${issue.reason}`)) })
 
   const unsized = projection.catalog.filter(item => item.active && item.sized && !projection.inventory.some(variant => variant.catalogId === item.catalogId))
-  if (unsized.length) add({ id: 'sizes-not-set', severity: 'info', title: `${plural(unsized.length, 'item')} have no sizes yet`, detail: 'Add the sizes your unit stocks before counting or issuing them.', target: { tab: 'inventory', filter: 'attention' }, condition: sortedKey(unsized.map(item => item.catalogId)) })
+  if (unsized.length) add({ id: 'sizes-not-set', severity: 'info', title: `${plural(unsized.length, 'item')} ${unsized.length === 1 ? 'has' : 'have'} no sizes yet`, detail: 'Add the sizes your unit stocks before counting or issuing them.', target: { tab: 'inventory', filter: 'attention' }, condition: sortedKey(unsized.map(item => item.catalogId)) })
 
   // Calendar: task deadlines, approaching events, and AMI gaps in the final days.
   for (const event of upcomingEvents(projection, now)) {

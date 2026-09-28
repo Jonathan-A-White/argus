@@ -5,6 +5,7 @@ import { DistributedAppController, type ArgusAppProjection } from '../../distrib
 import type { ArgusPermission } from '../../distributed/types'
 import { GENESIS_CATALOG } from '../../stage3/domain'
 import { CalendarView } from './CalendarView'
+import { eventProgress } from './calendarModel'
 
 /** Local 27 Sep 2026, 14:30 — every date in these tests is local so they pass in any time zone. */
 const NOW = new Date(2026, 8, 27, 14, 30)
@@ -112,6 +113,9 @@ describe('Supply Calendar', () => {
     fireEvent.click(within(form).getByRole('button', { name: 'Create event' }))
     await waitFor(() => expect(screen.queryByRole('form', { name: 'Add supply event' })).not.toBeInTheDocument())
     expect(eventCard('Color guard uniform issue')).toHaveTextContent('No tasks yet')
+    // Nothing to prepare means no progress to show: an empty bar, never a full one beside "No tasks yet" (minor 11).
+    expect(eventCard('Color guard uniform issue').querySelector<HTMLElement>('.calendar-meter > span')?.style.width).toBe('0%')
+    expect(eventProgress({ tasks: [] })).toEqual({ done: 0, total: 0, percent: 0 })
   })
 
   it('completes and un-completes a task from its checkbox and the progress follows', async () => {

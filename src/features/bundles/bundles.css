@@ -8,7 +8,7 @@
 .bundle-panel-intro > p {
   margin: 0;
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
 }
 .bundle-new-button,
@@ -38,12 +38,12 @@
   gap: 8px;
   margin: 0;
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .bundle-hint {
   margin: 8px 0 0;
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: 0.625rem;
 }
 
 /* ---------- list ---------- */
@@ -82,14 +82,14 @@
 }
 .bundle-card-title strong {
   display: block;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 .bundle-card-title small,
 .bundle-card-meta small {
   display: block;
   margin-top: 3px;
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: 0.625rem;
 }
 .bundle-card-meta {
   display: grid;
@@ -111,7 +111,7 @@
 .bundle-card-body h4 {
   margin: 12px 0 8px;
   color: var(--color-text-secondary);
-  font-size: 10px;
+  font-size: 0.625rem;
   letter-spacing: 1.2px;
   text-transform: uppercase;
 }
@@ -138,14 +138,14 @@
 }
 .bundle-card-lines b {
   display: block;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .bundle-card-lines small,
 .bundle-history small {
   display: block;
   margin-top: 2px;
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: 0.625rem;
   line-height: 1.4;
 }
 .bundle-history li {
@@ -155,7 +155,7 @@
   border-radius: 0 8px 8px 0;
 }
 .bundle-history strong {
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .bundle-history .bundle-history-changes {
   color: var(--color-text-secondary);
@@ -171,7 +171,7 @@
 .bundle-form-intro small {
   display: block;
   color: var(--color-accent-gold);
-  font-size: 9px;
+  font-size: 0.5625rem;
   font-weight: 800;
   letter-spacing: 1.2px;
   text-transform: uppercase;
@@ -179,14 +179,14 @@
 .bundle-form-intro p {
   margin: 4px 0 0;
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.45;
 }
 .bundle-form .field input,
 .bundle-form .field select,
 .bundle-line select {
   min-height: 44px;
-  font-size: 16px;
+  font-size: 1rem;
   background: var(--color-bg-input);
   color: var(--color-text-primary);
 }
@@ -203,7 +203,7 @@
   display: block;
   margin-top: 2px;
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: 0.625rem;
 }
 .bundle-lines-heading {
   display: flex;
@@ -220,7 +220,7 @@
   border-radius: 999px;
   background: var(--color-bg-surface-hover);
   color: var(--color-text-secondary);
-  font: 700 11px 'DM Sans', sans-serif;
+  font: 700 0.6875rem 'DM Sans', sans-serif;
 }
 .bundle-lines {
   display: grid;
@@ -257,7 +257,7 @@
   border-radius: 8px;
   background: var(--color-bg-sidebar-raised);
   color: var(--color-accent-gold);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 800;
 }
 .bundle-line-order {
@@ -291,7 +291,7 @@
 }
 .bundle-line-options .line-toggle {
   min-height: 44px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 .bundle-line-quantity {
@@ -299,7 +299,7 @@
   align-items: center;
   gap: 8px;
   color: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
 }
 .bundle-line-quantity select {
@@ -315,7 +315,7 @@
   border-radius: 12px;
   color: var(--color-text-secondary);
   text-align: center;
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .bundle-add-line {
   display: grid;

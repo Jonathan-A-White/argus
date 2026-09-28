@@ -1,9 +1,12 @@
+import { IDBFactory } from 'fake-indexeddb'
 import { describe, expect, it } from 'vitest'
 import { AuthorizationService } from '../auth/authorization'
+import { DEFAULT_WALLET_DB_NAME, IndexedDbWalletStateStore } from '../chain/walletStore'
+import { IndexedDbLedgerStore } from './ledgerStore'
 import type { SignedArgusEvent } from '../distributed/types'
 import { canonicalize } from '../distributed/canonical'
 import { PUBLIC_ENVELOPE_FIELDS, deserializeEnvelope, openEnvelope, sealEnvelope, serializeEnvelope } from './envelope'
-import { DEVICE_VAULT_STORAGE_KEY, acceptAdmission, admitMember, createJoiningDevice, createMasterDevice, decodeJoinRequest, encodeJoinRequest, loadDeviceVault, unlockDevice } from './vault'
+import { DEVICE_VAULT_STORAGE_KEY, acceptAdmission, admitMember, createJoiningDevice, createMasterDevice, decodeJoinRequest, encodeJoinRequest, forgetDevice, loadDeviceVault, unlockDevice } from './vault'
 
 const memoryStorage = () => { const values = new Map<string, string>(); return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) }, removeItem: (key: string) => { values.delete(key) }, values } }
 const PASS = 'supply closet 42'
@@ -82,5 +85,23 @@ describe('encrypted envelope', { timeout: 60_000 }, () => {
     await expect(openEnvelope({ ...envelope, epoch: 'e2' }, async () => undefined)).rejects.toThrow(/NO_EPOCH_KEY/)
     const other = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
     await expect(openEnvelope(envelope, async () => other)).rejects.toThrow(/authentication failed/)
+  })
+
+  it('"Erase this device" also deletes the local ledger and wallet databases (minor 9)', async () => {
+    const storage = memoryStorage(), factory = new IDBFactory()
+    const master = await createMasterDevice({ passphrase: PASS, displayName: 'Luke', unitName: 'Bethel NJROTC' }, storage)
+    const unitId = master.record.unit!.unitId
+    // Open connections, as a device that was just locked still has them.
+    const ledger = new IndexedDbLedgerStore(unitId, factory)
+    await ledger.addEnvelope({ eventId: 'a', envelope: { v: 2, unit: unitId, epoch: 'e1', eventId: 'a', z: 0, nonce: 'bm9uY2U=', ct: 'Y2lwaGVy' }, origin: 'local', status: 'QUEUED', addedAt: '2026-09-27T00:00:00.000Z' })
+    await new IndexedDbWalletStateStore(DEFAULT_WALLET_DB_NAME, factory).save({ version: 1, address: master.record.walletAddress, coins: [], pending: [], recent: [] } as never)
+    const names = async () => (await factory.databases()).map(database => database.name).sort()
+    expect(await names()).toEqual([DEFAULT_WALLET_DB_NAME, IndexedDbLedgerStore.databaseName(unitId)].sort())
+
+    await forgetDevice(storage, factory)
+    expect(storage.values.has(DEVICE_VAULT_STORAGE_KEY)).toBe(false)
+    expect(await names()).toEqual([])
+    // Nothing of the erased unit comes back when a store is opened again.
+    expect(await new IndexedDbLedgerStore(unitId, factory).envelopes()).toEqual([])
   })
 })

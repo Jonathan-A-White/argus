@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { IDBFactory } from 'fake-indexeddb'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { FakeChain } from './chain/fakeChain'
 import { MemoryWalletStateStore } from './chain/walletStore'
@@ -164,5 +165,34 @@ describe('unit onboarding over a (fake) BSV testnet chain', { timeout: 120_000 }
     fireEvent.change(await screen.findByLabelText('Passphrase'), { target: { value: 'wrong passphrase 9' } })
     fireEvent.click(screen.getByRole('button', { name: 'Unlock' }))
     expect(await screen.findByRole('alert', {}, { timeout: 20_000 })).toHaveTextContent('not correct')
+  })
+})
+
+describe('mock-development demo (M6)', { timeout: 60_000 }, () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB')
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    if (original) Object.defineProperty(globalThis, 'indexedDB', original)
+    else Reflect.deleteProperty(globalThis, 'indexedDB')
+  })
+
+  it('keeps what was recorded when the page is reloaded', async () => {
+    Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: new IDBFactory() })
+    vi.stubEnv('VITE_ARGUS_BLOCKCHAIN_MODE', 'mock-development')
+    const first = render(<App settingsStorage={new LocalSettingsStorage(memoryStorage())} />)
+    expect(await screen.findByText('MOCK BLOCKCHAIN')).toBeInTheDocument()
+    await goTo('Cadets')
+    fireEvent.click(await screen.findByRole('button', { name: 'Add cadet' }))
+    const form = screen.getByRole('form', { name: 'Add cadet' })
+    fireEvent.change(within(form).getByLabelText('Cadet ID (optional)'), { target: { value: 'C-DM34' } })
+    fireEvent.change(within(form).getByLabelText('Gender'), { target: { value: 'Male' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Add cadet' }))
+    expect(await screen.findByText('C-DM34', { selector: 'b, strong' })).toBeInTheDocument()
+    first.unmount()
+
+    // A reload: a fresh app and controller over the same browser storage.
+    render(<App settingsStorage={new LocalSettingsStorage(memoryStorage())} />)
+    await goTo('Cadets')
+    expect(await screen.findByText('C-DM34', { selector: 'b, strong' })).toBeInTheDocument()
   })
 })

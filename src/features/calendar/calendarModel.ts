@@ -3,6 +3,7 @@ import type { ArgusAppProjection } from '../../distributed/appIntegration'
 import type { CalendarEventProjection, CalendarTaskProjection, SupplyEventKind } from '../../distributed/types'
 import { taskDueDate } from '../../stage3/calendar'
 import { upcomingEvents } from '../../stage3/readiness'
+import { plural } from '../../plural'
 
 /**
  * Pure helpers shared by the Supply Calendar and the Dashboard. Everything here is derived from
@@ -59,7 +60,6 @@ const localMidnight = (date: Date) => new Date(date.getFullYear(), date.getMonth
 export const daysUntil = (when: string | Date, now: Date) =>
   Math.round((localMidnight(new Date(when)) - localMidnight(now)) / DAY_MS)
 
-const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
 /** "in 12 days", "tomorrow", "today", "yesterday", "3 days ago". */
 export function countdownLabel(days: number) {
@@ -115,11 +115,14 @@ export function fromDateTimeInputs(date: string, time: string): { startsAt: stri
 
 export type EventProgress = { done: number; total: number; percent: number }
 
-/** Completed tasks / tasks. An event without tasks counts as ready, matching the readiness engine. */
+/**
+ * Completed tasks / tasks, for progress bars. An event without tasks has no progress to show (0%,
+ * next to "No tasks yet"), never a full bar; the readiness engine scores events separately.
+ */
 export function eventProgress(event: Pick<CalendarEventProjection, 'tasks'>): EventProgress {
   const total = event.tasks.length
   const done = event.tasks.filter(task => task.completed).length
-  return { done, total, percent: total ? Math.round((100 * done) / total) : 100 }
+  return { done, total, percent: total ? Math.round((100 * done) / total) : 0 }
 }
 
 /** Tasks in due order; template order is kept for tasks due the same day. */

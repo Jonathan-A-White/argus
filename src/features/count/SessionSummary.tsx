@@ -2,9 +2,9 @@ import { useId } from 'react'
 import { AlertTriangle, History } from 'lucide-react'
 import type { CountSessionProjection, InventoryProjection } from '../../distributed/types'
 import { LIFECYCLE_LABEL, LIFECYCLE_TONE, countLifecycle, countedRows, initials, lateWork, lateWorkText, relativeTime, signed, useNow } from './countModel'
+import { plural } from '../../plural'
 
 const differenceClass = (difference: number) => (difference === 0 ? 'count-diff zero' : difference > 0 ? 'count-diff up' : 'count-diff down')
-const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
 function People({ participants, memberName }: { participants: string[]; memberName: (publicIdentity: string) => string }) {
   return (

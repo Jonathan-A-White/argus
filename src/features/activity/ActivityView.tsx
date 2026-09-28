@@ -53,7 +53,8 @@ export function ActivityView({ projection, memberName, runtime, status }: Activi
           <span><small>YOU</small>{runtime?.device.record.displayName ?? 'Demo user'}</span>
           <span><small>EVENTS</small>{projection.events.length}</span>
           <span><small>VERIFIED</small>{verified}</span>
-          <span><small>WAITING TO PUBLISH</small>{status?.queued ?? projection.sync.outbox}</span>
+          {/* The local copy knows what is still queued even when the last network check failed. */}
+          <span><small>WAITING TO PUBLISH</small>{Math.max(status?.queued ?? 0, projection.sync.outbox)}</span>
           <span><small>CONFLICTS</small>{projection.sync.openConflicts}</span>
           <span><small>LOCAL COPY</small>Encrypted</span>
           {status && (

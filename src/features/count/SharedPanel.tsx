@@ -3,6 +3,7 @@ import { Activity, AlertTriangle, CircleDashed, ShieldCheck, Users } from 'lucid
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
 import type { CountObservation, CountSessionProjection, InventoryProjection } from '../../distributed/types'
 import { MAX_COUNT_QUANTITY, countsTowardTotal, errorMessage, initials, parseWhole, relativeTime, signed, useNow } from './countModel'
+import { plural } from '../../plural'
 
 type Props = {
   session: CountSessionProjection
@@ -22,7 +23,6 @@ const STATUS_BADGE: Record<CountObservation['status'], { label: string; tone: st
   SUPERSEDED: { label: 'Superseded', tone: '' },
 }
 
-const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`
 
 /** Live view of everyone's contributions for one size in the open session. */
 export function SharedPanel({ session, variant, actor, canCorrect, memberName, controller, onProjection, notify }: Props) {

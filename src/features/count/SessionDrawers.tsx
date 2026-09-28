@@ -4,8 +4,8 @@ import { Drawer } from '../../components/Drawer'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
 import type { CountSessionProjection, InventoryProjection } from '../../distributed/types'
 import { countedRows, errorMessage, lateWork, lateWorkText, signed, variantLabel } from './countModel'
+import { plural } from '../../plural'
 
-const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
 /**
  * Officer review before finalizing: every counted size shows on-hand now → new on-hand, and every
@@ -55,7 +55,7 @@ export function FinalizeCountDrawer({
           <small>SHARED COUNT</small>
           <b>{session.scope}</b>
           <p>
-            {plural(rows.length, 'size')} counted · {changing} will change · {plural(session.participants.length, 'person')} counted
+            {plural(rows.length, 'size')} counted · {changing} will change · {plural(session.participants.length, 'person', 'people')} took part
           </p>
         </div>
       </div>
@@ -89,7 +89,7 @@ export function FinalizeCountDrawer({
                 <span>
                   <b>{row.label}</b>
                   <small>
-                    {plural(row.contributions, 'contribution')} · {plural(row.contributors, 'person')}
+                    {plural(row.contributions, 'contribution')} · {plural(row.contributors, 'person', 'people')}
                   </small>
                 </span>
                 <em>
@@ -255,7 +255,7 @@ export function SubmitCountDrawer({
           <small>SHARED COUNT</small>
           <b>{session.scope}</b>
           <p>
-            {plural(rows.length, 'size')} counted · {plural(session.participants.length, 'person')} counted
+            {plural(rows.length, 'size')} counted · {plural(session.participants.length, 'person', 'people')} took part
           </p>
         </div>
       </div>

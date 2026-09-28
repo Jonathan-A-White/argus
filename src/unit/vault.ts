@@ -1,5 +1,6 @@
 import { PrivateKey } from '@bsv/sdk'
 import { ROLE_PERMISSIONS, issueCredential } from '../auth/authorization'
+import { DEFAULT_WALLET_DB_NAME } from '../chain/walletStore'
 import { canonicalize } from '../distributed/canonical'
 import type { ArgusRole, AuthorityCredential } from '../distributed/types'
 import { decodeCode, encodeCode } from '../identity/codes'
@@ -7,6 +8,7 @@ import { WebCryptoIdentityProvider, type ArgusIdentityProvider } from '../identi
 import { unsignedKeyGrantFields, unwrapEpochKeyFromGrant, wrapEpochKeyForGrant } from '../private-sync/keyGrant'
 import { parseKeyGrantRecord } from '../private-sync/schema'
 import type { KeyGrantRecord } from '../private-sync/types'
+import { IndexedDbLedgerStore } from './ledgerStore'
 
 /**
  * Device vault (format 2). One passphrase unlocks everything a device holds:
@@ -321,5 +323,23 @@ export async function restoreFromRecoveryFile(input: { fileText: string; recover
   return unlockDevice(record, input.passphrase)
 }
 
-/** Removes this device's record. The unit's history is on chain; re-admission gives a fresh device full access again. */
-export function forgetDevice(storage: Pick<Storage, 'removeItem'> = localStorage) { storage.removeItem(DEVICE_VAULT_STORAGE_KEY) }
+/** Deletes one IndexedDB database; resolves either way (a database another tab still holds open is deleted once that tab lets go). */
+function deleteDatabase(factory: IDBFactory, name: string) {
+  return new Promise<void>(resolve => {
+    try { const request = factory.deleteDatabase(name); request.onsuccess = request.onerror = request.onblocked = () => resolve() } catch { resolve() }
+  })
+}
+
+/**
+ * Erases this device: its record (keys, sealed under the passphrase) and its local stores — the
+ * encrypted copy of the unit's history (argus-unit-ledger-<unitId>) and the wallet state
+ * (argus-unit-wallet: this browser's device wallets only, one device per browser profile). The
+ * unit's history is on chain; re-admission gives a fresh device full access again.
+ */
+export async function forgetDevice(storage: Pick<Storage, 'getItem' | 'removeItem'> = localStorage, factory: IDBFactory | undefined = globalThis.indexedDB) {
+  let unitId: string | undefined
+  try { unitId = loadDeviceVault(storage)?.unit?.unitId } catch { /* an unreadable record is erased all the same */ }
+  storage.removeItem(DEVICE_VAULT_STORAGE_KEY)
+  if (!factory) return
+  await Promise.all([DEFAULT_WALLET_DB_NAME, ...(unitId ? [IndexedDbLedgerStore.databaseName(unitId)] : [])].map(name => deleteDatabase(factory, name)))
+}

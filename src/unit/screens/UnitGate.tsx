@@ -42,7 +42,7 @@ export function UnitGate({ children, runtimeOptions, storage = localStorage }: U
   if (step.kind === 'create') return <CreateOrJoin mode="create" back={() => setStep({ kind: 'welcome' })} submit={async input => open(await createMasterDevice({ passphrase: input.passphrase, displayName: input.displayName, unitName: input.unitName }, storage))} />
   if (step.kind === 'join') return <CreateOrJoin mode="join" back={() => setStep({ kind: 'welcome' })} submit={async input => open(await createJoiningDevice({ passphrase: input.passphrase, displayName: input.displayName }, storage))} />
   if (step.kind === 'pending') return <Pending device={step.device} accept={async code => open(await acceptAdmission(step.device, code, storage))} lock={lock} />
-  return <Unlock record={step.record} initialError={error} unlock={async passphrase => { setError(''); await open(await unlockDevice(step.record, passphrase)) }} reset={() => { forgetDevice(storage); setStep({ kind: 'welcome' }) }} />
+  return <Unlock record={step.record} initialError={error} unlock={async passphrase => { setError(''); await open(await unlockDevice(step.record, passphrase)) }} reset={() => { void forgetDevice(storage).then(() => setStep({ kind: 'welcome' })) }} />
 }
 
 /** Spec §30: every screen of a testnet build says so, including the ones before sign-in. */
@@ -60,8 +60,8 @@ function Welcome({ choose }: { choose: (kind: 'create' | 'join' | 'restore') => 
         <p>Everyone in your unit uses their own device and their own key. Supply data is shared by writing encrypted records to the BSV testnet blockchain — there is no server and no shared password.</p>
         <div className="unit-gate-choices">
           <button className="primary-button" onClick={() => choose('join')}>Join my unit<small>Your Master will admit you</small></button>
-          <button onClick={() => choose('create')}>Create a new unit<small>Only the first person, who becomes the unit&apos;s Master</small></button>
-          <button onClick={() => choose('restore')}>Restore Master from a recovery file<small>The Master&apos;s device was lost or its passphrase forgotten</small></button>
+          <button className="secondary-button" onClick={() => choose('create')}>Create a new unit<small>Only the first person, who becomes the unit&apos;s Master</small></button>
+          <button className="secondary-button" onClick={() => choose('restore')}>Restore Master from a recovery file<small>The Master&apos;s device was lost or its passphrase forgotten</small></button>
         </div>
       </div>
     </main>

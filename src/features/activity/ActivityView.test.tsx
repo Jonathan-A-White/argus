@@ -103,6 +103,19 @@ describe('Activity / audit view (spec §36)', () => {
     const member = { publicIdentity: 'member-1', displayName: 'Jordan', role: 'SUPPLY_OFFICER' as const, credentialId: 'c1', issuedAt: '', admittedBy: '', admittedEventId: '', status: 'ACTIVE' as const }
     expect(describeActivity({ ...projection, members: [member] }, { ...base, event: { ...base.event, eventType: 'ROLE_CHANGED', entityId: 'member-1', payload: { credential: { role: 'SUPPLY_OFFICER' } } } }, () => 'Jordan').title).toBe('Jordan is now Supply Officer')
   })
+
+  it('names the item and what changed for item edits (minor 3)', async () => {
+    const controller = new DistributedAppController()
+    await controller.initialize()
+    let projection = await controller.addCatalogSizes(PT_SHORTS, ['L'])
+    const large = projection.inventory.find(item => item.catalogId === PT_SHORTS && item.variant === 'L')!.entityId
+    await controller.updateCatalogItem(PT_SHORTS, { niin: '8415-01-234-5678' })
+    projection = await controller.updateInventoryItem(large, { reorderAt: 2 })
+    const titles = projection.events.map(record => describeActivity(projection, record, () => 'You').title)
+    expect(titles).toContain('Updated NIIN of PT Shorts')
+    expect(titles).toContain('Updated low-stock level of PT Shorts · L')
+    expect(titles.some(title => /item details/i.test(title))).toBe(false)
+  })
 })
 
 describe('Activity access (spec §4 audit.read)', { timeout: 120_000 }, () => {

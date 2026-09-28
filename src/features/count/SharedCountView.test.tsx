@@ -260,3 +260,26 @@ describe('SharedCountView', () => {
     expect((await ca.project()).inventory.find(item => item.entityId === medium.entityId)?.onHand).toBe(4)
   })
 })
+
+describe('Sync now feedback (M4)', () => {
+  it('tells the person what the sync actually did, including a failure', async () => {
+    const controller = new DistributedAppController()
+    const projection = await controller.initialize()
+    const notify = vi.fn()
+    const message = 'Could not sync with BSV testnet. The BSV testnet service could not be reached (no connection, or it is busy). Your work is saved on this device.'
+    const syncNow = vi.fn(async () => ({ projection, message }))
+    render(<SharedCountView projection={projection} controller={controller} can={officer} memberName={() => 'You'} onProjection={() => undefined} notify={notify} syncNow={syncNow} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    await waitFor(() => expect(notify).toHaveBeenCalledWith(message))
+    expect(syncNow).toHaveBeenCalledTimes(1)
+  })
+
+  it('without a chain sync it still confirms the check on this device', async () => {
+    const controller = new DistributedAppController()
+    const projection = await controller.initialize()
+    const notify = vi.fn()
+    render(<SharedCountView projection={projection} controller={controller} can={officer} memberName={() => 'You'} onProjection={() => undefined} notify={notify} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    await waitFor(() => expect(notify).toHaveBeenCalledWith('Up to date with the records on this device.'))
+  })
+})

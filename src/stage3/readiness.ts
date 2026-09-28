@@ -1,4 +1,5 @@
 import type { ArgusAppProjection } from '../distributed/appIntegration'
+import { isVerified } from '../distributed/delivery'
 import { taskDueDate } from './calendar'
 
 /**
@@ -24,6 +25,18 @@ export function stockNeedsAttention(item: ArgusAppProjection['inventory'][number
   return item.active && ((item.reorderAt !== undefined && item.onHand <= item.reorderAt) || (item.onHand === 0 && item.issued > 0))
 }
 
+/**
+ * Audit readiness (spec §35) counts only records VERIFIED on chain: mined, with a known block
+ * height. A record that is queued, publishing, merely broadcast, or only on this device is not
+ * verified yet, however the rest of the app treats it.
+ */
+export function auditSummary(projection: Pick<ArgusAppProjection, 'events'>) {
+  const verified = projection.events.filter(isVerified).length
+  const awaitingBlock = projection.events.filter(record => !isVerified(record) && record.syncStatus === 'SYNCHRONIZED').length
+  const notOnChain = projection.events.filter(record => record.syncStatus !== 'SYNCHRONIZED' && record.syncStatus !== 'CONFLICT' && !isVerified(record)).length
+  return { total: projection.events.length, verified, awaitingBlock, notOnChain }
+}
+
 export function readiness(projection: ArgusAppProjection, now = new Date()): ReadinessBreakdown {
   const activeCadets = projection.cadets.filter(cadet => cadet.status === 'ACTIVE')
   const cadetsNeedingItems = activeCadets.filter(cadet => cadet.stillNeededCount > 0).length
@@ -33,7 +46,7 @@ export function readiness(projection: ArgusAppProjection, now = new Date()): Rea
   const activePreparations = next.filter(event => new Date(event.startsAt).getTime() - now.getTime() <= 60 * DAY).length
   const nextEvent = next[0]
   const events = nextEvent ? percent(nextEvent.tasks.filter(task => task.completed).length, nextEvent.tasks.length) : 100
-  const audit = percent(projection.events.filter(record => record.syncStatus === 'SYNCHRONIZED').length, projection.events.length)
+  const audit = percent(auditSummary(projection).verified, projection.events.length)
   const parts = { cadets: percent(activeCadets.length - cadetsNeedingItems, activeCadets.length), inventory: percent(tracked.length - tracked.filter(stockNeedsAttention).length, tracked.length), events, audit }
   const weight = Object.values(READINESS_WEIGHTS).reduce((sum, value) => sum + value, 0)
   const overall = Math.round((parts.cadets * READINESS_WEIGHTS.cadets + parts.inventory * READINESS_WEIGHTS.inventory + parts.events * READINESS_WEIGHTS.events + parts.audit * READINESS_WEIGHTS.audit) / weight)

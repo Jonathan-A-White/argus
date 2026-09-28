@@ -141,7 +141,9 @@ describe('Dashboard command center', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^Readiness:/ }))
     const dialog = screen.getByRole('dialog', { name: 'Supply readiness' })
-    expect(within(dialog).getByText(`${expected.overall}%`)).toBeInTheDocument()
+    // Demo records are LOCAL (never verified on a chain), so several rows can read 0%: check the overall figure itself.
+    expect(within(dialog).getByText(`${expected.overall}%`, { selector: '.readiness-overall strong' })).toBeInTheDocument()
+    expect(within(dialog).getByText('Demo mode: all 6 recorded changes stay on this device, so none can be verified on a blockchain.')).toBeInTheDocument()
     expect(within(dialog).getByRole('progressbar', { name: 'Cadets readiness' })).toHaveAttribute('aria-valuenow', String(expected.cadets))
     expect(within(dialog).getByRole('progressbar', { name: 'Inventory readiness' })).toHaveAttribute('aria-valuenow', String(expected.inventory))
     expect(within(dialog).getByRole('progressbar', { name: 'Events readiness' })).toHaveAttribute('aria-valuenow', String(expected.events))

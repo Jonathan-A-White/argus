@@ -76,6 +76,8 @@ export class UnitRuntime {
       unitId: unit.unitId, api, wallet, store: ledger,
       onRemoteEnvelopes: async records => { provider.enqueueRemote(records.map(item => item.eventId)); await late.runtime?.settle(await controller.sync()) },
       onPublished: async (eventIds, txid) => { await late.runtime?.settle(await controller.markPublished(eventIds, txid)) },
+      // Rolled back, re-queued, seen on chain, mined: only the records' delivery changed, so just show it.
+      onDelivery: async eventIds => { if (late.runtime) late.runtime.emit(await controller.refreshDelivery(eventIds)) },
       onStatus: () => late.runtime?.emitStatus(),
       checkEnvelope: async envelope => { try { const { event } = await openEnvelope(envelope, async epoch => device.unitKeys.get(epoch)); return await genuine(event) ? 'valid' : 'invalid' } catch (error) { return error instanceof Error && error.message.startsWith('NO_EPOCH_KEY') ? 'unknown' : 'invalid' } },
     })

@@ -48,8 +48,8 @@ same unit name. Within ~15 seconds **More → Members & access** lists both peop
 ## 7. Finalize (Phone A or any Supply Officer)
 
 **Finalize count** → review (on-hand 0 → 6) → confirm. **Expect:** on both phones, Inventory shows
-**PT Shorts · M — 6 on hand**, and Activity shows each change as **VERIFIED** with a testnet
-transaction link.
+**PT Shorts · M — 6 on hand**, and Activity shows each change as **SYNCHRONIZED** with a testnet
+transaction link; once the next testnet block is mined it also reads **VERIFIED in block N**.
 
 ## What to look at on chain
 

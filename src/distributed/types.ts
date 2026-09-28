@@ -54,7 +54,8 @@ export type UnsignedArgusEvent = {
 export type SignedArgusEvent = UnsignedArgusEvent & { signature: string }
 
 export type AuditDeliveryStatus = 'NOT_SUBMITTED' | 'PENDING' | 'BROADCAST' | 'CONFIRMED' | 'PROOF_VERIFIED' | 'FAILED'
-export type StoredEvent = { event: SignedArgusEvent; syncStatus: LocalSyncStatus; auditStatus: AuditDeliveryStatus; receivedAt: string; transactionId?: string; blockHeight?: number }
+/** syncStatus, auditStatus, transactionId, blockHeight and lastError are this device's delivery metadata (see distributed/delivery.ts); only `event` is ever folded. */
+export type StoredEvent = { event: SignedArgusEvent; syncStatus: LocalSyncStatus; auditStatus: AuditDeliveryStatus; receivedAt: string; transactionId?: string; blockHeight?: number; lastError?: string }
 export type OutboxRecord = { eventId: string; attempts: number; status: 'QUEUED' | 'SYNCING' | 'FAILED'; lastError?: string }
 /** One projection represents exactly one stock keeping variant (one size of one catalog item). */
 export type InventoryProjection = { entityId: string; catalogId?: string; name: string; category: string; variant: string; niin: string; onHand: number; issued: number; reorderAt?: number; countIncrement: number; active: boolean; version: number; appliedEventIds: string[] }

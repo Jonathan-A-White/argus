@@ -23,6 +23,7 @@ import { Drawer } from '../../components/Drawer'
 import type { ArgusAppProjection } from '../../distributed/appIntegration'
 import {
   alerts as supplyAlerts,
+  auditSummary,
   readiness as supplyReadiness,
   upcomingEvents,
   type AlertSeverity,
@@ -58,6 +59,8 @@ export type DashboardProps = {
   onQuickAction: (action: 'issue' | 'return' | 'count') => void
   /** Injectable clock for tests; defaults to the system clock. */
   now?: () => Date
+  /** False for people without audit.read (Supply Assistants): the Activity screen is not offered. */
+  canViewActivity?: boolean
 }
 
 type Tone = 'ok' | 'attention' | 'critical'
@@ -121,7 +124,7 @@ const SEVERITY: Record<AlertSeverity, { label: string; icon: typeof Info }> = {
  * the shared projection through the readiness engine, so all devices agree; every node, alert and
  * tile is a real button that opens the matching screen.
  */
-export function Dashboard({ projection, sync, unitName, navigate, onQuickAction, now = systemClock }: DashboardProps): JSX.Element {
+export function Dashboard({ projection, sync, unitName, navigate, onQuickAction, now = systemClock, canViewActivity = true }: DashboardProps): JSX.Element {
   const current = useClock(now, CLOCK_INTERVAL_MS)
   const [showReadiness, setShowReadiness] = useState(false)
   const breakdown = supplyReadiness(projection, current)
@@ -225,13 +228,14 @@ export function Dashboard({ projection, sync, unitName, navigate, onQuickAction,
 
       <GettingStarted projection={projection} navigate={navigate} />
 
-      <DashboardTiles projection={projection} current={current} navigate={navigate} />
+      <DashboardTiles projection={projection} current={current} navigate={navigate} canViewActivity={canViewActivity} />
 
       {showReadiness && (
         <ReadinessDrawer
           projection={projection}
           breakdown={breakdown}
           current={current}
+          canViewActivity={canViewActivity}
           close={() => setShowReadiness(false)}
           navigate={target => {
             setShowReadiness(false)
@@ -487,7 +491,7 @@ function GettingStarted({ projection, navigate }: { projection: ArgusAppProjecti
   )
 }
 
-function DashboardTiles({ projection, current, navigate }: { projection: ArgusAppProjection; current: Date; navigate: (target: DashboardTarget) => void }) {
+function DashboardTiles({ projection, current, navigate, canViewActivity }: { projection: ArgusAppProjection; current: Date; navigate: (target: DashboardTarget) => void; canViewActivity: boolean }) {
   const stocked = projection.inventory.filter(item => item.active && item.onHand > 0).length
   const activeCadets = projection.cadets.filter(cadet => cadet.status === 'ACTIVE').length
   const upcoming = upcomingEvents(projection, current).filter(event => daysUntil(event.startsAt, current) >= 0).length
@@ -495,7 +499,7 @@ function DashboardTiles({ projection, current, navigate }: { projection: ArgusAp
     { label: 'Inventory', detail: `${stocked} size${stocked === 1 ? '' : 's'} in stock`, target: { tab: 'inventory' }, icon: Boxes },
     { label: 'Cadets', detail: `${activeCadets} active`, target: { tab: 'cadets' }, icon: Users },
     { label: 'Calendar', detail: `${upcoming} upcoming`, target: { tab: 'calendar' }, icon: CalendarRange },
-    { label: 'Activity', detail: `${projection.events.length} record${projection.events.length === 1 ? '' : 's'}`, target: { tab: 'activity' }, icon: History },
+    ...(canViewActivity ? [{ label: 'Activity', detail: `${projection.events.length} record${projection.events.length === 1 ? '' : 's'}`, target: { tab: 'activity' } as DashboardTarget, icon: History }] : []),
     { label: 'Command Center', detail: 'Members, wallet, settings', target: { tab: 'more' }, icon: LayoutGrid },
   ]
   return (
@@ -515,18 +519,31 @@ function DashboardTiles({ projection, current, navigate }: { projection: ArgusAp
   )
 }
 
-type ReadinessRow = { key: string; label: string; percent: number; explanation: string; link: string; target: DashboardTarget; icon: typeof Users }
+type ReadinessRow = { key: string; label: string; percent: number; explanation: string; link?: string; target: DashboardTarget; icon: typeof Users }
+
+/** Plain words for the audit row: only records mined in a block count as verified. */
+function auditExplanation(projection: ArgusAppProjection) {
+  const { total, verified, awaitingBlock, notOnChain } = auditSummary(projection)
+  if (!total) return 'No changes recorded yet.'
+  if (projection.sync.mode === 'local') return `Demo mode: all ${total} recorded changes stay on this device, so none can be verified on a blockchain.`
+  const parts = [`${verified} of ${total} recorded changes are verified in a mined block on BSV testnet.`]
+  if (awaitingBlock) parts.push(`${awaitingBlock} ${awaitingBlock === 1 ? 'is' : 'are'} shared and waiting for a block.`)
+  if (notOnChain) parts.push(`${notOnChain} ${notOnChain === 1 ? 'is' : 'are'} not on chain yet.`)
+  return parts.join(' ')
+}
 
 function ReadinessDrawer({
   projection,
   breakdown,
   current,
+  canViewActivity,
   close,
   navigate,
 }: {
   projection: ArgusAppProjection
   breakdown: ReadinessBreakdown
   current: Date
+  canViewActivity: boolean
   close: () => void
   navigate: (target: DashboardTarget) => void
 }) {
@@ -535,7 +552,6 @@ function ReadinessDrawer({
   // Same event the readiness engine scores: the first active event still ahead of now.
   const scored = upcomingEvents(projection, current).find(event => new Date(event.startsAt).getTime() >= current.getTime())
   const scoredProgress = scored ? eventProgress(scored) : undefined
-  const synced = projection.events.filter(record => record.syncStatus === 'SYNCHRONIZED').length
   const rows: ReadinessRow[] = [
     {
       key: 'cadets',
@@ -575,10 +591,8 @@ function ReadinessDrawer({
       key: 'audit',
       label: 'Audit',
       percent: breakdown.audit,
-      explanation: projection.events.length
-        ? `${synced} of ${projection.events.length} recorded changes are synchronized and verified.`
-        : 'No changes recorded yet.',
-      link: 'Open Activity',
+      explanation: auditExplanation(projection),
+      ...(canViewActivity ? { link: 'Open Activity' } : {}),
       target: { tab: 'activity' },
       icon: ShieldCheck,
     },
@@ -611,9 +625,11 @@ function ReadinessDrawer({
               <span style={{ width: `${percent}%` }} />
             </div>
             <p>{explanation}</p>
-            <button type="button" className="text-button" onClick={() => navigate(target)}>
-              {link} <ChevronRight aria-hidden="true" />
-            </button>
+            {link && (
+              <button type="button" className="text-button" onClick={() => navigate(target)}>
+                {link} <ChevronRight aria-hidden="true" />
+              </button>
+            )}
           </li>
         ))}
       </ul>

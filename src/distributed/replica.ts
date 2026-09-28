@@ -1,5 +1,6 @@
 import { ROLE_PERMISSIONS, type AuthorizationService } from '../auth/authorization'
 import { canonicalize, sha256 } from './canonical'
+import { applyDelivery, isVerified, sameDelivery, type EventDelivery } from './delivery'
 import type { ArgusIdentityProvider } from '../identity/identity'
 import type { ArgusPermission, AuthorityCredential, AuthorityRevocation, CalendarEventProjection, CalendarFieldRevisions, CalendarScalarField, CalendarTaskProjection, CatalogItemProjection, NsLevel, SupplyEventKind, ConflictRecord, CountAssignment, CountObservation, CountSessionProjection, DistributedEventType, InventoryProjection, MissingIssueLine, SignedArgusEvent, SupplyTransactionLine, UnsignedArgusEvent } from './types'
 import type { ArgusRepository, RepositoryState } from '../storage/repository'
@@ -117,8 +118,17 @@ export class ArgusReplica {
     await this.persistLocal(event)
     // With a durable local provider (the encrypted chain ledger) a failed hand-off of THIS record must surface; another queued
     // record failing is reported by the sync status, not as this command's failure. A remote-only provider may fail quietly.
-    if (this.online) await this.sync().catch(async error => { if (this.options.strictPublish && (await this.repository.snapshot()).outbox.some(record => record.eventId === event.eventId && record.status === 'FAILED')) throw error })
+    if (this.online) await this.syncAfterCommit().catch(async error => { if (this.options.strictPublish && (await this.repository.snapshot()).outbox.some(record => record.eventId === event.eventId && record.status === 'FAILED')) throw error })
     return event
+  }
+  /**
+   * A sync already in flight read the outbox before this event existed, so joining it would
+   * acknowledge the command without handing the event to the provider (the durable ledger). Let
+   * that run finish (its errors belong to earlier events), then run one that includes this event.
+   */
+  private async syncAfterCommit() {
+    if (this.syncing) await this.syncing.catch(() => undefined)
+    await this.sync()
   }
   /** Re-folds the whole history (after authority changes that can alter past authorization). */
   async rebuildNow() { await this.repository.transaction(state => this.rebuild(state)) }
@@ -915,15 +925,19 @@ export class ArgusReplica {
     await this.verify(event)
     await this.repository.transaction(state => { this.integrate(state, [event], { syncStatus: 'SYNCHRONIZED' }) })
   }
-  /** Batch receive for chain pages: every signature is checked, invalid ones are quarantined, and the rest are folded in one transaction. */
-  async receiveMany(events: SignedArgusEvent[], transactionIds: Record<string, string> = {}) {
+  /**
+   * Batch receive for chain pages: every signature is checked, invalid ones are quarantined, and the rest are folded in one transaction.
+   * `delivery` (from the provider) says where each record really stands — a record of ours still queued in the ledger stays QUEUED after a restart;
+   * without it a pulled record is assumed SYNCHRONIZED. Delivery is device metadata only and never changes the fold.
+   */
+  async receiveMany(events: SignedArgusEvent[], transactionIds: Record<string, string> = {}, delivery: Record<string, EventDelivery> = {}) {
     const valid: SignedArgusEvent[] = [], invalid: Array<{ eventId: string; reason: string }> = []
     for (const event of events) { try { await this.verify(event); valid.push(event) } catch (error) { invalid.push({ eventId: event?.eventId ?? 'unknown', reason: error instanceof Error ? error.message : 'Remote event was rejected.' }) } }
     await this.repository.transaction(state => {
       const known = new Map(state.events.map(record => [record.event.eventId, record]))
-      const accepted = valid.filter(event => { const existing = known.get(event.eventId); if (!existing) return true; if (canonicalize(existing.event) !== canonicalize(event)) { invalid.push({ eventId: event.eventId, reason: 'Event ID collision detected.' }); return false } if (existing.syncStatus !== 'SYNCHRONIZED') existing.syncStatus = 'SYNCHRONIZED'; if (transactionIds[event.eventId]) existing.transactionId = transactionIds[event.eventId]; return false })
+      const accepted = valid.filter(event => { const existing = known.get(event.eventId); if (!existing) return true; if (canonicalize(existing.event) !== canonicalize(event)) { invalid.push({ eventId: event.eventId, reason: 'Event ID collision detected.' }); return false } if (delivery[event.eventId]) applyDelivery(existing, delivery[event.eventId]); else { if (existing.syncStatus !== 'SYNCHRONIZED') existing.syncStatus = 'SYNCHRONIZED'; if (transactionIds[event.eventId]) existing.transactionId = transactionIds[event.eventId] } return false })
       this.integrate(state, accepted, { syncStatus: 'SYNCHRONIZED' })
-      for (const event of accepted) { const record = state.events.find(candidate => candidate.event.eventId === event.eventId); if (record && transactionIds[event.eventId]) record.transactionId = transactionIds[event.eventId] }
+      for (const event of accepted) { const record = state.events.find(candidate => candidate.event.eventId === event.eventId); if (!record) continue; if (delivery[event.eventId]) applyDelivery(record, delivery[event.eventId]); else if (transactionIds[event.eventId]) record.transactionId = transactionIds[event.eventId] }
       for (const item of invalid) if (!state.quarantine.some(existing => existing.eventId === item.eventId && existing.reason === item.reason)) state.quarantine.push({ ...item, receivedAt: new Date().toISOString() })
     })
     return { accepted: valid.length, rejected: invalid.length }
@@ -936,21 +950,38 @@ export class ArgusReplica {
     for (const record of before.outbox) {
       const event = before.events.find(e => e.event.eventId === record.eventId)?.event
       if (!event) continue
-      try { await this.provider.publish(event); await this.repository.transaction(s => { s.outbox = s.outbox.filter(o => o.eventId !== event.eventId); const stored = s.events.find(e => e.event.eventId === event.eventId); if (stored && stored.syncStatus !== 'SYNCHRONIZED') stored.syncStatus = 'SYNCING' }) }
-      catch (error) { failure = error; await this.repository.transaction(s => { const out = s.outbox.find(o => o.eventId === event.eventId); if (out) { out.status = 'FAILED'; out.attempts++; out.lastError = error instanceof Error ? error.message : 'Sync failed' }; const stored = s.events.find(e => e.event.eventId === event.eventId); if (stored) stored.syncStatus = 'FAILED' }) }
+      // A provider that reports delivery (the chain ledger) decides the status below: reaching the local ledger is QUEUED, not SYNCING.
+      try { await this.provider.publish(event); await this.repository.transaction(s => { s.outbox = s.outbox.filter(o => o.eventId !== event.eventId); const stored = s.events.find(e => e.event.eventId === event.eventId); if (stored && !this.provider.deliveryStatus && stored.syncStatus !== 'SYNCHRONIZED') stored.syncStatus = 'SYNCING' }) }
+      catch (error) { failure = error; const message = error instanceof Error ? error.message : 'Sync failed'; await this.repository.transaction(s => { const out = s.outbox.find(o => o.eventId === event.eventId); if (out) { out.status = 'FAILED'; out.attempts++; out.lastError = message }; const stored = s.events.find(e => e.event.eventId === event.eventId); if (stored) { stored.syncStatus = 'FAILED'; stored.lastError = message } }) }
     }
     // A device that cannot publish (offline wallet, no testnet coins) must still receive everyone else's work.
     const pending = await this.provider.pull()
     if (pending.length) {
+      const ids = pending.map(event => event.eventId)
       // If folding fails, the provider hands the same records over again next time instead of dropping them for the session.
-      try { await this.receiveMany(pending, await this.provider.transactionIds?.(pending.map(event => event.eventId)) ?? {}) }
-      catch (error) { this.provider.requeue?.(pending.map(event => event.eventId)); throw error }
+      try { await this.receiveMany(pending, await this.provider.transactionIds?.(ids) ?? {}, await this.provider.deliveryStatus?.(ids) ?? {}) }
+      catch (error) { this.provider.requeue?.(ids); throw error }
     }
+    await this.refreshDelivery()
     if (failure) throw failure
   }
-  /** Marks locally authored events as confirmed on chain once the transport has published them. */
+  /** Records the transaction that carried locally authored events once the transport has broadcast it; the provider's report then decides the status. */
   async markPublished(eventIds: string[], transactionId: string, status: 'SYNCHRONIZED' | 'SYNCING' = 'SYNCHRONIZED') {
-    await this.repository.transaction(state => { for (const record of state.events) if (eventIds.includes(record.event.eventId)) { record.transactionId = transactionId; if (record.syncStatus !== 'SYNCHRONIZED') record.syncStatus = status; record.auditStatus = 'BROADCAST' } })
+    await this.repository.transaction(state => { for (const record of state.events) if (eventIds.includes(record.event.eventId)) { record.transactionId = transactionId; if (record.syncStatus !== 'SYNCHRONIZED') record.syncStatus = status; if (record.auditStatus !== 'CONFIRMED' && record.auditStatus !== 'PROOF_VERIFIED') record.auditStatus = 'BROADCAST'; delete record.lastError } })
+    await this.refreshDelivery(eventIds)
+  }
+  /**
+   * Re-reads where records stand on their way to the chain (queued, publishing, broadcast, mined,
+   * rolled back) from the provider. Only per-device metadata changes: the fold is never re-run.
+   * Without eventIds, every record not yet verified in a block is refreshed.
+   */
+  async refreshDelivery(eventIds?: string[]) {
+    if (!this.provider.deliveryStatus) return
+    const wanted = eventIds && new Set(eventIds), candidates = (await this.repository.snapshot()).events.filter(record => wanted ? wanted.has(record.event.eventId) : !isVerified(record))
+    if (!candidates.length) return
+    const delivery = await this.provider.deliveryStatus(candidates.map(record => record.event.eventId)).catch(() => ({} as Record<string, EventDelivery>))
+    if (candidates.every(record => !delivery[record.event.eventId] || sameDelivery(record, delivery[record.event.eventId]))) return
+    await this.repository.transaction(state => { for (const record of state.events) { const report = delivery[record.event.eventId]; if (report) applyDelivery(record, report) } })
   }
   async snapshot() { return this.repository.snapshot() }
 }

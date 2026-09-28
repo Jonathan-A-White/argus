@@ -1,9 +1,12 @@
 import { useState } from 'react'
-import { Activity, Eye, EyeOff, Lock, PackageMinus, PackagePlus, Pencil, Ruler, UserRound } from 'lucide-react'
+import { Activity, Eye, EyeOff, Lock, PackageMinus, PackagePlus, Pencil, PencilLine, Ruler, UserRound } from 'lucide-react'
 import { Drawer, Summary } from '../../components/Drawer'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
 import type { ArgusPermission, PropertyCorrection, SupplyTransaction } from '../../distributed/types'
 import { cadetLabel } from '../../stage3/domain'
+import { RecordCorrectionForm } from '../corrections/RecordCorrectionForm'
+import { KIND_LABELS, describeLine, recordCorrections, transactionTargets } from '../corrections/correctionModel'
+import { StillNeededActions } from '../needs/StillNeededActions'
 import { CadetForm } from './CadetForm'
 import { SizeCorrectionForm } from './SizeCorrectionForm'
 import { cadetMonogram, memberLabel } from './cadetDisplay'
@@ -29,7 +32,7 @@ const formatDate = (iso: string) => {
 }
 const humanStatus = (value: string) => value.replaceAll('_', ' ').toLowerCase()
 const describeLines = (transaction: SupplyTransaction) => {
-  const moved = transaction.lines.map(line => `${line.label} · ${line.variant} × ${line.quantity}`)
+  const moved = transaction.lines.map(describeLine)
   const missing = transaction.missingLines?.length ?? 0
   if (!moved.length) return missing ? `Nothing issued · ${missing} added to Still Needed` : 'No items'
   return missing ? `${moved.join(', ')} · ${missing} added to Still Needed` : moved.join(', ')
@@ -49,6 +52,7 @@ export function CadetDrawer({ cadet, projection, controller, can, onProjection, 
   const [nameRevealed, setNameRevealed] = useState(false)
   const [editing, setEditing] = useState(false)
   const [correctingId, setCorrectingId] = useState<string>()
+  const [correctingTransactionId, setCorrectingTransactionId] = useState<string>()
   const code = cadetLabel(cadet)
   const canReveal = can('cadets.read') || can('cadets.manage')
   const canManage = can('cadets.manage')
@@ -62,6 +66,10 @@ export function CadetDrawer({ cadet, projection, controller, can, onProjection, 
   const corrections = projection.corrections
     .filter(correction => correction.cadetId === cadet.cadetId)
     .sort((a, b) => b.at.localeCompare(a.at))
+  const quantityCorrections = recordCorrections(projection)
+    .filter(correction => history.some(transaction => transaction.eventId === correction.targetEventId))
+    .reverse()
+  const lineFor = (targetEventId: string, lineId?: string) => history.find(transaction => transaction.eventId === targetEventId)?.lines.find(line => line.lineId === lineId)
   const ready = cadet.readiness.status === 'READY'
 
   if (editing && canManage) {
@@ -188,12 +196,15 @@ export function CadetDrawer({ cadet, projection, controller, can, onProjection, 
       <div className="cadet-record-rows">
         {needs.length ? (
           needs.map(need => (
-            <div className="needed-row" key={need.requirementId}>
-              <span>
-                <strong>{need.displayLabel}</strong>
-                <small>{need.size ?? 'Size not set'} · {humanStatus(need.status)}</small>
-              </span>
-              <b>{need.quantityNeeded - need.quantityFulfilled}</b>
+            <div className="need-entry" key={need.requirementId}>
+              <div className="needed-row">
+                <span>
+                  <strong>{need.displayLabel}</strong>
+                  <small>{need.size ?? 'Size not set'} · {humanStatus(need.status)}</small>
+                </span>
+                <b>{need.quantityNeeded - need.quantityFulfilled}</b>
+              </div>
+              {canManage && <StillNeededActions need={need} controller={controller} onProjection={onProjection} notify={notify} />}
             </div>
           ))
         ) : (
@@ -204,15 +215,39 @@ export function CadetDrawer({ cadet, projection, controller, can, onProjection, 
       <h3>Issue &amp; return history</h3>
       <div className="cadet-record-rows">
         {history.length ? (
-          history.map(transaction => (
-            <div className="needed-row cadet-history-row" key={transaction.transactionId}>
-              <span>
-                <strong>{formatDate(transaction.createdAt)}</strong>
-                <small>{describeLines(transaction)}</small>
-              </span>
-              <em className={`status-badge ${transaction.transactionType === 'ISSUE' ? 'success' : 'warning'}`}>{transaction.transactionType}</em>
-            </div>
-          ))
+          history.map(transaction => {
+            const title = `${transaction.transactionType.toLowerCase()} of ${formatDate(transaction.createdAt)}`
+            const correcting = canCorrect && correctingTransactionId === transaction.transactionId
+            return (
+              <div className="cadet-property" key={transaction.transactionId}>
+                <div className={canCorrect && transaction.lines.length ? 'needed-row cadet-history-row cadet-property-row' : 'needed-row cadet-history-row'}>
+                  <span>
+                    <strong>{formatDate(transaction.createdAt)}</strong>
+                    <small>{describeLines(transaction)}</small>
+                  </span>
+                  <em className={`status-badge ${transaction.transactionType === 'ISSUE' ? 'success' : 'warning'}`}>{transaction.transactionType}</em>
+                  {canCorrect && transaction.lines.length > 0 && !correcting && (
+                    <button type="button" className="secondary-button cadet-correct-button" aria-label={`Correct quantity in ${title}`} onClick={() => setCorrectingTransactionId(transaction.transactionId)}>
+                      <PencilLine aria-hidden="true" /> Correct…
+                    </button>
+                  )}
+                </div>
+                {correcting && (
+                  <RecordCorrectionForm
+                    title={title}
+                    targets={transactionTargets(transaction)}
+                    controller={controller}
+                    onCancel={() => setCorrectingTransactionId(undefined)}
+                    onCorrected={(next, summary) => {
+                      setCorrectingTransactionId(undefined)
+                      onProjection(next)
+                      notify(`${transaction.transactionType === 'ISSUE' ? 'Issue' : 'Return'} corrected for ${code}: ${summary}.`)
+                    }}
+                  />
+                )}
+              </div>
+            )
+          })
         ) : (
           <p className="empty-state">No issues or returns yet.</p>
         )}
@@ -235,6 +270,27 @@ export function CadetDrawer({ cadet, projection, controller, can, onProjection, 
           <p className="empty-state">No size corrections.</p>
         )}
       </div>
+
+      {quantityCorrections.length > 0 && (
+        <>
+          <h3>Quantity corrections</h3>
+          <div className="cadet-record-rows">
+            {quantityCorrections.map(correction => {
+              const line = lineFor(correction.targetEventId, correction.lineId)
+              return (
+                <div className="needed-row cadet-history-row" key={correction.eventId}>
+                  <span>
+                    <strong>{KIND_LABELS[correction.kind]}: {line ? `${line.label} · ${line.variant}` : 'Line'} {correction.from} → {correction.to}</strong>
+                    <small className="cadet-correction-reason">{correction.reason}</small>
+                    <small>{formatDate(correction.at)} · {memberLabel(projection, correction.actor)}</small>
+                  </span>
+                  <em className={`status-badge ${correction.applied ? 'warning' : 'danger'}`}>{correction.applied ? 'Corrected' : 'In conflict'}</em>
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
 
       <div className="split-actions cadet-split-actions">
         <button disabled={!canReturn} onClick={() => onReturn(cadet.cadetId)}>

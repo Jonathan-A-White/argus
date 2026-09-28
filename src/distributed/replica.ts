@@ -5,8 +5,8 @@ import type { ArgusIdentityProvider } from '../identity/identity'
 import type { ArgusPermission, AuthorityCredential, AuthorityRevocation, CalendarEventProjection, CalendarFieldRevisions, CalendarScalarField, CalendarTaskProjection, CatalogItemProjection, NsLevel, SupplyEventKind, ConflictRecord, CountAssignment, CountObservation, CountSessionProjection, DistributedEventType, InventoryProjection, MissingIssueLine, SignedArgusEvent, SupplyTransactionLine, UnsignedArgusEvent } from './types'
 import type { ArgusRepository, RepositoryState } from '../storage/repository'
 import type { EventSyncProvider } from '../sync/mock'
-import type { BundleVersionProjection, CadetProjection, StillNeededProjection } from './types'
-import { FACTORY_BUNDLES, GENESIS_CATALOG, GENESIS_INVENTORY, ONE_SIZE_LABEL, generateCadetCode, oneSizeVariantId, validateBundle, validateCadet, validateRequirement } from '../stage3/domain'
+import type { BundleVersionProjection, CadetProjection, ConflictOutcome, ConflictShortfall, CurrentPropertyLine, RecordCorrectionKind, ReturnCondition, StillNeededProjection } from './types'
+import { FACTORY_BUNDLES, GENESIS_CATALOG, GENESIS_INVENTORY, ONE_SIZE_LABEL, RETURN_CONDITIONS, cadetLabel, generateCadetCode, oneSizeVariantId, returnsToShelf, validateBundle, validateCadet, validateRequirement } from '../stage3/domain'
 import { normalizeSizeLabel } from '../stage3/sizes'
 import { SUPPLY_EVENT_KINDS, templateFor } from '../stage3/calendar'
 import { parseKeyGrantRecord } from '../private-sync/schema'
@@ -53,7 +53,11 @@ const pick = <T extends object>(source: Record<string, unknown>, allowed: Readon
 const INVENTORY_EDITABLE = ['name', 'category', 'variant', 'niin', 'reorderAt', 'countIncrement', 'active'] as const
 const CATALOG_EDITABLE = ['name', 'category', 'niin', 'sizeScheme', 'reorderAt', 'countIncrement', 'active'] as const
 const CADET_EDITABLE = ['fullName', 'gender', 'nsLevel', 'status', 'sizes', 'profileNeedsReview'] as const
-const NEED_EDITABLE = ['displayLabel', 'itemId', 'size', 'quantityNeeded', 'quantityFulfilled', 'status'] as const
+const NEED_EDITABLE = ['displayLabel', 'itemId', 'size', 'quantityNeeded', 'quantityFulfilled', 'status', 'closeReason'] as const
+export const RECORD_CORRECTION_KINDS: RecordCorrectionKind[] = ['RECEIPT_QUANTITY', 'ISSUE_QUANTITY', 'RETURN_QUANTITY']
+export const CONFLICT_OUTCOMES: ConflictOutcome[] = ['KEEP_AS_IS', 'RECORD_STILL_NEEDED']
+const MAX_NOTE_LENGTH = 500
+export type RecordCorrectionInput = { kind: RecordCorrectionKind; targetEventId: string; lineId?: string; from?: number; to: number; reason: string }
 const CALENDAR_SCALARS: readonly CalendarScalarField[] = ['title', 'startsAt', 'notes', 'active', 'kind']
 /** bundleIds/cadetIds stay here only so legacy whole-list updates still fold; new edits use the set-style ADDED/REMOVED events. */
 const CALENDAR_EDITABLE = ['title', 'startsAt', 'notes', 'active', 'kind', 'bundleIds', 'cadetIds'] as const
@@ -199,21 +203,25 @@ export class ArgusReplica {
     this.validateDraftIdentity(input.transactionId, input.lines, input.missingLines)
     const retryId = options.eventId ? await this.ownEventId(options.eventId) : undefined, retry = retryId ? state.events.find(record => record.event.eventId === retryId) : undefined
     if (retry) { const prior = retry.event.payload as { transactionId?:unknown;cadetId?:unknown;lines?:Array<{lineId:string;itemId:string;quantity:number}> }; if (retry.event.eventType !== 'ITEM_ISSUED' || prior.transactionId !== input.transactionId || prior.cadetId !== input.cadetId || canonicalize(prior.lines?.map(({lineId,itemId,quantity})=>({lineId,itemId,quantity}))??[]) !== canonicalize(input.lines.map(({lineId,itemId,quantity})=>({lineId,itemId,quantity})))) throw new Error('Event ID collision detected.'); return retry.event }
-    const lines = input.lines.map(line => { const item = state.inventory.find(candidate => candidate.entityId === line.itemId); if (!item) throw new Error('Inventory item was not found.'); if (!item.active) throw new Error(`${item.name} · ${item.variant} is inactive.`); this.validateQuantity(line.quantity); if (item.onHand < line.quantity) throw new Error(`Stock changed before confirmation. ${item.name} · ${item.variant} is no longer available.`); return { ...line, label: item.name, variant: item.variant, baseVersion: item.version } })
+    const lines = input.lines.map(line => { const item = state.inventory.find(candidate => candidate.entityId === line.itemId); if (!item) throw new Error('Inventory item was not found.'); if (!item.active) throw new Error(`${item.name} · ${item.variant} is inactive.`); this.validateQuantity(line.quantity); if (item.onHand < line.quantity) throw new Error(`Stock changed before confirmation. ${item.name} · ${item.variant} is no longer available.`); if (line.requirementId && !state.stillNeeded.some(need => need.requirementId === line.requirementId && need.cadetId === cadet.cadetId && isOpenNeed(need))) throw new Error('That Still Needed item is no longer open for this cadet.'); return { ...line, label: item.name, variant: item.variant, baseVersion: item.version } })
+    for (const line of input.missingLines ?? []) if (line.catalogId !== undefined && !state.catalog.some(item => item.catalogId === line.catalogId)) throw new Error('Catalog item was not found.')
     const bundle = input.bundleId ? state.bundles.find(candidate => candidate.bundleId === input.bundleId)?.versions.find(version => version.version === input.bundleVersion) : undefined
     if (input.bundleId && !bundle) throw new Error('The selected bundle version is no longer valid.')
     return this.commit({ eventType: 'ITEM_ISSUED', entityId: input.transactionId, payload: { ...input, lines, ...(bundle ? { bundleSnapshot: structuredClone(bundle) } : {}) }, ...options })
   }
-  async returnTransaction(input: { transactionId: string; cadetId: string; lines: Array<{ lineId: string; propertyId: string; quantity: number }> }, options: CommandOptions = {}) {
+  /** Each line may record the condition the item came back in (see RETURN_CONDITIONS: only SERVICEABLE returns to on-hand) and a short note. */
+  async returnTransaction(input: { transactionId: string; cadetId: string; lines: Array<{ lineId: string; propertyId: string; quantity: number; condition?: ReturnCondition; note?: string }> }, options: CommandOptions = {}) {
     await this.actor('inventory.return', options.timestamp)
     const state = await this.repository.snapshot(), cadet = state.cadets.find(candidate => candidate.cadetId === input.cadetId); if (!cadet) throw new Error('Cadet was not found.')
-    this.validateDraftIdentity(input.transactionId, input.lines)
+    this.validateDraftIdentity(input.transactionId, input.lines, [], 'propertyId')
+    const requested = input.lines.map(({ lineId, propertyId, quantity, condition, note }) => { if (condition !== undefined && !RETURN_CONDITIONS.includes(condition)) throw new Error('Choose the condition of the returned item.'); if (note !== undefined && (typeof note !== 'string' || note.length > MAX_NOTE_LENGTH)) throw new Error('Return note is too long.'); return { lineId, propertyId, quantity, ...(condition ? { condition } : {}), ...(note?.trim() ? { note: note.trim() } : {}) } })
     const retryId = options.eventId ? await this.ownEventId(options.eventId) : undefined, retry = retryId ? state.events.find(record => record.event.eventId === retryId) : undefined
-    if (retry) { const prior = retry.event.payload as { transactionId?:unknown;cadetId?:unknown;lines?:Array<{lineId:string;propertyId:string;quantity:number}> }; if (retry.event.eventType !== 'ITEM_RETURNED' || prior.transactionId !== input.transactionId || prior.cadetId !== input.cadetId || canonicalize(prior.lines?.map(({lineId,propertyId,quantity})=>({lineId,propertyId,quantity}))??[]) !== canonicalize(input.lines)) throw new Error('Event ID collision detected.'); return retry.event }
-    const lines = input.lines.map(line => { const property = cadet.currentProperty.find(candidate => candidate.propertyId === line.propertyId); if (!property) throw new Error('This cadet no longer has the selected item.'); this.validateQuantity(line.quantity); if (line.quantity > property.quantity) throw new Error('Return quantity exceeds current property.'); const item = state.inventory.find(candidate => candidate.entityId === property.itemId); if (!item) throw new Error('Inventory mapping for returned property was not found.'); return { ...line, itemId: item.entityId, label: item.name, variant: item.variant, baseVersion: item.version } })
+    if (retry) { const prior = retry.event.payload as { transactionId?:unknown;cadetId?:unknown;lines?:Array<{lineId:string;propertyId:string;quantity:number;condition?:ReturnCondition;note?:string}> }; if (retry.event.eventType !== 'ITEM_RETURNED' || prior.transactionId !== input.transactionId || prior.cadetId !== input.cadetId || canonicalize(prior.lines?.map(({lineId,propertyId,quantity,condition,note})=>({lineId,propertyId,quantity,...(condition?{condition}:{}),...(note?{note}:{})}))??[]) !== canonicalize(requested)) throw new Error('Event ID collision detected.'); return retry.event }
+    const lines = requested.map(line => { const property = cadet.currentProperty.find(candidate => candidate.propertyId === line.propertyId); if (!property) throw new Error('This cadet no longer has the selected item.'); this.validateQuantity(line.quantity); if (line.quantity > property.quantity) throw new Error('Return quantity exceeds current property.'); const item = state.inventory.find(candidate => candidate.entityId === property.itemId); if (!item) throw new Error('Inventory mapping for returned property was not found.'); return { ...line, itemId: item.entityId, label: item.name, variant: item.variant, baseVersion: item.version } })
     return this.commit({ eventType: 'ITEM_RETURNED', entityId: input.transactionId, payload: { transactionId: input.transactionId, cadetId: input.cadetId, lines }, ...options })
   }
-  private validateDraftIdentity(transactionId: string, lines: Array<{ lineId: string; itemId?: string }>, missing: MissingIssueLine[] = []) { if (!transactionId || (!lines.length && !missing.length)) throw new Error('Supply transaction is empty.'); const ids = [...lines, ...missing].map(line => line.lineId); if (ids.some(id => !id) || new Set(ids).size !== ids.length) throw new Error('Supply transaction line IDs must be unique.'); const items = lines.map(line => line.itemId).filter(Boolean); if (new Set(items).size !== items.length) throw new Error('Duplicate inventory variants are not allowed in one transaction.') }
+  /** Issues may not name one variant twice; a return may return two separate holdings of the same size, but never the same holding twice. */
+  private validateDraftIdentity(transactionId: string, lines: Array<{ lineId: string; itemId?: string; propertyId?: string }>, missing: MissingIssueLine[] = [], key: 'itemId' | 'propertyId' = 'itemId') { if (!transactionId || (!lines.length && !missing.length)) throw new Error('Supply transaction is empty.'); const ids = [...lines, ...missing].map(line => line.lineId); if (ids.some(id => !id) || new Set(ids).size !== ids.length) throw new Error('Supply transaction line IDs must be unique.'); const references = lines.map(line => line[key]).filter(Boolean); if (new Set(references).size !== references.length) throw new Error(key === 'itemId' ? 'Duplicate inventory variants are not allowed in one transaction.' : 'The same holding cannot be returned twice in one transaction.') }
   private validateQuantity(quantity: number) { if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_SUPPLY_LINE_QUANTITY) throw new Error(`Quantity must be a whole number from 1 to ${MAX_SUPPLY_LINE_QUANTITY}.`) }
 
   // ---------- counting ----------
@@ -296,15 +304,45 @@ export class ArgusReplica {
   private validateCountQuantity(quantity: number) { if (!Number.isInteger(quantity) || quantity < 0 || quantity > MAX_COUNT_QUANTITY) throw new Error(`Count must be a whole number from 0 to ${MAX_COUNT_QUANTITY}.`) }
 
   // ---------- corrections & conflicts ----------
+  /**
+   * Legacy free-form annotation: recorded in history without changing any state. Real corrections
+   * use correctRecord (quantities) or correctIssuedSize (sizes), which name an explicit kind.
+   */
   async correct(originalEventId: string, entityId: string, field: string, value: unknown, reason: string) {
     await this.actor('inventory.adjust')
     const event = await this.signed({ eventType: 'RECORD_CORRECTED', entityId, payload: { originalEventId, field, value, reason } }); await this.persistLocal(event); return event
   }
-  async resolve(conflictId: string, resolution: string) {
-    await this.actor('conflicts.resolve')
+  /**
+   * Master spec §12: fixes one recorded quantity — a receipt, or one line of an issue or a return —
+   * with a new signed RECORD_CORRECTED event. The original stays in history; state shows the
+   * corrected value. A correction that would be physically impossible (negative stock, property the
+   * cadet no longer holds) is refused here and becomes a visible conflict if it arrives from elsewhere.
+   */
+  async correctRecord(input: RecordCorrectionInput, options: CommandOptions = {}) {
+    const reason = input.reason.trim(); if (!reason || reason.length > MAX_NOTE_LENGTH) throw new Error('Give a reason for the correction.')
+    if (!Number.isInteger(input.to) || input.to < 0) throw new Error('The corrected quantity must be a whole number of zero or more.')
+    await this.actor('inventory.adjust', options.timestamp)
+    const state = await this.repository.snapshot(), target = state.events.find(record => record.event.eventId === input.targetEventId)?.event
+    if (!target) throw new Error('That record was not found.')
+    const intent = { kind: input.kind, targetEventId: input.targetEventId, ...(input.lineId ? { lineId: input.lineId } : {}), to: input.to, reason }
+    const retryId = options.eventId ? await this.ownEventId(options.eventId) : undefined, retry = retryId ? state.events.find(record => record.event.eventId === retryId) : undefined
+    if (retry) { const prior: Record<string, unknown> = { ...retry.event.payload }; delete prior.from; if (retry.event.eventType !== 'RECORD_CORRECTED' || canonicalize(prior) !== canonicalize(intent)) throw new Error('Event ID collision detected.'); return retry.event }
+    const current = this.recordedQuantity(state, input.kind, target, input.lineId)
+    if (input.from !== undefined && input.from !== current) throw new Error(`That record now reads ${current}; review it and try again.`)
+    if (input.to === current) throw new Error('The corrected quantity is the same as the recorded one.')
+    const payload = { ...intent, from: current }
+    const plan = this.planRecordCorrection(state, payload, target.entityId)
+    if (plan.problem) throw new Error(plan.problem.reason)
+    return this.commit({ eventType: 'RECORD_CORRECTED', entityId: target.entityId, payload, ...options })
+  }
+  /** KEEP_AS_IS leaves the losing event unapplied; RECORD_STILL_NEEDED turns a losing issue's lines into Still Needed for its cadet. */
+  async resolve(conflictId: string, resolution: string, outcome: ConflictOutcome = 'KEEP_AS_IS', options: CommandOptions = {}) {
+    await this.actor('conflicts.resolve', options.timestamp)
     const state = await this.repository.snapshot(); const conflict = state.conflicts.find(c => c.id === conflictId && c.status === 'OPEN'); if (!conflict) throw new Error('Open conflict was not found.')
     if (!resolution.trim()) throw new Error('Describe how the conflict was resolved.')
-    return this.commit({ eventType: 'CONFLICT_RESOLVED', entityId: conflict.entityId, payload: { conflictId, resolution: resolution.trim().slice(0, 500) } })
+    if (!CONFLICT_OUTCOMES.includes(outcome)) throw new Error('Choose how the conflict is resolved.')
+    if (outcome === 'RECORD_STILL_NEEDED' && !losingIssue(state, conflict)) throw new Error('Only a conflicting issue can be recorded as Still Needed.')
+    return this.commit({ eventType: 'CONFLICT_RESOLVED', entityId: conflict.entityId, payload: { conflictId, resolution: resolution.trim().slice(0, 500), outcome }, ...options })
   }
 
   // ---------- cadets, bundles, still needed ----------
@@ -333,11 +371,25 @@ export class ArgusReplica {
     validateRequirement(input); const state = await this.repository.snapshot(); if (!state.cadets.some(c => c.cadetId === input.cadetId)) throw new Error('Cadet was not found.'); await this.actor('cadets.manage', options.timestamp); const id = input.requirementId ?? `need_${crypto.randomUUID()}`
     return this.commit({ eventType: 'STILL_NEEDED_ADDED', entityId: id, payload: input, ...options })
   }
-  async updateStillNeeded(requirementId: string, changes: Partial<Pick<StillNeededProjection,'displayLabel'|'itemId'|'size'|'quantityNeeded'|'quantityFulfilled'|'status'>>, options: CommandOptions = {}) {
+  /** closeReason records why a requirement was closed by hand; see fulfilStillNeeded / cancelStillNeeded (which requires one). */
+  async updateStillNeeded(requirementId: string, changes: Partial<Pick<StillNeededProjection,'displayLabel'|'itemId'|'size'|'quantityNeeded'|'quantityFulfilled'|'status'|'closeReason'>>, options: CommandOptions = {}) {
     const requirement = (await this.repository.snapshot()).stillNeeded.find(r => r.requirementId === requirementId); if (!requirement) throw new Error('Still Needed requirement was not found.')
-    const payload = pick<StillNeededProjection>(changes, NEED_EDITABLE), next = { ...requirement, ...payload }; validateRequirement(next); await this.actor('cadets.manage', options.timestamp)
+    if (changes.closeReason !== undefined) { const closeReason = changes.closeReason.trim(); changes = { ...changes }; if (closeReason) changes.closeReason = closeReason; else delete changes.closeReason }
+    const payload = pick<StillNeededProjection>(changes, NEED_EDITABLE), next = { ...requirement, ...payload }; validateRequirement(next); validateCloseReason(next.closeReason)
+    if ((payload.status === 'FULFILLED' || payload.status === 'CANCELLED') && !isOpenNeed(requirement)) throw new Error('That requirement is already closed.')
+    await this.actor('cadets.manage', options.timestamp)
     const type = next.status === 'CANCELLED' ? 'STILL_NEEDED_CANCELLED' : next.status === 'FULFILLED' ? 'STILL_NEEDED_FULFILLED' : 'STILL_NEEDED_UPDATED'
     return this.commit({ eventType: type, entityId: requirementId, baseVersion: requirement.version, payload, ...options })
+  }
+  /** Fulfils an open requirement by hand (e.g. the item was handed over outside A.R.G.U.S.); the note is optional. */
+  async fulfilStillNeeded(requirementId: string, note = '', options: CommandOptions = {}) {
+    const requirement = (await this.repository.snapshot()).stillNeeded.find(r => r.requirementId === requirementId); if (!requirement) throw new Error('Still Needed requirement was not found.')
+    return this.updateStillNeeded(requirementId, { status: 'FULFILLED', quantityFulfilled: requirement.quantityNeeded, closeReason: note }, options)
+  }
+  /** Cancels an open requirement (no longer needed); a reason is required and kept with it. */
+  async cancelStillNeeded(requirementId: string, reason: string, options: CommandOptions = {}) {
+    if (!reason.trim()) throw new Error('Give a reason for cancelling this requirement.')
+    return this.updateStillNeeded(requirementId, { status: 'CANCELLED', closeReason: reason }, options)
   }
 
   // ---------- calendar (master spec §14–19) ----------
@@ -557,7 +609,7 @@ export class ArgusReplica {
         if (item.onHand + delta < 0 || item.issued - delta < 0) {
           const related = state.events.filter(e => e.event.entityId === event.entityId && e.event.eventType === 'ITEM_ISSUED' && (item.appliedEventIds.includes(e.event.eventId) || e.event.eventId === event.eventId)).map(e => e.event.eventId)
           const eventIds = [...new Set([...related, event.eventId])].sort()
-          const conflict: ConflictRecord = { id: `conflict:${eventIds.join(':')}`, entityId: event.entityId, eventIds, status: 'OPEN', reason: `Concurrent events attempted to consume unavailable ${item.name}.` }
+          const conflict: ConflictRecord = { id: `conflict:${eventIds.join(':')}`, entityId: event.entityId, eventIds, status: 'OPEN', reason: `Concurrent events attempted to consume unavailable ${item.name}.`, losingEventId: event.eventId, ...(item.onHand + delta < 0 ? { shortfalls: [shortfall('STOCK', item, item.onHand, -delta)] } : {}) }
           if (!state.conflicts.some(c => c.id === conflict.id)) state.conflicts.push(conflict)
           return
         }
@@ -599,9 +651,9 @@ export class ArgusReplica {
       case 'STILL_NEEDED_UPDATED': case 'STILL_NEEDED_CANCELLED': case 'STILL_NEEDED_FULFILLED': {
         const requirement = state.stillNeeded.find(r => r.requirementId === event.entityId); if (!requirement) throw new Error('Still Needed projection is missing.')
         if (event.baseVersion !== requirement.version) { this.addConflict(state, event, 'Concurrent Still Needed updates require reconciliation.'); return }
-        const changes = pick<StillNeededProjection>(event.payload, NEED_EDITABLE); validateRequirement({ ...requirement, ...changes }); Object.assign(requirement, changes, { updatedAt: event.timestamp, version: requirement.version + 1 }); requirement.appliedEventIds.push(event.eventId); return
+        const changes = pick<StillNeededProjection>(event.payload, NEED_EDITABLE); validateRequirement({ ...requirement, ...changes }); validateCloseReason(changes.closeReason); Object.assign(requirement, changes, { updatedAt: event.timestamp, version: requirement.version + 1 }); requirement.appliedEventIds.push(event.eventId); return
       }
-      case 'CONFLICT_RESOLVED': { const conflict = state.conflicts.find(c => c.id === event.payload.conflictId); if (conflict) { conflict.status = 'RESOLVED'; conflict.resolutionEventId = event.eventId } return }
+      case 'CONFLICT_RESOLVED': this.applyConflictResolution(state, event); return
       case 'AUTHORITY_GRANTED': {
         const credential = event.payload.credential as AuthorityCredential | undefined, displayName = event.payload.displayName
         if (!credential || credential.subjectPublicIdentity !== event.entityId || typeof displayName !== 'string' || !displayName.trim()) throw new Error('Corrupted admission event.')
@@ -725,7 +777,7 @@ export class ArgusReplica {
         const from = state.inventory.find(item => item.entityId === fromItemId), to = state.inventory.find(item => item.entityId === toItemId)
         if (!from || !to || typeof reason !== 'string' || !Number.isInteger(quantity) || quantity < 1) throw new Error('Corrupted correction event.')
         // Impossible physical states become visible conflicts, exactly like a concurrent issue of the last unit.
-        if (!property || property.itemId !== from.entityId || property.quantity < quantity || !to.active || to.onHand < quantity) { this.addSupplyConflict(state, event, cadet.cadetId, [{ line: { lineId: 'correction', itemId: to.entityId, label: to.name, variant: to.variant, quantity, baseVersion: to.version }, item: to }], 'A size correction referenced property or stock that was no longer available.'); return }
+        if (!property || property.itemId !== from.entityId || property.quantity < quantity || !to.active || to.onHand < quantity) { this.addSupplyConflict(state, event, cadet.cadetId, [{ line: { lineId: 'correction', itemId: to.entityId, label: to.name, variant: to.variant, quantity, baseVersion: to.version }, item: to }], 'A size correction referenced property or stock that was no longer available.', [...(to.onHand < quantity ? [shortfall('STOCK', to, to.onHand, quantity)] : []), ...(!property || property.itemId !== from.entityId || property.quantity < quantity ? [shortfall('PROPERTY', from, property?.itemId === from.entityId ? property.quantity : 0, quantity)] : [])]); return }
         from.onHand += quantity; from.issued = Math.max(0, from.issued - quantity); from.version++; from.appliedEventIds.push(event.eventId)
         to.onHand -= quantity; to.issued += quantity; to.version++; to.appliedEventIds.push(event.eventId)
         if (quantity === property.quantity) Object.assign(property, { itemId: to.entityId, label: to.name, variant: to.variant })
@@ -757,7 +809,9 @@ export class ArgusReplica {
         }
         return
       }
-      default: return // RECORD_CORRECTED and other audit-only events are retained in history without changing projections.
+      // A correction without a kind is a legacy free-form annotation: kept in history, no effect.
+      case 'RECORD_CORRECTED': if (event.payload.kind !== undefined) this.applyRecordCorrection(state, event); return
+      default: return // Audit-only events are retained in history without changing projections.
     }
   }
   private applyCountEvent(state: RepositoryState, event: SignedArgusEvent) {
@@ -823,28 +877,66 @@ export class ArgusReplica {
     const cadet = state.cadets.find(candidate => candidate.cadetId === payload.cadetId); if (!cadet) throw new Error('Cadet projection is missing.')
     const lines = payload.lines as SupplyTransactionLine[], missing = payload.missingLines === undefined ? [] : payload.missingLines as MissingIssueLine[]
     if (!Array.isArray(missing)) throw new Error('Malformed missing-lines payload.')
-    this.validateDraftIdentity(payload.transactionId, lines, missing)
+    const returning = event.eventType === 'ITEM_RETURNED'
+    this.validateDraftIdentity(payload.transactionId, lines, missing, returning ? 'propertyId' : 'itemId')
     // Labels/variants in the line are a historical snapshot; a later rename must not invalidate an offline issue, so only the SKU reference is authoritative.
-    const resolved = lines.map(line => { this.validateQuantity(line.quantity); if (!line.itemId || typeof line.label !== 'string') throw new Error('Malformed supply transaction line.'); const item = state.inventory.find(candidate => candidate.entityId === line.itemId); if (!item) throw new Error('Inventory projection is missing.'); return { line, item } })
-    for (const line of missing) { if (!line.required || !line.lineId || !line.label) throw new Error('Malformed missing issue line.'); this.validateQuantity(line.quantity) }
+    const resolved = lines.map(line => { this.validateQuantity(line.quantity); if (!line.itemId || typeof line.label !== 'string') throw new Error('Malformed supply transaction line.'); if (returning && ((line.condition !== undefined && !RETURN_CONDITIONS.includes(line.condition)) || (line.note !== undefined && (typeof line.note !== 'string' || line.note.length > MAX_NOTE_LENGTH)))) throw new Error('Malformed return condition.'); const item = state.inventory.find(candidate => candidate.entityId === line.itemId); if (!item) throw new Error('Inventory projection is missing.'); return { line, item } })
+    for (const line of missing) { if (!line.required || !line.lineId || !line.label || (line.catalogId !== undefined && typeof line.catalogId !== 'string')) throw new Error('Malformed missing issue line.'); this.validateQuantity(line.quantity) }
     const bundleSnapshot = payload.bundleSnapshot as BundleVersionProjection | undefined
     if ((payload.bundleId === undefined) !== (payload.bundleVersion === undefined) || (payload.bundleId !== undefined && (typeof payload.bundleId !== 'string' || !Number.isInteger(payload.bundleVersion) || !bundleSnapshot || bundleSnapshot.bundleId !== payload.bundleId || bundleSnapshot.version !== payload.bundleVersion))) throw new Error('Malformed bundle transaction snapshot.')
     // Conflicts are about impossible physical states only: stock that is not there, or property the cadet no longer holds.
-    if (event.eventType === 'ITEM_ISSUED' && (cadet.status !== 'ACTIVE' || resolved.some(({ line, item }) => !item.active || item.onHand < line.quantity))) { this.addSupplyConflict(state, event, payload.cadetId, resolved.filter(({ line, item }) => !item.active || item.onHand < line.quantity), cadet.status !== 'ACTIVE' ? 'Issue transaction targeted a cadet who was made inactive.' : undefined); return }
-    if (event.eventType === 'ITEM_RETURNED' && resolved.some(({ line, item }) => { const property = cadet.currentProperty.find(candidate => candidate.propertyId === line.propertyId); return !property || property.itemId !== item.entityId || property.quantity < line.quantity })) { this.addSupplyConflict(state, event, payload.cadetId, resolved, 'Concurrent return transaction referenced property the cadet no longer holds.'); return }
+    if (event.eventType === 'ITEM_ISSUED' && (cadet.status !== 'ACTIVE' || resolved.some(({ line, item }) => !item.active || item.onHand < line.quantity))) { const contested = resolved.filter(({ line, item }) => !item.active || item.onHand < line.quantity); this.addSupplyConflict(state, event, payload.cadetId, contested, cadet.status !== 'ACTIVE' ? 'Issue transaction targeted a cadet who was made inactive.' : undefined, contested.filter(({ line, item }) => item.onHand < line.quantity).map(({ line, item }) => shortfall('STOCK', item, item.onHand, line.quantity))); return }
+    const holding = (line: SupplyTransactionLine, item: InventoryProjection) => { const property = cadet.currentProperty.find(candidate => candidate.propertyId === line.propertyId); return property && property.itemId === item.entityId ? property.quantity : 0 }
+    if (returning && resolved.some(({ line, item }) => holding(line, item) < line.quantity)) { this.addSupplyConflict(state, event, payload.cadetId, resolved, 'Concurrent return transaction referenced property the cadet no longer holds.', resolved.filter(({ line, item }) => holding(line, item) < line.quantity).map(({ line, item }) => shortfall('PROPERTY', item, holding(line, item), line.quantity))); return }
+    const touch = (item: InventoryProjection) => { if (!item.appliedEventIds.includes(event.eventId)) { item.version++; item.appliedEventIds.push(event.eventId) } }
+    let recorded: SupplyTransactionLine[] = structuredClone(lines)
     if (event.eventType === 'ITEM_ISSUED') {
-      for (const { line, item } of resolved) { item.onHand -= line.quantity; item.issued += line.quantity; item.version++; item.appliedEventIds.push(event.eventId); const requirement = state.stillNeeded.find(candidate => candidate.cadetId === cadet.cadetId && candidate.itemId === item.entityId && candidate.size === item.variant && !['FULFILLED','CANCELLED'].includes(candidate.status) && (!line.requirementId || candidate.requirementId === line.requirementId)); if (requirement) { requirement.quantityFulfilled = Math.min(requirement.quantityNeeded, requirement.quantityFulfilled + line.quantity); requirement.status = requirement.quantityFulfilled === requirement.quantityNeeded ? 'FULFILLED' : 'PARTIALLY_FULFILLED'; requirement.updatedAt = event.timestamp; requirement.version++; requirement.appliedEventIds.push(event.eventId) } cadet.currentProperty.push({ propertyId: `${event.eventId}:${line.lineId}`, itemId: item.entityId, label: item.name, variant: item.variant, quantity: line.quantity, issuedAt: event.timestamp, issueEventId: event.eventId, issueTransactionId: payload.transactionId, bundleId: payload.bundleId as string|undefined, bundleVersion: payload.bundleVersion as number|undefined }) }
-      for (const line of missing) { const existingNeed = state.stillNeeded.find(requirement => requirement.cadetId === cadet.cadetId && requirement.itemId === line.itemId && requirement.size === line.variant && requirement.displayLabel === line.label && requirement.source === 'INCOMPLETE_ISSUE' && !['FULFILLED','CANCELLED'].includes(requirement.status)); if (existingNeed) { existingNeed.quantityNeeded += line.quantity; existingNeed.relatedTransactionIds = [...new Set([...(existingNeed.relatedTransactionIds ?? []), payload.transactionId])]; existingNeed.updatedAt = event.timestamp; existingNeed.version++; existingNeed.appliedEventIds.push(event.eventId) } else state.stillNeeded.push({ requirementId: `need:${event.eventId}:${line.lineId}`, cadetId: cadet.cadetId, itemId: line.itemId, displayLabel: line.label, size: line.variant, quantityNeeded: line.quantity, quantityFulfilled: 0, status: 'OPEN', firstNeededAt: event.timestamp, updatedAt: event.timestamp, source: 'INCOMPLETE_ISSUE', relatedTransactionIds: [payload.transactionId], relatedBundleId: payload.bundleId as string|undefined, bundleVersion: payload.bundleVersion as number|undefined, version: 1, appliedEventIds: [event.eventId] }) }
-    } else for (const { line, item } of resolved) { const property = cadet.currentProperty.find(candidate => candidate.propertyId === line.propertyId)!; property.quantity -= line.quantity; if (!property.quantity) cadet.currentProperty = cadet.currentProperty.filter(candidate => candidate.propertyId !== property.propertyId); item.onHand += line.quantity; item.issued = Math.max(0, item.issued - line.quantity); item.version++; item.appliedEventIds.push(event.eventId) }
+      for (const { line, item } of resolved) { item.onHand -= line.quantity; item.issued += line.quantity; touch(item); this.fulfilNeedsFromIssue(state, cadet.cadetId, line, item, event); cadet.currentProperty.push({ propertyId: `${event.eventId}:${line.lineId}`, itemId: item.entityId, label: item.name, variant: item.variant, quantity: line.quantity, issuedAt: event.timestamp, issueEventId: event.eventId, issueTransactionId: payload.transactionId, bundleId: payload.bundleId as string|undefined, bundleVersion: payload.bundleVersion as number|undefined }) }
+      for (const line of missing) { const catalogId = typeof line.catalogId === 'string' ? line.catalogId : undefined; const existingNeed = state.stillNeeded.find(requirement => requirement.cadetId === cadet.cadetId && requirement.itemId === line.itemId && requirement.catalogId === catalogId && requirement.size === line.variant && requirement.displayLabel === line.label && requirement.source === 'INCOMPLETE_ISSUE' && isOpenNeed(requirement)); if (existingNeed) { existingNeed.quantityNeeded += line.quantity; existingNeed.relatedTransactionIds = [...new Set([...(existingNeed.relatedTransactionIds ?? []), payload.transactionId])]; existingNeed.updatedAt = event.timestamp; existingNeed.version++; existingNeed.appliedEventIds.push(event.eventId) } else state.stillNeeded.push({ requirementId: `need:${event.eventId}:${line.lineId}`, cadetId: cadet.cadetId, itemId: line.itemId, ...(catalogId ? { catalogId } : {}), displayLabel: line.label, size: line.variant, quantityNeeded: line.quantity, quantityFulfilled: 0, status: 'OPEN', firstNeededAt: event.timestamp, updatedAt: event.timestamp, source: 'INCOMPLETE_ISSUE', relatedTransactionIds: [payload.transactionId], relatedBundleId: payload.bundleId as string|undefined, bundleVersion: payload.bundleVersion as number|undefined, version: 1, appliedEventIds: [event.eventId] }) }
+    } else {
+      recorded = []
+      // Only a serviceable return goes back on the shelf; every condition clears the cadet's holding (see RETURN_CONDITIONS).
+      for (const { line, item } of resolved) { const property = cadet.currentProperty.find(candidate => candidate.propertyId === line.propertyId)!; const returnedFrom: Partial<CurrentPropertyLine> = { ...property }; delete returnedFrom.quantity; recorded.push({ ...structuredClone(line), returnedFrom: returnedFrom as Omit<CurrentPropertyLine, 'quantity'> }); property.quantity -= line.quantity; if (!property.quantity) cadet.currentProperty = cadet.currentProperty.filter(candidate => candidate.propertyId !== property.propertyId); if (returnsToShelf(line.condition)) item.onHand += line.quantity; item.issued = Math.max(0, item.issued - line.quantity); touch(item) }
+    }
     cadet.version++; cadet.updatedAt = event.timestamp; cadet.appliedEventIds.push(event.eventId)
-    state.transactions.push({ transactionId: payload.transactionId, transactionType: event.eventType === 'ITEM_ISSUED' ? 'ISSUE' : 'RETURN', cadetId: cadet.cadetId, actorId: event.actorPublicIdentity, createdAt: event.timestamp, eventId: event.eventId, bundleId: payload.bundleId as string|undefined, bundleVersion: payload.bundleVersion as number|undefined, bundleSnapshot, lines: structuredClone(lines), missingLines: structuredClone(missing) })
+    state.transactions.push({ transactionId: payload.transactionId, transactionType: event.eventType === 'ITEM_ISSUED' ? 'ISSUE' : 'RETURN', cadetId: cadet.cadetId, actorId: event.actorPublicIdentity, createdAt: event.timestamp, eventId: event.eventId, bundleId: payload.bundleId as string|undefined, bundleVersion: payload.bundleVersion as number|undefined, bundleSnapshot, lines: recorded, missingLines: structuredClone(missing) })
   }
-  private addSupplyConflict(state: RepositoryState, event: SignedArgusEvent, cadetId: string, resolved: Array<{line:SupplyTransactionLine;item:InventoryProjection}>, reason = 'Concurrent issue transaction attempted to consume unavailable inventory.') {
+  /**
+   * Fulfils the cadet's open Still Needed with one issued line, deterministically: the requirement
+   * the line explicitly names first, then exact-size (itemId) requirements, then requirements raised
+   * before the item had sizes — matched by catalog item, or by label when no catalog item was
+   * recorded — preferring the same size over "any size". A requirement that recorded a different
+   * size is left open. Oldest first within each tier; one line can fulfil several requirements.
+   */
+  private fulfilNeedsFromIssue(state: RepositoryState, cadetId: string, line: SupplyTransactionLine, item: InventoryProjection, event: SignedArgusEvent) {
+    const open = state.stillNeeded.filter(requirement => requirement.cadetId === cadetId && isOpenNeed(requirement))
+    const catalogName = item.catalogId ? state.catalog.find(entry => entry.catalogId === item.catalogId)?.name : undefined
+    const oneSize = item.variant === ONE_SIZE_LABEL || state.catalog.some(entry => entry.catalogId === item.catalogId && !entry.sized)
+    const tier = (requirement: StillNeededProjection) => {
+      if (line.requirementId && requirement.requirementId === line.requirementId) return 0
+      if (requirement.itemId) return requirement.itemId === item.entityId ? 1 : undefined
+      const sameItem = requirement.catalogId !== undefined ? requirement.catalogId === item.catalogId : [item.name, catalogName].some(name => name !== undefined && normalizeLabel(name) === normalizeLabel(requirement.displayLabel))
+      if (!sameItem) return undefined
+      if (requirement.size?.trim() && normalizeLabel(requirement.size) === normalizeLabel(item.variant)) return 2
+      return !requirement.size?.trim() || oneSize ? 3 : undefined
+    }
+    const candidates = open.flatMap(requirement => { const rank = tier(requirement); return rank === undefined ? [] : [{ requirement, rank }] })
+      .sort((a, b) => a.rank - b.rank || a.requirement.firstNeededAt.localeCompare(b.requirement.firstNeededAt) || a.requirement.requirementId.localeCompare(b.requirement.requirementId))
+    let remaining = line.quantity
+    for (const { requirement } of candidates) {
+      const used = Math.min(remaining, requirement.quantityNeeded - requirement.quantityFulfilled); if (used <= 0) continue
+      requirement.quantityFulfilled += used; remaining -= used
+      requirement.status = requirement.quantityFulfilled === requirement.quantityNeeded ? 'FULFILLED' : 'PARTIALLY_FULFILLED'; requirement.updatedAt = event.timestamp
+      if (!requirement.appliedEventIds.includes(event.eventId)) { requirement.version++; requirement.appliedEventIds.push(event.eventId) }
+      if (!remaining) return
+    }
+  }
+  private addSupplyConflict(state: RepositoryState, event: SignedArgusEvent, cadetId: string, resolved: Array<{line:SupplyTransactionLine;item:InventoryProjection}>, reason = 'Concurrent issue transaction attempted to consume unavailable inventory.', shortfalls: ConflictShortfall[] = []) {
     const inventoryItemIds = resolved.map(({ item }) => item.entityId)
     // The conflict names the transactions that consumed the contested SKUs before this one in canonical order, plus this one.
     const related = state.transactions.filter(transaction => transaction.lines.some(line => inventoryItemIds.includes(line.itemId))).map(transaction => transaction.eventId)
     const eventIds = [...new Set([...related, event.eventId])].sort(); const entityId = inventoryItemIds[0] ?? event.entityId
-    const conflict: ConflictRecord = { id: `conflict:${event.eventId}`, entityId, eventIds, status: 'OPEN', reason, transactionId: event.entityId, inventoryItemIds, cadetId }
+    const conflict: ConflictRecord = { id: `conflict:${event.eventId}`, entityId, eventIds, status: 'OPEN', reason, transactionId: event.entityId, inventoryItemIds, cadetId, losingEventId: event.eventId, shortfalls }
     if (!state.conflicts.some(candidate => candidate.id === conflict.id)) state.conflicts.push(conflict)
   }
   /**
@@ -857,7 +949,104 @@ export class ArgusReplica {
     const conflict: ConflictRecord = { id: `conflict:${event.eventId}`, entityId: target.calendarEventId, eventIds, status: 'OPEN', reason: `Two devices changed the ${fields.length ? listJoin(fields.map(field => CALENDAR_FIELD_LABEL[field])) : 'details'} of ${target.title} at the same time.` }
     if (!state.conflicts.some(candidate => candidate.id === conflict.id)) state.conflicts.push(conflict)
   }
-  private addConflict(state: RepositoryState, event: SignedArgusEvent, reason: string) { const related = state.events.filter(e => e.event.entityId === event.entityId && e.event.baseVersion === event.baseVersion).map(e => e.event.eventId); const ids = [...new Set([...related, event.eventId])].sort(); const conflict = { id: `conflict:${ids.join(':')}`, entityId: event.entityId, eventIds: ids, status: 'OPEN' as const, reason }; if (!state.conflicts.some(c => c.id === conflict.id)) state.conflicts.push(conflict) }
+  /**
+   * A concurrent edit of the same version. The ID names only the losing event, and the listed events
+   * are the ones folded before it, so the conflict is identical whatever order or batching delivered
+   * the history — a resolution recorded on one device always matches on every other.
+   */
+  private addConflict(state: RepositoryState, event: SignedArgusEvent, reason: string) { const key = eventSortKey(event); const related = state.events.filter(e => e.event.entityId === event.entityId && e.event.baseVersion === event.baseVersion && eventSortKey(e.event) < key).map(e => e.event.eventId); const ids = [...new Set([...related, event.eventId])].sort(); const conflict: ConflictRecord = { id: `conflict:${event.eventId}`, entityId: event.entityId, eventIds: ids, status: 'OPEN', reason, losingEventId: event.eventId }; if (!state.conflicts.some(c => c.id === conflict.id)) state.conflicts.push(conflict) }
+  /**
+   * Master spec §23. The first resolution in canonical order settles a conflict; a later one is kept
+   * in history but changes nothing. RECORD_STILL_NEEDED creates the same requirements on every device
+   * (IDs derive from the resolution event) for each line of the losing issue.
+   */
+  private applyConflictResolution(state: RepositoryState, event: SignedArgusEvent) {
+    const conflictId = event.payload.conflictId, outcome = event.payload.outcome ?? 'KEEP_AS_IS'
+    if (typeof conflictId !== 'string' || !CONFLICT_OUTCOMES.includes(outcome as ConflictOutcome)) throw new Error('Corrupted conflict resolution.')
+    // Resolutions recorded before conflict IDs named only the losing event used "conflict:<every event id>".
+    const conflict = state.conflicts.find(candidate => candidate.id === conflictId) ?? state.conflicts.find(candidate => candidate.status === 'OPEN' && candidate.entityId === event.entityId && candidate.losingEventId !== undefined && `${conflictId}:`.includes(`:${candidate.losingEventId}:`))
+    if (!conflict || conflict.status === 'RESOLVED') return
+    if (outcome === 'RECORD_STILL_NEEDED') {
+      const losing = losingIssue(state, conflict); if (!losing) throw new Error('Only a conflicting issue can be recorded as Still Needed.')
+      for (const line of losing.lines) {
+        const requirementId = `need:${event.eventId}:${line.lineId}`; if (state.stillNeeded.some(requirement => requirement.requirementId === requirementId)) continue
+        const catalogId = line.catalogId ?? (line.itemId ? state.inventory.find(item => item.entityId === line.itemId)?.catalogId : undefined)
+        state.stillNeeded.push({ requirementId, cadetId: losing.cadetId, ...(line.itemId ? { itemId: line.itemId } : {}), ...(catalogId ? { catalogId } : {}), displayLabel: line.label, ...(line.variant ? { size: line.variant } : {}), quantityNeeded: line.quantity, quantityFulfilled: 0, status: 'OPEN', firstNeededAt: losing.at, updatedAt: event.timestamp, source: 'CONFLICT_RESOLUTION', version: 1, appliedEventIds: [event.eventId] })
+      }
+    }
+    conflict.status = 'RESOLVED'; conflict.resolutionEventId = event.eventId; conflict.outcome = outcome as ConflictOutcome
+  }
+  /** The quantity a record currently shows: the signed value, or the value of its latest applied correction. */
+  private recordedQuantity(state: RepositoryState, kind: RecordCorrectionKind, target: SignedArgusEvent, lineId?: string) {
+    if (kind === 'RECEIPT_QUANTITY') {
+      const item = state.inventory.find(candidate => candidate.entityId === target.entityId); let quantity = Number(target.payload.quantity)
+      const byId = new Map(state.events.map(record => [record.event.eventId, record.event]))
+      for (const id of item?.appliedEventIds ?? []) { const applied = byId.get(id); if (applied?.eventType === 'RECORD_CORRECTED' && applied.payload.targetEventId === target.eventId && applied.payload.kind === kind) quantity = Number(applied.payload.to) }
+      return quantity
+    }
+    const line = state.transactions.find(transaction => transaction.eventId === target.eventId)?.lines.find(candidate => candidate.lineId === lineId)
+    if (!line) throw new Error('That transaction line was not found.')
+    return line.correctedQuantity ?? line.quantity
+  }
+  /**
+   * What a quantity correction does, or why it is impossible. Stock moves by the difference unless
+   * a physical count of that size was folded after the original record — the count already
+   * measured the shelf, so only the record (and, for issues and returns, the cadet's holding) moves.
+   */
+  private planRecordCorrection(state: RepositoryState, payload: Record<string, unknown>, entityId: string): CorrectionPlan {
+    const { kind, targetEventId, lineId, from, to, reason } = payload
+    if (!RECORD_CORRECTION_KINDS.includes(kind as RecordCorrectionKind) || typeof targetEventId !== 'string' || !targetEventId || typeof reason !== 'string' || !reason.trim() || reason.length > MAX_NOTE_LENGTH || !Number.isInteger(from) || !Number.isInteger(to) || Number(from) < 0 || Number(to) < 0 || from === to) throw new Error('Corrupted record correction.')
+    const target = state.events.find(record => record.event.eventId === targetEventId)?.event
+    if (!target) throw new Error('The corrected record has not been received yet.')
+    if (target.entityId !== entityId) throw new Error('Corrupted record correction.')
+    const before = Number(from), after = Number(to), delta = after - before
+    if (kind === 'RECEIPT_QUANTITY') {
+      if (target.eventType !== 'INVENTORY_RECEIVED' || after > MAX_RECEIVE_QUANTITY) throw new Error('A receipt correction must reference a stock receipt.')
+      const item = state.inventory.find(candidate => candidate.entityId === target.entityId)
+      if (!item || !item.appliedEventIds.includes(target.eventId)) throw new Error('The corrected receipt was never applied.')
+      const plan: CorrectionPlan = { kind: 'RECEIPT_QUANTITY', target, to: after, item, stockDelta: countedSince(state, item, target) ? 0 : delta, issuedDelta: 0, propertyDelta: 0 }
+      const current = this.recordedQuantity(state, 'RECEIPT_QUANTITY', target)
+      if (current !== before) return { ...plan, problem: { reason: `Another correction already changed this receipt to ${current}.`, shortfalls: [] } }
+      if (item.onHand + plan.stockDelta < 0) return { ...plan, problem: { reason: `Correcting this receipt to ${after} would leave negative stock of ${item.name} · ${item.variant}.`, shortfalls: [shortfall('STOCK', item, item.onHand, -plan.stockDelta)] } }
+      return plan
+    }
+    const issue = kind === 'ISSUE_QUANTITY'
+    if (typeof lineId !== 'string' || !lineId || after > MAX_SUPPLY_LINE_QUANTITY || target.eventType !== (issue ? 'ITEM_ISSUED' : 'ITEM_RETURNED')) throw new Error('A quantity correction must reference one line of an issue or return.')
+    const transaction = state.transactions.find(candidate => candidate.eventId === target.eventId), line = transaction?.lines.find(candidate => candidate.lineId === lineId)
+    const cadet = transaction && state.cadets.find(candidate => candidate.cadetId === transaction.cadetId)
+    if (!transaction || !line || !cadet) throw new Error('The corrected transaction was never applied.')
+    const propertyId = issue ? `${target.eventId}:${line.lineId}` : String(line.propertyId ?? ''), property = cadet.currentProperty.find(candidate => candidate.propertyId === propertyId)
+    const item = state.inventory.find(candidate => candidate.entityId === (issue ? property?.itemId ?? line.itemId : line.itemId)); if (!item) throw new Error('Inventory projection is missing.')
+    // Issuing more takes stock and adds to the holding; returning more gives back stock (when serviceable) and removes from the holding.
+    const stockMoves = !countedSince(state, item, target) && (issue || returnsToShelf(line.condition))
+    const restore: Omit<CurrentPropertyLine, 'quantity'> | undefined = issue ? { propertyId, itemId: item.entityId, label: item.name, variant: item.variant, issuedAt: transaction.createdAt, issueEventId: target.eventId, issueTransactionId: transaction.transactionId, ...(transaction.bundleId ? { bundleId: transaction.bundleId, bundleVersion: transaction.bundleVersion } : {}) } : line.returnedFrom
+    const plan: CorrectionPlan = { kind: kind as RecordCorrectionKind, target, to: after, item, cadet, line, propertyId, restore, stockDelta: stockMoves ? (issue ? -delta : delta) : 0, issuedDelta: issue ? delta : -delta, propertyDelta: issue ? delta : -delta }
+    const current = line.correctedQuantity ?? line.quantity, held = property?.quantity ?? 0
+    if (current !== before) return { ...plan, problem: { reason: `Another correction already changed this line to ${current}.`, shortfalls: [] } }
+    if (held + plan.propertyDelta < 0) return { ...plan, problem: { reason: `${cadetLabel(cadet)} holds ${held} of ${item.name} · ${item.variant} from this record; the correction would remove ${-plan.propertyDelta}.`, shortfalls: [shortfall('PROPERTY', item, held, -plan.propertyDelta)] } }
+    if (plan.propertyDelta > 0 && !property && !restore) return { ...plan, problem: { reason: 'The returned holding cannot be restored from this older record.', shortfalls: [] } }
+    if (item.onHand + plan.stockDelta < 0) return { ...plan, problem: { reason: `The correction would leave negative stock of ${item.name} · ${item.variant}.`, shortfalls: [shortfall('STOCK', item, item.onHand, -plan.stockDelta)] } }
+    return plan
+  }
+  private applyRecordCorrection(state: RepositoryState, event: SignedArgusEvent) {
+    const plan = this.planRecordCorrection(state, event.payload, event.entityId)
+    if (plan.problem) {
+      // Earlier applied corrections of the same record are part of the story.
+      const prior = state.events.filter(record => record.event.eventType === 'RECORD_CORRECTED' && record.event.payload.targetEventId === plan.target.eventId && eventSortKey(record.event) < eventSortKey(event)).map(record => record.event.eventId)
+      const conflict: ConflictRecord = { id: `conflict:${event.eventId}`, entityId: plan.item.entityId, eventIds: [...new Set([plan.target.eventId, ...prior, event.eventId])].sort(), status: 'OPEN', reason: plan.problem.reason, inventoryItemIds: [plan.item.entityId], ...(plan.cadet ? { cadetId: plan.cadet.cadetId } : {}), losingEventId: event.eventId, shortfalls: plan.problem.shortfalls }
+      if (!state.conflicts.some(candidate => candidate.id === conflict.id)) state.conflicts.push(conflict)
+      return
+    }
+    const { item, cadet, line, propertyId } = plan
+    item.onHand += plan.stockDelta; item.issued = Math.max(0, item.issued + plan.issuedDelta); item.version++; item.appliedEventIds.push(event.eventId)
+    if (cadet && propertyId) {
+      const property = cadet.currentProperty.find(candidate => candidate.propertyId === propertyId)
+      if (property) { property.quantity += plan.propertyDelta; if (property.quantity <= 0) cadet.currentProperty = cadet.currentProperty.filter(candidate => candidate.propertyId !== propertyId) }
+      else if (plan.propertyDelta > 0 && plan.restore) cadet.currentProperty.push({ ...plan.restore, quantity: plan.propertyDelta })
+      cadet.version++; cadet.updatedAt = event.timestamp; cadet.appliedEventIds.push(event.eventId)
+    }
+    if (line) line.correctedQuantity = plan.to
+  }
 
   /** Resets projections to genesis and folds every known event in canonical order. Deterministic: same events ⇒ same state on every device. */
   private rebuild(state: RepositoryState) {
@@ -1052,5 +1241,27 @@ function setPayload(event: SignedArgusEvent, key: 'cadetIds' | 'bundleIds', max:
 function concurrentEditOfSameFields(state: RepositoryState, event: SignedArgusEvent, appliedEventIds: string[]) {
   const fields = Object.keys(event.payload)
   return state.events.some(record => record.event.eventType === event.eventType && record.event.entityId === event.entityId && record.event.eventId !== event.eventId && appliedEventIds.includes(record.event.eventId) && record.event.baseVersion !== undefined && record.event.baseVersion >= (event.baseVersion ?? 0) && Object.keys(record.event.payload).some(field => fields.includes(field)))
+}
+
+// ---------- supply, Still Needed, correction and conflict helpers ----------
+type CorrectionPlan = { kind: RecordCorrectionKind; target: SignedArgusEvent; to: number; item: InventoryProjection; stockDelta: number; issuedDelta: number; propertyDelta: number; cadet?: CadetProjection; line?: SupplyTransactionLine; propertyId?: string; restore?: Omit<CurrentPropertyLine, 'quantity'>; problem?: { reason: string; shortfalls: ConflictShortfall[] } }
+const COUNT_EVENT_TYPES: DistributedEventType[] = ['COUNT_SESSION_RECONCILED', 'INVENTORY_COUNT_SUBMITTED']
+const isOpenNeed = (need: Pick<StillNeededProjection, 'status'>) => need.status === 'OPEN' || need.status === 'PARTIALLY_FULFILLED'
+const normalizeLabel = (value: string) => value.trim().toLowerCase().replace(/\s+/g, ' ')
+const shortfall = (kind: ConflictShortfall['kind'], item: InventoryProjection, available: number, requested: number): ConflictShortfall => ({ kind, itemId: item.entityId, label: item.name, variant: item.variant, available, requested })
+function validateCloseReason(value: unknown) { if (value !== undefined && (typeof value !== 'string' || value.length > MAX_NOTE_LENGTH)) throw new Error('Still Needed reason is too long.') }
+/** True when a physical count of this size was folded after the given record, so the shelf was already measured since. */
+function countedSince(state: RepositoryState, item: InventoryProjection, target: SignedArgusEvent) {
+  const after = eventSortKey(target), byId = new Map(state.events.map(record => [record.event.eventId, record.event]))
+  return item.appliedEventIds.some(id => { const applied = byId.get(id); return Boolean(applied && COUNT_EVENT_TYPES.includes(applied.eventType) && eventSortKey(applied) > after) })
+}
+/** The unapplied issue that lost a supply conflict, with every line (issued and still-needed) it asked for. */
+function losingIssue(state: RepositoryState, conflict: ConflictRecord) {
+  if (!conflict.losingEventId || !conflict.cadetId) return undefined
+  const event = state.events.find(record => record.event.eventId === conflict.losingEventId)?.event
+  if (!event || event.eventType !== 'ITEM_ISSUED' || !Array.isArray(event.payload.lines) || state.transactions.some(transaction => transaction.eventId === event.eventId)) return undefined
+  const missing = Array.isArray(event.payload.missingLines) ? event.payload.missingLines as MissingIssueLine[] : []
+  const lines = [...(event.payload.lines as SupplyTransactionLine[]).map(line => ({ lineId: line.lineId, itemId: line.itemId as string | undefined, catalogId: undefined as string | undefined, label: line.label, variant: line.variant as string | undefined, quantity: line.quantity })), ...missing.map(line => ({ lineId: line.lineId, itemId: line.itemId, catalogId: line.catalogId, label: line.label, variant: line.variant, quantity: line.quantity }))]
+  return { cadetId: conflict.cadetId, at: event.timestamp, lines }
 }
 

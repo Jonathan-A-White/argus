@@ -125,6 +125,14 @@ export function describeActivity(projection: Projection, record: StoredEvent, me
       return { title: type === 'CONFLICT_RESOLVED' ? `Resolved a conflict over ${subject}` : `Conflict detected over ${subject}`, record: { kind: 'Conflict', label: subject } }
     }
     case 'RECORD_CORRECTED': {
+      // Quantity corrections name what was corrected and from → to; the free-text reason stays out of the feed.
+      const kind = payload.kind, from = String(payload.from ?? '?'), to = String(payload.to ?? '?'), original = String(payload.targetEventId ?? '')
+      if (kind === 'RECEIPT_QUANTITY') return { title: `Corrected received quantity of ${item(event.entityId)}: ${from} → ${to}`, record: { kind: 'Inventory', label: item(event.entityId) }, correction: { originalEventId: original, from, to } }
+      if (kind === 'ISSUE_QUANTITY' || kind === 'RETURN_QUANTITY') {
+        const transaction = projection.transactions.find(candidate => candidate.eventId === original), line = transaction?.lines.find(candidate => candidate.lineId === payload.lineId)
+        const subject = `${line ? `${line.label} · ${line.variant}` : 'an item'}${transaction ? ` for ${cadet(transaction.cadetId)}` : ''}`
+        return { title: `Corrected ${kind === 'ISSUE_QUANTITY' ? 'issued' : 'returned'} quantity of ${subject}: ${from} → ${to}`, record: { kind: 'Cadet', label: subject }, correction: { originalEventId: original, from, to } }
+      }
       const field = String(payload.field ?? 'a field'), value = payload.value
       const shown = !PRIVATE_FIELDS.has(field) && ['string', 'number', 'boolean'].includes(typeof value) ? String(value) : undefined
       const subject = projection.inventory.some(candidate => candidate.entityId === event.entityId) ? item(event.entityId) : projection.cadets.some(candidate => candidate.cadetId === event.entityId) ? cadet(event.entityId) : 'a record'

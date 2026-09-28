@@ -1,5 +1,15 @@
 import { matchesSearch } from '../domain'
-import type { BundleLineProjection, BundleVersionProjection, CadetGender, CadetProjection, CatalogItemProjection, InventoryProjection, NsLevel, StillNeededProjection } from '../distributed/types'
+import type { BundleLineProjection, BundleVersionProjection, CadetGender, CadetProjection, CatalogItemProjection, InventoryProjection, NsLevel, ReturnCondition, StillNeededProjection } from '../distributed/types'
+
+/**
+ * Return conditions (master spec §11). Decision: only a SERVICEABLE return goes back on the shelf
+ * and increases on-hand. NEEDS_REPAIR, UNSERVICEABLE and LOST still clear the cadet's property (the
+ * cadet no longer holds it) but add nothing to on-hand, because none of them can be issued again.
+ * A return recorded without a condition (older events) counts as SERVICEABLE.
+ */
+export const RETURN_CONDITIONS: ReturnCondition[] = ['SERVICEABLE', 'NEEDS_REPAIR', 'UNSERVICEABLE', 'LOST']
+export const RETURN_CONDITION_LABELS: Record<ReturnCondition, string> = { SERVICEABLE: 'Serviceable', NEEDS_REPAIR: 'Needs repair', UNSERVICEABLE: 'Unserviceable', LOST: 'Lost' }
+export const returnsToShelf = (condition?: ReturnCondition) => condition === undefined || condition === 'SERVICEABLE'
 
 const levels: NsLevel[] = ['NS1', 'NS2', 'NS3', 'NS4']
 const genders: CadetGender[] = ['Male', 'Female']
@@ -46,11 +56,26 @@ export function validateBundle(value: Pick<BundleVersionProjection, 'displayName
 export function validateRequirement(value: Pick<StillNeededProjection, 'cadetId' | 'displayLabel' | 'quantityNeeded' | 'quantityFulfilled' | 'status' | 'source'>) {
   if (!value.cadetId || !value.displayLabel.trim()) throw new Error('Still Needed requires a cadet and item label.')
   if (!Number.isInteger(value.quantityNeeded) || value.quantityNeeded <= 0 || !Number.isInteger(value.quantityFulfilled) || value.quantityFulfilled < 0 || value.quantityFulfilled > value.quantityNeeded) throw new Error('Still Needed quantities are invalid.')
-  if (!['OPEN', 'PARTIALLY_FULFILLED', 'FULFILLED', 'CANCELLED'].includes(value.status) || !['MANUAL', 'INCOMPLETE_ISSUE', 'CORRECTION'].includes(value.source)) throw new Error('Still Needed lifecycle value is invalid.')
+  if (!['OPEN', 'PARTIALLY_FULFILLED', 'FULFILLED', 'CANCELLED'].includes(value.status) || !['MANUAL', 'INCOMPLETE_ISSUE', 'CORRECTION', 'CONFLICT_RESOLUTION'].includes(value.source)) throw new Error('Still Needed lifecycle value is invalid.')
 }
 export function requirementAvailability(requirement: StillNeededProjection, inventory: Array<Pick<InventoryProjection, 'entityId'|'onHand'> & Partial<InventoryProjection>>) { const item = requirement.itemId ? inventory.find(i => i.entityId === requirement.itemId) : undefined; const remaining = requirement.quantityNeeded - requirement.quantityFulfilled; return { onHand: item?.onHand ?? 0, configured: Boolean(item), available: Boolean(item && item.onHand >= remaining) } }
 export function cadetReadiness(requirements: StillNeededProjection[]) { const required = requirements.filter(r => r.status !== 'CANCELLED'); const fulfilled = required.filter(r => r.status === 'FULFILLED').length; return { status: required.some(r => r.status === 'OPEN' || r.status === 'PARTIALLY_FULFILLED') ? 'INCOMPLETE' as const : 'READY' as const, fulfilled, total: required.length, percent: required.length ? Math.round(fulfilled / required.length * 100) : 100 } }
-export const bundleSuggestions = (gender: CadetGender) => gender === 'Male' ? ['Male NSU', 'Male SDB', 'PT', 'Drill', 'BLT'] : ['Female NSU', 'Female SDB', 'PT', 'Drill', 'BLT']
+type RecommendableBundle = Pick<BundleVersionProjection, 'bundleId' | 'genderApplicability' | 'purpose' | 'active'>
+/**
+ * Master spec §6/§8: which bundles are suggested for a cadet comes only from each bundle's own
+ * genderApplicability and purpose — never from its name — so renamed and unit-created bundles are
+ * recommended correctly. Per purpose, bundles for the cadet's gender win; an "Any" bundle is
+ * recommended when no gender-specific bundle serves that purpose. Everything else stays available
+ * under "Other options" as the authorized manual override. Input order is preserved.
+ */
+export function recommendBundles<T extends RecommendableBundle>(versions: T[], gender: CadetGender): { recommended: T[]; other: T[] } {
+  const active = versions.filter(version => version.active)
+  const purposeKey = (version: T) => version.purpose.trim().toLowerCase() || `bundle:${version.bundleId}`
+  const served = new Set(active.filter(version => version.genderApplicability === gender).map(purposeKey))
+  const recommended = (version: T) => version.genderApplicability === gender || (version.genderApplicability === 'Any' && !served.has(purposeKey(version)))
+  return { recommended: active.filter(recommended), other: active.filter(version => !recommended(version)) }
+}
+export const bundleAudience = (gender: BundleVersionProjection['genderApplicability']) => gender === 'Any' ? 'All cadets' : `${gender} cadets`
 
 export const ONE_SIZE_LABEL = 'One size'
 const UNSIZED = ['Buckle', 'Black Belt', 'Khaki Belt', 'Brass Buckle', 'Necktie', 'Neck Tabs']

@@ -1,16 +1,22 @@
 import { useId, useState, type FormEvent, type JSX } from 'react'
-import { Ban, CalendarClock, Circle, CircleCheck, RotateCcw, Shirt, TriangleAlert, Users } from 'lucide-react'
+import { Ban, CalendarClock, Circle, CircleCheck, Pencil, RotateCcw, Shirt, TriangleAlert } from 'lucide-react'
 import { Drawer } from '../../components/Drawer'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
-import type { CalendarEventProjection, CalendarTaskProjection } from '../../distributed/types'
+import type { CalendarEventProjection, CalendarTaskProjection, SupplyEventKind } from '../../distributed/types'
+import { SUPPLY_EVENT_KINDS } from '../../stage3/calendar'
+import { EventAttendees } from './EventAttendees'
+import { InlineError } from './InlineError'
+import { TaskEditor } from './TaskEditor'
+import { useMutation } from './useMutation'
 import {
   KIND_LABEL,
   STOCKED_KINDS,
+  bundleName,
   bundleStockReadiness,
+  currentBundleVersion,
   countdownLabel,
   dateBlock,
   daysUntil,
-  errorMessage,
   eventProgress,
   formatDate,
   formatShortDate,
@@ -32,6 +38,8 @@ export type EventDrawerProps = {
   controller: DistributedAppController
   /** calendar.write: without it everything is shown read-only. */
   canWrite: boolean
+  /** cadets.read: may reveal attendee names on request. Defaults to hidden. */
+  canRevealNames?: boolean
   memberName: (publicIdentity: string) => string
   now: Date
   onProjection: (projection: ArgusAppProjection) => void
@@ -43,45 +51,15 @@ type Mutations = Pick<EventDrawerProps, 'controller' | 'onProjection' | 'notify'
 
 const BADGE: Record<TaskTone, string> = { done: 'success', overdue: 'danger', soon: 'warning', later: '' }
 
-/** One async controller call with its own pending flag and inline error. */
-function useMutation({ onProjection, notify }: Pick<Mutations, 'onProjection' | 'notify'>) {
-  const [pending, setPending] = useState(false)
-  const [error, setError] = useState('')
-  const run = async (operation: () => Promise<ArgusAppProjection>, success?: string) => {
-    setPending(true)
-    setError('')
-    try {
-      onProjection(await operation())
-      if (success) notify(success)
-      return true
-    } catch (reason) {
-      setError(errorMessage(reason))
-      return false
-    } finally {
-      setPending(false)
-    }
-  }
-  return { pending, error, setError, run }
-}
-
-function InlineError({ message }: { message: string }) {
-  if (!message) return null
-  return (
-    <p className="workflow-error" role="alert">
-      <TriangleAlert aria-hidden="true" />
-      <span>{message}</span>
-    </p>
-  )
-}
-
-/** Supply event detail: countdown, preparation checklist, bundle stock readiness and (with calendar.write) editing. */
-export function EventDrawer({ event, projection, controller, canWrite, memberName, now, onProjection, notify, close }: EventDrawerProps): JSX.Element {
+/** Supply event detail: countdown, preparation checklist, bundle stock readiness, attendees and (with calendar.write) editing. */
+export function EventDrawer({ event, projection, controller, canWrite, canRevealNames = false, memberName, now, onProjection, notify, close }: EventDrawerProps): JSX.Element {
   const progress = eventProgress(event)
   const days = daysUntil(event.startsAt, now)
   const leaf = dateBlock(event.startsAt)
   const overdue = event.active ? overdueTasks(event, now).length : 0
   const editable = canWrite && event.active
   const mutations: Mutations = { controller, onProjection, notify }
+  const conflicts = projection.conflicts.filter(conflict => conflict.status === 'OPEN' && conflict.entityId === event.calendarEventId)
   return (
     <Drawer title={event.title} icon={<CalendarClock />} close={close}>
       <section className="calendar-hero">
@@ -109,6 +87,14 @@ export function EventDrawer({ event, projection, controller, canWrite, memberNam
           <span>This event is cancelled. It no longer raises alerts; its history is kept.</span>
         </p>
       )}
+      {conflicts.map(conflict => (
+        <p key={conflict.id} className="workflow-warning calendar-conflict-note" role="status">
+          <TriangleAlert aria-hidden="true" />
+          <span>
+            <strong>Conflicting edit.</strong> {conflict.reason} The first change is shown; the other is kept in history for review under More → Conflicts.
+          </span>
+        </p>
+      ))}
 
       <section className="calendar-progress" aria-label="Preparation progress summary">
         <div className="calendar-progress-head">
@@ -137,13 +123,8 @@ export function EventDrawer({ event, projection, controller, canWrite, memberNam
       <TaskList event={event} canWrite={editable} now={now} memberName={memberName} {...mutations} />
       {editable && <AddTaskForm event={event} {...mutations} />}
       <EventBundles event={event} projection={projection} />
-      {event.cadetIds.length > 0 && (
-        <p className="calendar-cadets">
-          <Users aria-hidden="true" />
-          {event.cadetIds.length} cadet{event.cadetIds.length === 1 ? '' : 's'} linked to this event
-        </p>
-      )}
-      {editable && <EventDetailsForm key={event.calendarEventId} event={event} {...mutations} />}
+      <EventAttendees event={event} projection={projection} canWrite={editable} canRevealNames={canRevealNames} {...mutations} />
+      {editable && <EventDetailsForm key={event.calendarEventId} event={event} projection={projection} {...mutations} />}
       {canWrite && <EventStatusControl event={event} close={close} {...mutations} />}
     </Drawer>
   )
@@ -161,6 +142,7 @@ function TaskList({
   const id = useId()
   const { error, run } = useMutation({ onProjection, notify })
   const [pendingTask, setPendingTask] = useState<string>()
+  const [editingTask, setEditingTask] = useState<string>()
   const toggle = async (task: CalendarTaskProjection, completed: boolean) => {
     setPendingTask(task.taskId)
     await run(() => controller.completeTask(event.calendarEventId, task.taskId, completed))
@@ -176,7 +158,7 @@ function TaskList({
             const status = taskStatus(event, task, now, memberName)
             const describedBy = `${id}-${task.taskId}`
             return (
-              <li key={task.taskId} className={`calendar-task tone-${status.tone}`}>
+              <li key={task.taskId} className={`calendar-task tone-${status.tone}${canWrite ? ' editable' : ''}`}>
                 {canWrite ? (
                   <label className="calendar-task-main">
                     <input
@@ -200,6 +182,14 @@ function TaskList({
                   </small>
                   <em className={`status-badge ${BADGE[status.tone]}`}>{status.label}</em>
                 </span>
+                {canWrite && editingTask !== task.taskId && (
+                  <button type="button" className="calendar-icon-button calendar-task-edit" aria-label={`Edit task: ${task.title}`} onClick={() => setEditingTask(task.taskId)}>
+                    <Pencil aria-hidden="true" />
+                  </button>
+                )}
+                {canWrite && editingTask === task.taskId && (
+                  <TaskEditor event={event} task={task} controller={controller} onProjection={onProjection} notify={notify} close={() => setEditingTask(undefined)} />
+                )}
               </li>
             )
           })}
@@ -291,47 +281,148 @@ function EventBundles({ event, projection }: { event: CalendarEventProjection; p
   )
 }
 
-function EventDetailsForm({ event, controller, onProjection, notify }: Mutations & { event: CalendarEventProjection }) {
-  const [title, setTitle] = useState(event.title)
-  const [date, setDate] = useState(toDateInput(event.startsAt))
-  const [time, setTime] = useState(toTimeInput(event.startsAt))
-  const [notes, setNotes] = useState(event.notes ?? '')
+type Details = { title: string; date: string; time: string; notes: string; kind: SupplyEventKind; bundleIds: string[] }
+const detailsOf = (event: CalendarEventProjection): Details => ({ title: event.title, date: toDateInput(event.startsAt), time: toTimeInput(event.startsAt), notes: event.notes ?? '', kind: event.kind, bundleIds: event.bundleIds })
+const joinWords = (words: string[]) => (words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} and ${words.at(-1)}`)
+const minute = (iso: string) => Math.floor(Date.parse(iso) / 60_000)
+
+/**
+ * Edits the event's details and linked bundles. Changes are measured against `base`, the event as
+ * it was when the form was loaded: only fields this person changed are sent (with that base), so an
+ * edit made meanwhile on another device either merges (different field) or becomes a visible
+ * conflict (same field) instead of being overwritten.
+ */
+function EventDetailsForm({ event, projection, controller, onProjection, notify }: Mutations & { event: CalendarEventProjection; projection: ArgusAppProjection }) {
+  const id = useId()
+  const [base, setBase] = useState(event)
+  const [draft, setDraft] = useState(() => detailsOf(event))
+  const [notice, setNotice] = useState('')
   const { pending, error, setError, run } = useMutation({ onProjection, notify })
-  const when = fromDateTimeInputs(date, time)
-  const minute = (iso: string) => Math.floor(Date.parse(iso) / 60_000)
+  const set = <K extends keyof Details>(key: K, value: Details[K]) => setDraft(current => ({ ...current, [key]: value }))
+  const when = fromDateTimeInputs(draft.date, draft.time)
   const changes = {
-    ...(title.trim() !== event.title ? { title: title.trim() } : {}),
-    ...('startsAt' in when && minute(when.startsAt) !== minute(event.startsAt) ? { startsAt: when.startsAt } : {}),
-    ...(notes.trim() !== (event.notes ?? '') ? { notes: notes.trim() } : {}),
+    ...(draft.title.trim() !== base.title ? { title: draft.title.trim() } : {}),
+    ...('startsAt' in when && minute(when.startsAt) !== minute(base.startsAt) ? { startsAt: when.startsAt } : {}),
+    ...(draft.notes.trim() !== (base.notes ?? '') ? { notes: draft.notes.trim() } : {}),
+    ...(draft.kind !== base.kind ? { kind: draft.kind } : {}),
   }
-  const dirty = Object.keys(changes).length > 0 || 'error' in when
+  // Bundle links are a set: only what this person linked or unlinked is sent, so others' changes merge.
+  const linking = draft.bundleIds.filter(bundleId => !base.bundleIds.includes(bundleId))
+  const unlinking = base.bundleIds.filter(bundleId => !draft.bundleIds.includes(bundleId))
+  const dirty = Object.keys(changes).length > 0 || linking.length > 0 || unlinking.length > 0 || 'error' in when
+  // While this form's own save is in flight the event moves ahead of `base`; that is not someone else's change.
+  const changedElsewhere = pending ? [] : [
+    ...(event.title !== base.title ? ['title'] : []),
+    ...(event.startsAt !== base.startsAt ? ['date and time'] : []),
+    ...((event.notes ?? '') !== (base.notes ?? '') ? ['notes'] : []),
+    ...(event.kind !== base.kind ? ['event type'] : []),
+    ...([...event.bundleIds].sort().join() !== [...base.bundleIds].sort().join() ? ['bundles'] : []),
+  ]
+  const bundleOptions = projection.bundles.filter(bundle => currentBundleVersion(bundle)?.active !== false || draft.bundleIds.includes(bundle.bundleId))
+  const load = (source: CalendarEventProjection) => {
+    setBase(source)
+    setDraft(detailsOf(source))
+    setNotice('')
+  }
+  const toggleBundle = (bundleId: string) =>
+    set('bundleIds', draft.bundleIds.includes(bundleId) ? draft.bundleIds.filter(candidate => candidate !== bundleId) : [...draft.bundleIds, bundleId])
+
   const submit = async (form: FormEvent<HTMLFormElement>) => {
     form.preventDefault()
     if ('error' in when) return setError(when.error)
-    await run(() => controller.updateCalendarEvent(event.calendarEventId, changes), 'Event updated.')
+    const calendarEventId = event.calendarEventId
+    const known = new Set(projection.conflicts.map(conflict => conflict.id))
+    const result: { projection?: ArgusAppProjection } = {}
+    const step = async (operation: () => Promise<ArgusAppProjection>) => {
+      result.projection = await operation()
+      onProjection(result.projection)
+    }
+    const saved = await run(async () => {
+      if (Object.keys(changes).length) await step(() => controller.updateCalendarEvent(calendarEventId, changes, base))
+      const current = result.projection?.calendar.find(candidate => candidate.calendarEventId === calendarEventId) ?? event
+      const link = linking.filter(bundleId => !current.bundleIds.includes(bundleId))
+      const unlink = unlinking.filter(bundleId => current.bundleIds.includes(bundleId))
+      if (link.length) await step(() => controller.addCalendarBundles(calendarEventId, link))
+      if (unlink.length) await step(() => controller.removeCalendarBundles(calendarEventId, unlink))
+      return result.projection ?? (await controller.project())
+    })
+    const latest = result.projection?.calendar.find(candidate => candidate.calendarEventId === calendarEventId)
+    if (!saved) return
+    if (result.projection?.conflicts.some(conflict => conflict.status === 'OPEN' && conflict.entityId === calendarEventId && !known.has(conflict.id))) {
+      // Keep what this person typed; the next save is a deliberate replacement made with the other change in view.
+      if (latest) setBase(latest)
+      setNotice('Another device changed the same details while you were editing. Its change was kept and yours is recorded as a conflict for review. Save again to replace it with yours.')
+      notify('Saved as a conflict for review.')
+      return
+    }
+    if (latest) load(latest)
+    notify('Event updated.')
   }
+
   return (
-    <details className="panel-rows calendar-edit">
-      <summary>Edit date, title and notes</summary>
+    <details
+      className="panel-rows calendar-edit"
+      onToggle={toggle => {
+        if (toggle.currentTarget.open && !dirty) load(event)
+      }}
+    >
+      <summary>Edit details and bundles</summary>
       <form aria-label="Edit event details" noValidate onSubmit={form => void submit(form)}>
+        {changedElsewhere.length > 0 && (
+          <div className="workflow-warning calendar-stale" role="status">
+            <TriangleAlert aria-hidden="true" />
+            <span>Another device changed the {joinWords(changedElsewhere)} since this form was loaded.</span>
+            <button type="button" className="calendar-chip-button" onClick={() => load(event)}>
+              Load latest
+            </button>
+          </div>
+        )}
         <div className="calendar-form-row">
           <label className="field">
             Date
-            <input type="date" required value={date} onChange={change => setDate(change.target.value)} />
+            <input type="date" required value={draft.date} onChange={change => set('date', change.target.value)} />
           </label>
           <label className="field">
             Time
-            <input type="time" required value={time} onChange={change => setTime(change.target.value)} />
+            <input type="time" required value={draft.time} onChange={change => set('time', change.target.value)} />
           </label>
         </div>
         <label className="field">
           Title
-          <input value={title} maxLength={80} onChange={change => setTitle(change.target.value)} />
+          <input value={draft.title} maxLength={80} onChange={change => set('title', change.target.value)} />
+        </label>
+        <label className="field">
+          Event type
+          <select value={draft.kind} onChange={change => set('kind', change.target.value as SupplyEventKind)}>
+            {SUPPLY_EVENT_KINDS.map(kind => (
+              <option key={kind} value={kind}>
+                {KIND_LABEL[kind]}
+              </option>
+            ))}
+          </select>
         </label>
         <label className="field">
           Notes
-          <textarea value={notes} maxLength={1000} onChange={change => setNotes(change.target.value)} />
+          <textarea value={draft.notes} maxLength={1000} onChange={change => set('notes', change.target.value)} />
         </label>
+        <div className="calendar-bundle-picker" role="group" aria-labelledby={`${id}-bundles`}>
+          <span id={`${id}-bundles`} className="calendar-picker-label">
+            Bundles issued at this event
+          </span>
+          <div className="calendar-chips">
+            {bundleOptions.map(bundle => (
+              <button key={bundle.bundleId} type="button" aria-pressed={draft.bundleIds.includes(bundle.bundleId)} onClick={() => toggleBundle(bundle.bundleId)}>
+                {bundleName(bundle)}
+              </button>
+            ))}
+          </div>
+        </div>
+        {notice && (
+          <p className="workflow-warning" role="status">
+            <TriangleAlert aria-hidden="true" />
+            <span>{notice}</span>
+          </p>
+        )}
         <InlineError message={error} />
         <button type="submit" className="primary-button" disabled={!dirty || pending}>
           {pending ? 'Saving…' : 'Save changes'}
@@ -353,7 +444,7 @@ function EventStatusControl({ event, close, controller, onProjection, notify }: 
           type="button"
           className="secondary-button calendar-inline-action"
           disabled={pending}
-          onClick={() => void run(() => controller.updateCalendarEvent(event.calendarEventId, { active: true }), 'Event restored.')}
+          onClick={() => void run(() => controller.updateCalendarEvent(event.calendarEventId, { active: true }, event), 'Event restored.')}
         >
           <RotateCcw aria-hidden="true" /> Restore event
         </button>
@@ -361,7 +452,7 @@ function EventStatusControl({ event, close, controller, onProjection, notify }: 
     )
   }
   const cancel = async () => {
-    if (await run(() => controller.updateCalendarEvent(event.calendarEventId, { active: false }), `${event.title} cancelled.`)) close()
+    if (await run(() => controller.updateCalendarEvent(event.calendarEventId, { active: false }, event), `${event.title} cancelled.`)) close()
   }
   return (
     <section className="calendar-section calendar-status">

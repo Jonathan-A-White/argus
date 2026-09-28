@@ -86,9 +86,16 @@ export class DistributedAppController {
   updateStillNeeded(id: string, changes: Parameters<ArgusReplica['updateStillNeeded']>[1]) { return this.run(r => r.updateStillNeeded(id, changes)) }
   resolveConflict(conflictId: string, resolution: string) { return this.run(r => r.resolve(conflictId, resolution)) }
   createCalendarEvent(input: Parameters<ArgusReplica['createCalendarEvent']>[0]) { return this.run(r => r.createCalendarEvent(input)) }
-  updateCalendarEvent(id: string, changes: Parameters<ArgusReplica['updateCalendarEvent']>[1]) { return this.run(r => r.updateCalendarEvent(id, changes)) }
+  /** `base` is the event as it was on screen when editing began, so a concurrent edit of the same field surfaces as a conflict. */
+  updateCalendarEvent(id: string, changes: Parameters<ArgusReplica['updateCalendarEvent']>[1], base?: CalendarEventProjection) { return this.run(r => r.updateCalendarEvent(id, changes, base ? { base } : {})) }
   addCalendarTask(id: string, task: Parameters<ArgusReplica['addCalendarTask']>[1]) { return this.run(r => r.addCalendarTask(id, task)) }
   completeTask(id: string, taskId: string, completed = true) { return this.run(r => r.completeTask(id, taskId, completed)) }
+  updateCalendarTask(id: string, taskId: string, changes: Parameters<ArgusReplica['updateCalendarTask']>[2]) { return this.run(r => r.updateCalendarTask(id, taskId, changes)) }
+  removeCalendarTask(id: string, taskId: string) { return this.run(r => r.removeCalendarTask(id, taskId)) }
+  addCalendarAttendees(id: string, cadetIds: string[]) { return this.run(r => r.addCalendarAttendees(id, cadetIds)) }
+  removeCalendarAttendees(id: string, cadetIds: string[]) { return this.run(r => r.removeCalendarAttendees(id, cadetIds)) }
+  addCalendarBundles(id: string, bundleIds: string[]) { return this.run(r => r.addCalendarBundles(id, bundleIds)) }
+  removeCalendarBundles(id: string, bundleIds: string[]) { return this.run(r => r.removeCalendarBundles(id, bundleIds)) }
   correctIssuedSize(input: Parameters<ArgusReplica['correctIssuedSize']>[0]) { return this.run(r => r.correctIssuedSize(input)) }
   completeAnnualRollover(schoolYear: string) { return this.run(r => r.completeAnnualRollover(schoolYear)) }
   importCadets(rows: Parameters<ArgusReplica['importCadets']>[0]) { return this.run(r => r.importCadets(rows)) }

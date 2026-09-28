@@ -155,6 +155,7 @@ export function CalendarView({ projection, controller, can, memberName, onProjec
           projection={projection}
           controller={controller}
           canWrite={canWrite}
+          canRevealNames={can('cadets.read') || can('cadets.manage')}
           memberName={memberName}
           now={current}
           onProjection={onProjection}

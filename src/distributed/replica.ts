@@ -1,7 +1,7 @@
 import type { AuthorizationService } from '../auth/authorization'
 import { canonicalize } from './canonical'
 import type { ArgusIdentityProvider } from '../identity/identity'
-import type { ArgusPermission, AuthorityCredential, AuthorityRevocation, CalendarEventProjection, CalendarTaskProjection, CatalogItemProjection, NsLevel, SupplyEventKind, ConflictRecord, CountAssignment, CountObservation, CountSessionProjection, DistributedEventType, InventoryProjection, MissingIssueLine, SignedArgusEvent, SupplyTransactionLine, UnsignedArgusEvent } from './types'
+import type { ArgusPermission, AuthorityCredential, AuthorityRevocation, CalendarEventProjection, CalendarFieldRevisions, CalendarScalarField, CalendarTaskProjection, CatalogItemProjection, NsLevel, SupplyEventKind, ConflictRecord, CountAssignment, CountObservation, CountSessionProjection, DistributedEventType, InventoryProjection, MissingIssueLine, SignedArgusEvent, SupplyTransactionLine, UnsignedArgusEvent } from './types'
 import type { ArgusRepository, RepositoryState } from '../storage/repository'
 import type { EventSyncProvider } from '../sync/mock'
 import type { BundleVersionProjection, CadetProjection, StillNeededProjection } from './types'
@@ -21,6 +21,7 @@ const PERMISSION_FOR: Partial<Record<DistributedEventType, ArgusPermission>> = {
   STILL_NEEDED_ADDED: 'cadets.manage', STILL_NEEDED_UPDATED: 'cadets.manage', STILL_NEEDED_CANCELLED: 'cadets.manage', STILL_NEEDED_FULFILLED: 'cadets.manage',
   AUTHORITY_GRANTED: 'users.authorize', AUTHORITY_REVOKED: 'users.revoke', ROLE_CHANGED: 'users.manageRoles',
   CALENDAR_EVENT_CREATED: 'calendar.write', CALENDAR_EVENT_UPDATED: 'calendar.write', CALENDAR_TASK_ADDED: 'calendar.write', TASK_COMPLETED: 'calendar.write',
+  CALENDAR_ATTENDEES_ADDED: 'calendar.write', CALENDAR_ATTENDEES_REMOVED: 'calendar.write', CALENDAR_BUNDLES_ADDED: 'calendar.write', CALENDAR_BUNDLES_REMOVED: 'calendar.write', CALENDAR_TASK_UPDATED: 'calendar.write', CALENDAR_TASK_REMOVED: 'calendar.write',
   PROPERTY_CORRECTED: 'inventory.adjust', ANNUAL_ROLLOVER_COMPLETED: 'cadets.manage', CADETS_IMPORTED: 'cadets.manage',
   UNIT_KEY_ROTATED: 'users.revoke', RECOVERY_KEY_REGISTERED: 'users.authorize',
 }
@@ -34,7 +35,11 @@ const INVENTORY_EDITABLE = ['name', 'category', 'variant', 'niin', 'reorderAt', 
 const CATALOG_EDITABLE = ['name', 'category', 'niin', 'sizeScheme', 'reorderAt', 'countIncrement', 'active'] as const
 const CADET_EDITABLE = ['fullName', 'gender', 'nsLevel', 'status', 'sizes', 'profileNeedsReview'] as const
 const NEED_EDITABLE = ['displayLabel', 'itemId', 'size', 'quantityNeeded', 'quantityFulfilled', 'status'] as const
-const CALENDAR_EDITABLE = ['title', 'startsAt', 'notes', 'active', 'bundleIds', 'cadetIds'] as const
+const CALENDAR_SCALARS: readonly CalendarScalarField[] = ['title', 'startsAt', 'notes', 'active', 'kind']
+/** bundleIds/cadetIds stay here only so legacy whole-list updates still fold; new edits use the set-style ADDED/REMOVED events. */
+const CALENDAR_EDITABLE = ['title', 'startsAt', 'notes', 'active', 'kind', 'bundleIds', 'cadetIds'] as const
+export const MAX_EVENT_CADETS = 500
+export const MAX_EVENT_BUNDLES = 50
 export const MAX_IMPORT_CADETS = 200
 const NEXT_LEVEL: Record<NsLevel, NsLevel | 'GRADUATED'> = { NS1: 'NS2', NS2: 'NS3', NS3: 'NS4', NS4: 'GRADUATED' }
 export const MAX_SUPPLY_LINE_QUANTITY = 100
@@ -308,10 +313,19 @@ export class ArgusReplica {
     validateCalendar(value); await this.actor('calendar.write', options.timestamp)
     return this.commit({ eventType: 'CALENDAR_EVENT_CREATED', entityId: `calendar_${crypto.randomUUID()}`, payload: value, ...options })
   }
-  async updateCalendarEvent(calendarEventId: string, changes: Partial<Pick<CalendarEventProjection, 'title' | 'startsAt' | 'notes' | 'active' | 'bundleIds' | 'cadetIds'>>, options: CommandOptions = {}) {
+  /**
+   * Edits scalar details (title, date/time, notes, kind, cancelled). The event names the revisions of
+   * each changed field that the editor saw — `base` is the version on screen when editing began,
+   * defaulting to this device's current one — so a concurrent edit of the same field on another
+   * device becomes a visible conflict, while edits of different fields merge.
+   */
+  async updateCalendarEvent(calendarEventId: string, changes: Partial<Pick<CalendarEventProjection, CalendarScalarField>>, options: CommandOptions & { base?: Pick<CalendarEventProjection, 'version' | 'appliedEventIds' | 'fieldRevisions'> } = {}) {
     const event = (await this.repository.snapshot()).calendar.find(candidate => candidate.calendarEventId === calendarEventId); if (!event) throw new Error('Supply event was not found.')
-    const payload = pick<CalendarEventProjection>(changes, CALENDAR_EDITABLE); validateCalendar({ ...event, ...payload }); await this.actor('calendar.write', options.timestamp)
-    return this.commit({ eventType: 'CALENDAR_EVENT_UPDATED', entityId: calendarEventId, payload, ...options })
+    const changed = pick<CalendarEventProjection>(changes, CALENDAR_SCALARS); if (!Object.keys(changed).length) throw new Error('Nothing to change.')
+    validateCalendar({ ...event, ...changed }); validateActive(changed); await this.actor('calendar.write', options.timestamp)
+    const { base = event, ...command } = options
+    const baseRevisions = Object.fromEntries(Object.keys(changed).map(field => [field, fieldWriters(base, field as CalendarScalarField)]))
+    return this.commit({ eventType: 'CALENDAR_EVENT_UPDATED', entityId: calendarEventId, baseVersion: base.version, payload: { ...changed, baseRevisions }, ...command })
   }
   async addCalendarTask(calendarEventId: string, task: { title: string; dueOffsetDays: number }, options: CommandOptions = {}) {
     if (!(await this.repository.snapshot()).calendar.some(candidate => candidate.calendarEventId === calendarEventId)) throw new Error('Supply event was not found.')
@@ -323,6 +337,55 @@ export class ArgusReplica {
     if (!event?.tasks.some(task => task.taskId === taskId)) throw new Error('Preparation task was not found.')
     await this.actor('calendar.write', options.timestamp)
     return this.commit({ eventType: 'TASK_COMPLETED', entityId: calendarEventId, payload: { taskId, completed }, ...options })
+  }
+  /** Renames a task or moves its due date; its completion is kept. Only the changed fields travel, so different edits merge. */
+  async updateCalendarTask(calendarEventId: string, taskId: string, changes: { title?: string; dueOffsetDays?: number }, options: CommandOptions = {}) {
+    const task = (await this.repository.snapshot()).calendar.find(candidate => candidate.calendarEventId === calendarEventId)?.tasks.find(candidate => candidate.taskId === taskId)
+    if (!task) throw new Error('Preparation task was not found.')
+    const title = changes.title?.trim()
+    const payload = { taskId, ...(title !== undefined && title !== task.title ? { title } : {}), ...(changes.dueOffsetDays !== undefined && changes.dueOffsetDays !== task.dueOffsetDays ? { dueOffsetDays: changes.dueOffsetDays } : {}) }
+    if (Object.keys(payload).length === 1) throw new Error('Nothing to change.')
+    validateTask({ ...task, ...payload }); await this.actor('calendar.write', options.timestamp)
+    return this.commit({ eventType: 'CALENDAR_TASK_UPDATED', entityId: calendarEventId, payload, ...options })
+  }
+  /** Takes a task off the checklist. Its completion history stays with the event (removedTasks) and in the log. */
+  async removeCalendarTask(calendarEventId: string, taskId: string, options: CommandOptions = {}) {
+    const event = (await this.repository.snapshot()).calendar.find(candidate => candidate.calendarEventId === calendarEventId)
+    if (!event?.tasks.some(task => task.taskId === taskId)) throw new Error('Preparation task was not found.')
+    await this.actor('calendar.write', options.timestamp)
+    return this.commit({ eventType: 'CALENDAR_TASK_REMOVED', entityId: calendarEventId, payload: { taskId }, ...options })
+  }
+  /** Attendees are a set: adds and removes from several devices merge instead of overwriting each other. */
+  async addCalendarAttendees(calendarEventId: string, cadetIds: string[], options: CommandOptions = {}) {
+    const state = await this.repository.snapshot(), event = state.calendar.find(candidate => candidate.calendarEventId === calendarEventId); if (!event) throw new Error('Supply event was not found.')
+    const known = new Set(state.cadets.map(cadet => cadet.cadetId)); if (cadetIds.some(id => !known.has(id))) throw new Error('Cadet was not found.')
+    const attending = new Set(event.cadetIds), fresh = sortedUnique(cadetIds.filter(id => !attending.has(id)))
+    if (!fresh.length) throw new Error('Those cadets are already attending.')
+    if (attending.size + fresh.length > MAX_EVENT_CADETS) throw new Error(`An event can have at most ${MAX_EVENT_CADETS} attendees.`)
+    await this.actor('calendar.write', options.timestamp)
+    return this.commit({ eventType: 'CALENDAR_ATTENDEES_ADDED', entityId: calendarEventId, payload: { calendarEventId, cadetIds: fresh }, ...options })
+  }
+  async removeCalendarAttendees(calendarEventId: string, cadetIds: string[], options: CommandOptions = {}) {
+    const event = (await this.repository.snapshot()).calendar.find(candidate => candidate.calendarEventId === calendarEventId); if (!event) throw new Error('Supply event was not found.')
+    const leaving = sortedUnique(cadetIds.filter(id => event.cadetIds.includes(id))); if (!leaving.length) throw new Error('Those cadets are not attending.')
+    await this.actor('calendar.write', options.timestamp)
+    return this.commit({ eventType: 'CALENDAR_ATTENDEES_REMOVED', entityId: calendarEventId, payload: { calendarEventId, cadetIds: leaving }, ...options })
+  }
+  /** Links bundles to an event (set-style, like attendees), so custom events can issue bundles too. */
+  async addCalendarBundles(calendarEventId: string, bundleIds: string[], options: CommandOptions = {}) {
+    const state = await this.repository.snapshot(), event = state.calendar.find(candidate => candidate.calendarEventId === calendarEventId); if (!event) throw new Error('Supply event was not found.')
+    if (bundleIds.some(id => !state.bundles.some(bundle => bundle.bundleId === id))) throw new Error('Bundle was not found.')
+    const fresh = [...new Set(bundleIds.filter(id => !event.bundleIds.includes(id)))]
+    if (!fresh.length) throw new Error('Those bundles are already linked.')
+    if (event.bundleIds.length + fresh.length > MAX_EVENT_BUNDLES) throw new Error(`An event can link at most ${MAX_EVENT_BUNDLES} bundles.`)
+    await this.actor('calendar.write', options.timestamp)
+    return this.commit({ eventType: 'CALENDAR_BUNDLES_ADDED', entityId: calendarEventId, payload: { calendarEventId, bundleIds: fresh }, ...options })
+  }
+  async removeCalendarBundles(calendarEventId: string, bundleIds: string[], options: CommandOptions = {}) {
+    const event = (await this.repository.snapshot()).calendar.find(candidate => candidate.calendarEventId === calendarEventId); if (!event) throw new Error('Supply event was not found.')
+    const leaving = [...new Set(bundleIds.filter(id => event.bundleIds.includes(id)))]; if (!leaving.length) throw new Error('Those bundles are not linked.')
+    await this.actor('calendar.write', options.timestamp)
+    return this.commit({ eventType: 'CALENDAR_BUNDLES_REMOVED', entityId: calendarEventId, payload: { calendarEventId, bundleIds: leaving }, ...options })
   }
 
   // ---------- corrections, rollover, roster import ----------
@@ -538,14 +601,65 @@ export class ArgusReplica {
       case 'CALENDAR_EVENT_CREATED': {
         if (state.calendar.some(candidate => candidate.calendarEventId === event.entityId)) throw new Error('Supply event ID already exists.')
         const value = event.payload as Partial<CalendarEventProjection>
-        const created: CalendarEventProjection = { calendarEventId: event.entityId, kind: value.kind as SupplyEventKind, title: String(value.title ?? ''), startsAt: String(value.startsAt ?? ''), ...(typeof value.notes === 'string' ? { notes: value.notes } : {}), bundleIds: Array.isArray(value.bundleIds) ? value.bundleIds.filter((id): id is string => typeof id === 'string') : [], cadetIds: Array.isArray(value.cadetIds) ? value.cadetIds.filter((id): id is string => typeof id === 'string') : [], tasks: (Array.isArray(value.tasks) ? value.tasks : []).map(task => ({ taskId: String(task.taskId), title: String(task.title), dueOffsetDays: Number(task.dueOffsetDays), completed: false })), active: true, createdBy: event.actorPublicIdentity, createdAt: event.timestamp, version: 1, appliedEventIds: [event.eventId] }
+        const created: CalendarEventProjection = { calendarEventId: event.entityId, kind: value.kind as SupplyEventKind, title: String(value.title ?? ''), startsAt: String(value.startsAt ?? ''), ...(typeof value.notes === 'string' ? { notes: value.notes } : {}), bundleIds: Array.isArray(value.bundleIds) ? [...new Set(value.bundleIds.filter((id): id is string => typeof id === 'string'))] : [], cadetIds: Array.isArray(value.cadetIds) ? sortedUnique(value.cadetIds.filter((id): id is string => typeof id === 'string')) : [], tasks: (Array.isArray(value.tasks) ? value.tasks : []).map(task => ({ taskId: String(task.taskId), title: String(task.title), dueOffsetDays: Number(task.dueOffsetDays), completed: false })), active: true, createdBy: event.actorPublicIdentity, createdAt: event.timestamp, version: 1, appliedEventIds: [event.eventId] }
         validateCalendar(created); if (new Set(created.tasks.map(task => task.taskId)).size !== created.tasks.length) throw new Error('Corrupted task list.')
         state.calendar.push(created); return
       }
       case 'CALENDAR_EVENT_UPDATED': {
         const target = state.calendar.find(candidate => candidate.calendarEventId === event.entityId); if (!target) throw new Error('Calendar projection is missing.')
-        const changes = pick<CalendarEventProjection>(event.payload, CALENDAR_EDITABLE); validateCalendar({ ...target, ...changes })
-        Object.assign(target, changes); target.version++; target.appliedEventIds.push(event.eventId); return
+        const changes = pick<CalendarEventProjection>(event.payload, CALENDAR_EDITABLE); validateCalendar({ ...target, ...changes }); validateActive(changes)
+        const scalars = CALENDAR_SCALARS.filter(field => field in changes), base = event.payload.baseRevisions
+        if (base !== undefined) {
+          if (!base || typeof base !== 'object' || Array.isArray(base)) throw new Error('Corrupted calendar update.')
+          // Same field, different value, and the author had seen none of the edits that produced the current value: a real concurrent edit.
+          const seen = (field: CalendarScalarField) => { const ids = (base as Record<string, unknown>)[field]; return Array.isArray(ids) ? ids : [] }
+          const contested = scalars.filter(field => !sameScalar(target[field], changes[field]) && !fieldWriters(target, field).some(id => seen(field).includes(id)))
+          if (contested.length) { this.addCalendarConflict(state, event, target, contested); return }
+        } else if (event.baseVersion !== undefined && event.baseVersion !== target.version && concurrentEditOfSameFields(state, event, target.appliedEventIds)) { this.addCalendarConflict(state, event, target, scalars); return }
+        const revisions: CalendarFieldRevisions = { ...target.fieldRevisions }
+        for (const field of scalars) revisions[field] = sameScalar(target[field], changes[field]) ? [...new Set([...fieldWriters(target, field), event.eventId])] : [event.eventId]
+        if (changes.cadetIds) changes.cadetIds = sortedUnique(changes.cadetIds)
+        Object.assign(target, changes); if (scalars.length) target.fieldRevisions = revisions
+        target.version++; target.appliedEventIds.push(event.eventId); return
+      }
+      case 'CALENDAR_ATTENDEES_ADDED': case 'CALENDAR_ATTENDEES_REMOVED': {
+        const target = state.calendar.find(candidate => candidate.calendarEventId === event.entityId); if (!target) throw new Error('Calendar projection is missing.')
+        const ids = setPayload(event, 'cadetIds', MAX_EVENT_CADETS)
+        if (event.eventType === 'CALENDAR_ATTENDEES_ADDED') {
+          const known = new Set(state.cadets.map(cadet => cadet.cadetId)); if (ids.some(id => !known.has(id))) throw new Error('Cadet projection is missing.')
+          const next = sortedUnique([...target.cadetIds, ...ids]); if (next.length > MAX_EVENT_CADETS) throw new Error(`An event can have at most ${MAX_EVENT_CADETS} attendees.`)
+          target.cadetIds = next
+        } else target.cadetIds = target.cadetIds.filter(id => !ids.includes(id))
+        target.version++; target.appliedEventIds.push(event.eventId); return
+      }
+      case 'CALENDAR_BUNDLES_ADDED': case 'CALENDAR_BUNDLES_REMOVED': {
+        const target = state.calendar.find(candidate => candidate.calendarEventId === event.entityId); if (!target) throw new Error('Calendar projection is missing.')
+        const ids = setPayload(event, 'bundleIds', MAX_EVENT_BUNDLES)
+        if (event.eventType === 'CALENDAR_BUNDLES_ADDED') {
+          if (ids.some(id => !state.bundles.some(bundle => bundle.bundleId === id))) throw new Error('Bundle projection is missing.')
+          // Linked bundles keep the order they were added in (template order first); the canonical fold makes that order the same everywhere.
+          const next = [...new Set([...target.bundleIds, ...ids])]; if (next.length > MAX_EVENT_BUNDLES) throw new Error(`An event can link at most ${MAX_EVENT_BUNDLES} bundles.`)
+          target.bundleIds = next
+        } else target.bundleIds = target.bundleIds.filter(id => !ids.includes(id))
+        target.version++; target.appliedEventIds.push(event.eventId); return
+      }
+      case 'CALENDAR_TASK_UPDATED': {
+        const target = state.calendar.find(candidate => candidate.calendarEventId === event.entityId), taskId = event.payload.taskId
+        const task = target?.tasks.find(candidate => candidate.taskId === taskId) ?? target?.removedTasks?.find(candidate => candidate.taskId === taskId)
+        if (!target || !task) throw new Error('Calendar projection is missing.')
+        const { title, dueOffsetDays } = event.payload
+        if ((title !== undefined && typeof title !== 'string') || (dueOffsetDays !== undefined && typeof dueOffsetDays !== 'number') || (title === undefined && dueOffsetDays === undefined)) throw new Error('Corrupted task update.')
+        const changes = { ...(typeof title === 'string' ? { title: title.trim() } : {}), ...(typeof dueOffsetDays === 'number' ? { dueOffsetDays } : {}) }
+        validateTask({ ...task, ...changes }); Object.assign(task, changes) // completion (who, when) is untouched
+        target.version++; target.appliedEventIds.push(event.eventId); return
+      }
+      case 'CALENDAR_TASK_REMOVED': {
+        const target = state.calendar.find(candidate => candidate.calendarEventId === event.entityId); if (!target) throw new Error('Calendar projection is missing.')
+        const index = target.tasks.findIndex(candidate => candidate.taskId === event.payload.taskId)
+        if (index < 0) { if (target.removedTasks?.some(candidate => candidate.taskId === event.payload.taskId)) { target.version++; target.appliedEventIds.push(event.eventId); return } throw new Error('Calendar projection is missing.') }
+        const [task] = target.tasks.splice(index, 1)
+        target.removedTasks = [...(target.removedTasks ?? []), { ...task, removedBy: event.actorPublicIdentity, removedAt: event.timestamp }]
+        target.version++; target.appliedEventIds.push(event.eventId); return
       }
       case 'CALENDAR_TASK_ADDED': {
         const target = state.calendar.find(candidate => candidate.calendarEventId === event.entityId); if (!target) throw new Error('Calendar projection is missing.')
@@ -554,7 +668,7 @@ export class ArgusReplica {
         target.tasks.push(task); target.version++; target.appliedEventIds.push(event.eventId); return
       }
       case 'TASK_COMPLETED': {
-        const target = state.calendar.find(candidate => candidate.calendarEventId === event.entityId), task = target?.tasks.find(candidate => candidate.taskId === event.payload.taskId)
+        const target = state.calendar.find(candidate => candidate.calendarEventId === event.entityId), task = target?.tasks.find(candidate => candidate.taskId === event.payload.taskId) ?? target?.removedTasks?.find(candidate => candidate.taskId === event.payload.taskId)
         if (!target || !task) throw new Error('Calendar projection is missing.')
         task.completed = event.payload.completed !== false
         if (task.completed) { task.completedBy = event.actorPublicIdentity; task.completedAt = event.timestamp } else { delete task.completedBy; delete task.completedAt }
@@ -686,6 +800,16 @@ export class ArgusReplica {
     const related = state.transactions.filter(transaction => transaction.lines.some(line => inventoryItemIds.includes(line.itemId))).map(transaction => transaction.eventId)
     const eventIds = [...new Set([...related, event.eventId])].sort(); const entityId = inventoryItemIds[0] ?? event.entityId
     const conflict: ConflictRecord = { id: `conflict:${event.eventId}`, entityId, eventIds, status: 'OPEN', reason, transactionId: event.entityId, inventoryItemIds, cadetId }
+    if (!state.conflicts.some(candidate => candidate.id === conflict.id)) state.conflicts.push(conflict)
+  }
+  /**
+   * A concurrent edit of the same event details stays visible until someone resolves it. The ID and
+   * the competing events come only from what is already folded (the edits that wrote the contested
+   * fields, plus this one), so every device derives the same conflict whatever order it received them in.
+   */
+  private addCalendarConflict(state: RepositoryState, event: SignedArgusEvent, target: CalendarEventProjection, fields: CalendarScalarField[]) {
+    const eventIds = [...new Set([...fields.flatMap(field => fieldWriters(target, field)), event.eventId])].sort()
+    const conflict: ConflictRecord = { id: `conflict:${event.eventId}`, entityId: target.calendarEventId, eventIds, status: 'OPEN', reason: `Two devices changed the ${fields.length ? listJoin(fields.map(field => CALENDAR_FIELD_LABEL[field])) : 'details'} of ${target.title} at the same time.` }
     if (!state.conflicts.some(candidate => candidate.id === conflict.id)) state.conflicts.push(conflict)
   }
   private addConflict(state: RepositoryState, event: SignedArgusEvent, reason: string) { const related = state.events.filter(e => e.event.entityId === event.entityId && e.event.baseVersion === event.baseVersion).map(e => e.event.eventId); const ids = [...new Set([...related, event.eventId])].sort(); const conflict = { id: `conflict:${ids.join(':')}`, entityId: event.entityId, eventIds: ids, status: 'OPEN' as const, reason }; if (!state.conflicts.some(c => c.id === conflict.id)) state.conflicts.push(conflict) }
@@ -820,6 +944,20 @@ function validateCalendar(value: { kind?: unknown; title: string; startsAt: stri
 function validateTask(task: { title: string; dueOffsetDays: number }) {
   if (!task.title.trim() || task.title.length > 120) throw new Error('Task title must be 1–120 characters.')
   if (!Number.isInteger(task.dueOffsetDays) || Math.abs(task.dueOffsetDays) > 365) throw new Error('Task due date must be within a year of the event.')
+}
+function validateActive(changes: { active?: unknown }) { if (changes.active !== undefined && typeof changes.active !== 'boolean') throw new Error('Active must be true or false.') }
+const CALENDAR_FIELD_LABEL: Record<CalendarScalarField, string> = { title: 'title', startsAt: 'date and time', notes: 'notes', active: 'cancellation', kind: 'event type' }
+const listJoin = (words: string[]) => words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} and ${words.at(-1)}`
+const sortedUnique = (ids: string[]) => [...new Set(ids)].sort()
+/** Events that wrote a field's current value; the creation event until someone edits it. */
+function fieldWriters(event: Pick<CalendarEventProjection, 'appliedEventIds' | 'fieldRevisions'>, field: CalendarScalarField) { return event.fieldRevisions?.[field] ?? event.appliedEventIds.slice(0, 1) }
+/** Notes are optional: absent and empty mean the same. */
+const sameScalar = (a: unknown, b: unknown) => (a ?? '') === (b ?? '')
+/** Validates a set-style calendar payload ({ calendarEventId, <key>: string[] }) and returns its IDs, de-duplicated. */
+function setPayload(event: SignedArgusEvent, key: 'cadetIds' | 'bundleIds', max: number) {
+  const ids = event.payload[key]
+  if (event.payload.calendarEventId !== event.entityId || !Array.isArray(ids) || !ids.length || ids.length > max || ids.some(id => typeof id !== 'string' || !id)) throw new Error('Corrupted calendar list change.')
+  return [...new Set(ids as string[])]
 }
 /**
  * A metadata edit conflicts only with an edit of the same kind to the same fields that its author

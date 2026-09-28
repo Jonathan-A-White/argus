@@ -1,10 +1,12 @@
 import { useId, useState } from 'react'
-import { AlertTriangle, CircleCheck, Lock, UserPlus, Users } from 'lucide-react'
+import { AlertTriangle, CalendarPlus, CircleCheck, Lock, UserPlus, Users } from 'lucide-react'
 import { Drawer } from '../../components/Drawer'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
 import { MAX_IMPORT_CADETS } from '../../distributed/replica'
 import type { ArgusPermission } from '../../distributed/types'
 import { cadetLabel } from '../../stage3/domain'
+import { linkableEvents } from '../calendar/attendeesModel'
+import { formatShortDate, systemClock } from '../calendar/calendarModel'
 import { MAX_PASTED_ROWS, MAX_QUICK_ADD, cadetCount, chunk, parseCount, parseRoster, previewOf, quickClass, withoutLines, type ImportRow, type RosterPreview } from './rosterModel'
 import './admin.css'
 
@@ -15,9 +17,11 @@ export type RosterImportPanelProps = {
   onProjection: (projection: ArgusAppProjection) => void
   notify: (message: string) => void
   close: () => void
+  /** Injectable clock for tests; orders the supply events offered for linking. */
+  now?: () => Date
 }
 
-type ImportOutcome = { imported: number; codes: string[]; failure?: string }
+type ImportOutcome = { imported: number; codes: string[]; failure?: string; linkedTo?: string; linkFailure?: string }
 
 const EXAMPLE = 'gender,nsLevel,cadetCode,name\nM,1\nF,NS1,C-7K4M\nFemale,2,,(optional name)'
 
@@ -26,11 +30,12 @@ const EXAMPLE = 'gender,nsLevel,cadetCode,name\nM,1\nF,NS1,C-7K4M\nFemale,2,,(op
  * number and cadet ID only. A pasted name is encrypted on import and shown here only as
  * "name provided" — never its text.
  */
-export function RosterImportPanel({ projection, controller, can, onProjection, notify, close }: RosterImportPanelProps) {
+export function RosterImportPanel({ projection, controller, can, onProjection, notify, close, now = systemClock }: RosterImportPanelProps) {
   const ids = useId()
   const [text, setText] = useState('')
   const [maleText, setMaleText] = useState('')
   const [femaleText, setFemaleText] = useState('')
+  const [linkEventId, setLinkEventId] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [outcome, setOutcome] = useState<ImportOutcome>()
@@ -53,8 +58,11 @@ export function RosterImportPanel({ projection, controller, can, onProjection, n
   const female = parseCount(femaleText)
   const quickTotal = (male ?? 0) + (female ?? 0)
   const quickValid = male !== undefined && female !== undefined && quickTotal > 0 && quickTotal <= MAX_QUICK_ADD
+  // Linking needs calendar.write too; the list offers active events, soonest first.
+  const linkable = can('calendar.write') ? linkableEvents(projection.calendar, now()) : []
+  const linkTarget = linkable.find(event => event.calendarEventId === linkEventId)
 
-  /** Imports in chunks the controller accepts, publishing progress after each chunk. */
+  /** Imports in chunks the controller accepts, publishing progress after each chunk, then optionally adds everyone imported to the chosen event. */
   const runImport = async (rows: ImportRow[]): Promise<ImportOutcome> => {
     const before = new Set(projection.cadets.map(cadet => cadet.cadetId))
     let latest: ArgusAppProjection | undefined
@@ -70,14 +78,26 @@ export function RosterImportPanel({ projection, controller, can, onProjection, n
         break
       }
     }
-    const codes = latest ? latest.cadets.filter(cadet => !before.has(cadet.cadetId)).map(cadetLabel) : []
-    return { imported, codes, ...(failure ? { failure } : {}) }
+    const added = latest ? latest.cadets.filter(cadet => !before.has(cadet.cadetId)) : []
+    const codes = added.map(cadetLabel)
+    // Whatever was imported joins the event, even after a partial failure, so no new cadet is left off the roster.
+    let link: Pick<ImportOutcome, 'linkedTo' | 'linkFailure'> = {}
+    if (linkTarget && added.length) {
+      try {
+        onProjection(await controller.addCalendarAttendees(linkTarget.calendarEventId, added.map(cadet => cadet.cadetId)))
+        link = { linkedTo: linkTarget.title }
+      } catch (reason) {
+        link = { linkFailure: `They could not be added to ${linkTarget.title}: ${reason instanceof Error && reason.message ? reason.message : 'the change was not saved'}. Add them from the event’s Attendees.` }
+      }
+    }
+    return { imported, codes, ...(failure ? { failure } : {}), ...link }
   }
 
   const finish = (result: ImportOutcome, total: number) => {
     setOutcome(result)
-    if (result.imported) notify(`Imported ${cadetCount(result.imported)}.`)
-    setError(result.failure ? (result.imported ? `Imported ${result.imported} of ${total}, then stopped: ${result.failure}` : result.failure) : '')
+    if (result.imported) notify(result.linkedTo ? `Imported ${cadetCount(result.imported)} and added them to ${result.linkedTo}.` : `Imported ${cadetCount(result.imported)}.`)
+    const stopped = result.failure ? (result.imported ? `Imported ${result.imported} of ${total}, then stopped: ${result.failure}` : result.failure) : ''
+    setError([stopped, result.linkFailure ?? ''].filter(Boolean).join(' '))
   }
 
   const importPasted = async () => {
@@ -122,6 +142,7 @@ export function RosterImportPanel({ projection, controller, can, onProjection, n
           <CircleCheck aria-hidden="true" />
           <div>
             <strong>Imported {cadetCount(outcome.imported)}.</strong>
+            {outcome.linkedTo && <p>Added to {outcome.linkedTo} as attendees.</p>}
             <details>
               <summary>Show new cadet IDs</summary>
               <p className="admin-codes">{outcome.codes.join(' · ')}</p>
@@ -134,6 +155,26 @@ export function RosterImportPanel({ projection, controller, can, onProjection, n
           <AlertTriangle aria-hidden="true" />
           {error}
         </div>
+      )}
+
+      {linkable.length > 0 && (
+        <section className="admin-section" aria-labelledby={`${ids}-link`}>
+          <h3 id={`${ids}-link`}>
+            <CalendarPlus aria-hidden="true" /> Add to a supply event
+          </h3>
+          <label className="field">
+            Also add these cadets to event
+            <select value={linkTarget ? linkEventId : ''} onChange={event => setLinkEventId(event.target.value)} disabled={busy}>
+              <option value="">Don’t add to an event</option>
+              {linkable.map(event => (
+                <option key={event.calendarEventId} value={event.calendarEventId}>
+                  {`${event.title} · ${formatShortDate(event.startsAt)}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p>Applies to the NS1 class and to pasted rosters below: everyone imported joins the event’s attendees.</p>
+        </section>
       )}
 
       <section className="admin-section" aria-labelledby={`${ids}-quick`}>

@@ -29,7 +29,7 @@ export type AuthorityRevocation = {
   signature: string
 }
 
-export type DistributedEventType = 'INVENTORY_ITEM_CREATED' | 'INVENTORY_ITEM_UPDATED' | 'INVENTORY_RECEIVED' | 'CATALOG_ITEM_CREATED' | 'CATALOG_ITEM_UPDATED' | 'CATALOG_SIZES_ADDED' | 'ITEM_ISSUED' | 'ITEM_RETURNED' | 'INVENTORY_COUNT_SUBMITTED' | 'COUNT_SESSION_CREATED' | 'COUNT_CONTRIBUTED' | 'COUNT_CORRECTED' | 'COUNT_RECOUNTED' | 'COUNT_SESSION_SUBMITTED' | 'COUNT_SESSION_RECONCILED' | 'COUNT_SESSION_CANCELLED' | 'AUTHORITY_GRANTED' | 'AUTHORITY_REVOKED' | 'ROLE_CHANGED' | 'CONFLICT_DETECTED' | 'CONFLICT_RESOLVED' | 'RECORD_CORRECTED' | 'CADET_CREATED' | 'CADET_UPDATED' | 'BUNDLE_CREATED' | 'BUNDLE_UPDATED' | 'BUNDLE_DEACTIVATED' | 'STILL_NEEDED_ADDED' | 'STILL_NEEDED_UPDATED' | 'STILL_NEEDED_CANCELLED' | 'STILL_NEEDED_FULFILLED' | 'CALENDAR_EVENT_CREATED' | 'CALENDAR_EVENT_UPDATED' | 'CALENDAR_TASK_ADDED' | 'TASK_COMPLETED' | 'PROPERTY_CORRECTED' | 'ANNUAL_ROLLOVER_COMPLETED' | 'CADETS_IMPORTED' | 'UNIT_KEY_ROTATED' | 'RECOVERY_KEY_REGISTERED'
+export type DistributedEventType = 'INVENTORY_ITEM_CREATED' | 'INVENTORY_ITEM_UPDATED' | 'INVENTORY_RECEIVED' | 'CATALOG_ITEM_CREATED' | 'CATALOG_ITEM_UPDATED' | 'CATALOG_SIZES_ADDED' | 'ITEM_ISSUED' | 'ITEM_RETURNED' | 'INVENTORY_COUNT_SUBMITTED' | 'COUNT_SESSION_CREATED' | 'COUNT_CONTRIBUTED' | 'COUNT_CORRECTED' | 'COUNT_RECOUNTED' | 'COUNT_SESSION_SUBMITTED' | 'COUNT_SESSION_RECONCILED' | 'COUNT_SESSION_CANCELLED' | 'AUTHORITY_GRANTED' | 'AUTHORITY_REVOKED' | 'ROLE_CHANGED' | 'CONFLICT_DETECTED' | 'CONFLICT_RESOLVED' | 'RECORD_CORRECTED' | 'CADET_CREATED' | 'CADET_UPDATED' | 'BUNDLE_CREATED' | 'BUNDLE_UPDATED' | 'BUNDLE_DEACTIVATED' | 'STILL_NEEDED_ADDED' | 'STILL_NEEDED_UPDATED' | 'STILL_NEEDED_CANCELLED' | 'STILL_NEEDED_FULFILLED' | 'CALENDAR_EVENT_CREATED' | 'CALENDAR_EVENT_UPDATED' | 'CALENDAR_TASK_ADDED' | 'TASK_COMPLETED' | 'CALENDAR_ATTENDEES_ADDED' | 'CALENDAR_ATTENDEES_REMOVED' | 'CALENDAR_BUNDLES_ADDED' | 'CALENDAR_BUNDLES_REMOVED' | 'CALENDAR_TASK_UPDATED' | 'CALENDAR_TASK_REMOVED' | 'PROPERTY_CORRECTED' | 'ANNUAL_ROLLOVER_COMPLETED' | 'CADETS_IMPORTED' | 'UNIT_KEY_ROTATED' | 'RECOVERY_KEY_REGISTERED'
 export type LocalSyncStatus = 'LOCAL' | 'QUEUED' | 'SYNCING' | 'SYNCHRONIZED' | 'CONFLICT' | 'FAILED'
 
 export type UnsignedArgusEvent = {
@@ -122,7 +122,17 @@ export type SupplyTransaction = { transactionId: string; transactionType: 'ISSUE
 /** Supply calendar (master spec §14–19). Dates are entered by hand each year; tasks are due relative to the event date. */
 export type SupplyEventKind = 'NCO' | 'BLT' | 'AMI' | 'MILITARY_BALL' | 'END_OF_YEAR' | 'CUSTOM'
 export type CalendarTaskProjection = { taskId: string; title: string; dueOffsetDays: number; completed: boolean; completedBy?: string; completedAt?: string }
-export type CalendarEventProjection = { calendarEventId: string; kind: SupplyEventKind; title: string; startsAt: string; notes?: string; bundleIds: string[]; cadetIds: string[]; tasks: CalendarTaskProjection[]; active: boolean; createdBy: string; createdAt: string; version: number; appliedEventIds: string[] }
+export type CalendarEventProjection = { calendarEventId: string; kind: SupplyEventKind; title: string; startsAt: string; notes?: string; bundleIds: string[]; cadetIds: string[]; tasks: CalendarTaskProjection[]; active: boolean; createdBy: string; createdAt: string; version: number; appliedEventIds: string[]; removedTasks?: RemovedCalendarTask[]; fieldRevisions?: CalendarFieldRevisions }
+/** A removed preparation task keeps its completion history; it just leaves the checklist. */
+export type RemovedCalendarTask = CalendarTaskProjection & { removedBy: string; removedAt: string }
+/** Scalar event details that two devices can edit concurrently; each edit names the revisions of the fields it changed. */
+export type CalendarScalarField = 'title' | 'startsAt' | 'notes' | 'active' | 'kind'
+/**
+ * For each scalar field, the IDs of the events that wrote its current value (the creation event
+ * when absent; several when concurrent edits wrote the same value). An edit whose author had seen
+ * none of them, and that writes a different value, is a concurrent edit of the same field: a conflict.
+ */
+export type CalendarFieldRevisions = Partial<Record<CalendarScalarField, string[]>>
 /** Append-only record that one issued line was wrong (e.g. 34R issued, 32R correct). The original issue event stays in history. */
 export type PropertyCorrection = { correctionId: string; cadetId: string; propertyId: string; originalEventId: string; fromItemId: string; toItemId: string; quantity: number; reason: string; actor: string; at: string; eventId: string }
 export type RolloverRecord = { schoolYear: string; eventId: string; at: string; actor: string; advanced: number; graduated: number }

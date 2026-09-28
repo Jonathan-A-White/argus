@@ -44,6 +44,7 @@
   margin: 12px 0;
 }
 .admin-section .field input,
+.admin-section .field select,
 .admin-section .field textarea,
 .admin-year-field input {
   min-height: 44px;

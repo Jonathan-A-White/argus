@@ -3,6 +3,8 @@ import type { SignedArgusEvent } from '../distributed/types'
 export interface EventSyncProvider {
   publish(event: SignedArgusEvent): Promise<unknown>
   pull(): Promise<SignedArgusEvent[]>
+  /** The chain transaction that carried each pulled event, where the provider knows it. */
+  transactionIds?(eventIds: string[]): Promise<Record<string, string>>
 }
 
 export class MockSyncProvider implements EventSyncProvider {

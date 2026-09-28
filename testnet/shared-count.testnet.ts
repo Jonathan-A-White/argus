@@ -63,12 +63,13 @@ describe.skipIf(!keys)('LIVE BSV TESTNET: shared count across three devices', ()
     const open = (device: typeof masterDevice) => UnitRuntime.open(device, { api, ledger: new MemoryLedgerStore(), walletStore: new MemoryWalletStateStore(), storage: storage() })
     const a = await open(masterDevice)
     log(`Unit ${masterDevice.record.unit!.unitId} · anchor ${a.transport.anchorAddress}`)
-    const members: UnitRuntime[] = []
+    const members: UnitRuntime[] = [], topUps: string[] = []
     for (const [name, role] of [['Officer B', 'SUPPLY_OFFICER'], ['Assistant C', 'SUPPLY_ASSISTANT']] as const) {
       const pending = await createJoiningDevice({ passphrase: 'live testnet check 2', displayName: name }, storage())
       const admitted = await a.admit(await encodeJoinRequest(pending), role, { topUpSatoshis: MEMBER_TOP_UP_SATOSHIS })
       if (admitted.topUpError) throw new Error(admitted.topUpError)
       log(`Admitted ${name}; top-up tx ${admitted.topUpTxid}`)
+      if (admitted.topUpTxid) topUps.push(admitted.topUpTxid)
       members.push(await open(await acceptAdmission(pending, admitted.admissionCode, storage())))
     }
     const [b, c] = members
@@ -96,8 +97,12 @@ describe.skipIf(!keys)('LIVE BSV TESTNET: shared count across three devices', ()
     expect(totalOf(rebuilt)).toBe(6)
     expect(rebuilt.members.map(member => member.displayName).sort()).toEqual(['Assistant C', 'Master A', 'Officer B'])
 
-    const txids = [...new Set((await a.controller.project()).events.flatMap(record => record.transactionId ? [record.transactionId] : []))]
-    const report = { at: new Date().toISOString(), unitId: masterDevice.record.unit!.unitId, anchor: a.transport.anchorAddress, anchorExplorer: `https://test.whatsonchain.com/address/${a.transport.anchorAddress}`, transactions: txids.map(txid => `https://test.whatsonchain.com/tx/${txid}`), masterBalanceAfter: (await a.balance()).spendable }
+    // Every unit transaction, whoever published it: each device links every change to the transaction that carried it.
+    const perDevice = (await Promise.all([a, b, c].map(runtime => runtime.controller.project()))).map(view => [...new Set(view.events.flatMap(record => record.transactionId ? [record.transactionId] : []))].sort())
+    const txids = [...new Set(perDevice.flat())].sort()
+    for (const seen of perDevice) expect(seen).toEqual(txids)
+    const link = (txid: string) => `https://test.whatsonchain.com/tx/${txid}`
+    const report = { at: new Date().toISOString(), unitId: masterDevice.record.unit!.unitId, anchor: a.transport.anchorAddress, anchorExplorer: `https://test.whatsonchain.com/address/${a.transport.anchorAddress}`, transactions: txids.map(link), memberTopUps: topUps.map(link), masterBalanceAfter: (await a.balance()).spendable }
     if (!DRY_RUN) writeFileSync(join(process.cwd(), 'testnet', 'last-run.json'), JSON.stringify(report, null, 2))
     log(`${DRY_RUN ? 'Dry-run report (not saved)' : 'Report written to testnet/last-run.json'}\n${JSON.stringify(report, null, 2)}`)
     expect(txids.length).toBeGreaterThan(0)

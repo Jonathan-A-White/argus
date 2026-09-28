@@ -67,6 +67,13 @@ export class UnitEventSyncProvider implements EventSyncProvider {
     return events
   }
 
+  /** The transaction each event arrived in (or was published in), so every device links every change to the chain. */
+  async transactionIds(eventIds: string[]) {
+    const found: Record<string, string> = {}
+    for (const eventId of eventIds) { const txid = (await this.deps.store.envelope(eventId))?.txid; if (txid) found[eventId] = txid }
+    return found
+  }
+
   private async acceptCredential(credential: AuthorityCredential) {
     if (this.acceptedCredentials.has(credential.credentialId)) return
     // An invalid or foreign credential is simply not accepted; the replica then rejects that author's events as unauthorized.

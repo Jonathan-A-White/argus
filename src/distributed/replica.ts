@@ -719,7 +719,7 @@ export class ArgusReplica {
     }
     // A device that cannot publish (offline wallet, no testnet coins) must still receive everyone else's work.
     const pending = await this.provider.pull()
-    if (pending.length) await this.receiveMany(pending)
+    if (pending.length) await this.receiveMany(pending, await this.provider.transactionIds?.(pending.map(event => event.eventId)) ?? {})
     if (failure) throw failure
   }
   /** Marks locally authored events as confirmed on chain once the transport has published them. */

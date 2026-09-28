@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { FakeChain } from '../chain/fakeChain'
 import { MemoryWalletStateStore } from '../chain/walletStore'
 import { GENESIS_CATALOG } from '../stage3/domain'
@@ -59,7 +59,11 @@ describe('unit runtime over a (fake) BSV testnet chain', { timeout: 120_000 }, (
       expect(projection.inventory.find(item => item.entityId === medium)?.onHand).toBe(6)
       expect(projection.countSessions[0].status).toBe('RECONCILED')
       expect(projection.events.filter(record => record.syncStatus !== 'SYNCHRONIZED')).toEqual([])
+      // Every change links to the transaction that carried it, including other people's changes.
+      expect(projection.events.filter(record => !record.transactionId).map(record => record.event.eventType)).toEqual([])
     }
+    const countTxids = (records: typeof projection.events) => records.filter(record => record.event.eventType === 'COUNT_CONTRIBUTED').map(record => record.transactionId).sort()
+    expect(countTxids((await a.controller.project()).events)).toEqual(countTxids((await b.controller.project()).events))
     // An assistant may count but may not finalize.
     await expect(c.controller.finalizeCountSession('fall-2026')).rejects.toThrow()
   })
@@ -131,5 +135,20 @@ describe('chain hygiene', { timeout: 120_000 }, () => {
     const view = await b.controller.project()
     expect(view.inventory.find(item => item.entityId === medium)?.onHand).toBe(7)
     expect(view.rejected).toEqual([])
+  })
+
+  it('catches up with everyone else the moment the app is back on screen, without waiting for the next poll', async () => {
+    const chain = new FakeChain()
+    const { master: a, joiners: [b] } = await unitWithMembers(chain)
+    await b.syncNow()
+    a.start(3_600_000) // the poll never fires during this test
+    await a.syncNow()
+    await b.controller.addCatalogSizes(PT_SHORTS, ['S'])
+    await b.syncNow()
+    const hasSmall = async () => (await a.controller.project()).inventory.some(item => item.catalogId === PT_SHORTS && item.variant === 'S')
+    expect(await hasSmall()).toBe(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.waitFor(async () => expect(await hasSmall()).toBe(true))
+    a.stop()
   })
 })

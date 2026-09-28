@@ -150,8 +150,11 @@ The anchor address history holds five unit transactions, all mined in block 1760
 The Master's two member top-ups were
 [`eec9826c…`](https://test.whatsonchain.com/tx/eec9826ce055ce6b812674535598faa67edd8312669b858a77f0103fd6a1edf2)
 and [`16ea8148…`](https://test.whatsonchain.com/tx/16ea814889a83d08b5421666a678f67dffb7d5cb0320f31b669966f094566b0c).
-`testnet/last-run.json` lists only the transactions A published itself (four of the five). It reads
-transaction IDs from A's own event records, so B's count transaction is missing there.
+`testnet/last-run.json` from this run lists only the transactions A published itself (four of the
+five), because devices did not attach a transaction ID to events that arrived from someone else, so
+B's count transaction is missing there. Since fixed: every device now links every change to the
+transaction that carried it, whoever published it, and the next live run records all unit
+transactions plus the member top-ups (`memberTopUps`).
 
 **API-shape fixes: none were needed.** WhatsOnChain's real answers matched what `src/chain/woc.ts`
 parses:

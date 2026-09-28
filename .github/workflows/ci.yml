@@ -25,9 +25,10 @@ jobs:
     name: Test and build
     runs-on: ubuntu-latest
     env:
-      # CI must never select a network that can broadcast transactions.
-      # Use the explicit fail-closed mode accepted by the runtime. The former
-      # `mock` value was removed and caused every App render in CI to throw.
+      # Tests never touch a network: chain behaviour runs against the in-memory
+      # FakeChain. The deployed build is the real app (BSV testnet via the unit
+      # gate); mainnet does not exist in any mode. Live testnet checks are run
+      # by hand with `npm run test:testnet`, never in CI.
       VITE_ARGUS_BLOCKCHAIN_MODE: unconfigured
 
     steps:

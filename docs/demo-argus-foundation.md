@@ -1,5 +1,7 @@
 # Demo: A.R.G.U.S. foundation
 
+> **Superseded (2026-09-27):** see [BSV_SHARED_LEDGER.md](BSV_SHARED_LEDGER.md) and [ADR 010](adr/010-bsv-shared-ledger.md) for the current design. Kept for history.
+
 This is the demo for the "A.R.G.U.S. foundation" epic: the fork runs and is gated on Node 24, Pages is live, the relay is
 gone, and the runtime uses real identities — a passphrase-unlocked key per device, the first device the unit's Master,
 and people admitted by the Master's signed credential with a role — instead of the mock identity provider.

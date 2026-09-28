@@ -1,290 +1,221 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Activity,
-  ArrowRight,
+  AlertTriangle,
   Boxes,
   CalendarRange,
-  Check,
   ChevronDown,
   ClipboardCheck,
-  Cloud,
-  FileUp,
   History,
+  Home,
   KeyRound,
   LayoutGrid,
-  Minus,
-  PackagePlus,
-  Plus,
-  RotateCcw,
-  Search,
   Settings,
   ShieldCheck,
+  GraduationCap,
   Shirt,
-  UserRound,
+  UserPlus,
   Users,
+  Wallet,
   Wifi,
-  X,
 } from "lucide-react";
 import {
   DistributedAppController,
   type ArgusAppProjection,
 } from "./distributed/appIntegration";
-import type { ArgusRole, InventoryProjection } from "./distributed/types";
-import { matchesSearch } from "./domain";
+import type { ArgusPermission, ArgusRole } from "./distributed/types";
+import { ROLE_PERMISSIONS } from "./auth/authorization";
+import { IndexedDbRepository, MemoryRepository } from "./storage/repository";
+import { plural } from "./plural";
 import {
   LocalSettingsStorage,
   type SettingsStorage,
   type UserSettings,
 } from "./settings";
 import { resolveBlockchainMode } from "./blockchain/config";
-import {
-  UnconfiguredTestnetWalletStatusProvider,
-  type TestnetWalletStatus,
-  type TestnetWalletStatusProvider,
-} from "./blockchain/ArgusWalletAdapter";
 import { SupplyWorkflow } from "./components/SupplyWorkflow";
-import { IdentityGate } from "./identity/screens/IdentityGate";
-import { PendingAdmissionScreen } from "./identity/screens/PendingAdmissionScreen";
+import "./app-shell.css";
+import { Drawer, Summary } from "./components/Drawer";
+import { SharedCountView } from "./features/count/SharedCountView";
+import { InventoryCatalogView } from "./features/inventory/InventoryCatalogView";
+import { COUNT_INTERVAL_CHOICES } from "./stage3/inventoryStatus";
+import { CadetsView } from "./features/cadets/CadetsView";
+import { ConflictsPanel } from "./features/conflicts/ConflictsPanel";
+import { StillNeededActions } from "./features/needs/StillNeededActions";
+import { Dashboard, type DashboardTarget } from "./features/dashboard";
+import { ReadinessWeightsEditor } from "./features/dashboard/ReadinessWeightsEditor";
+import { StandardIssueGaps } from "./features/readiness/StandardIssueGaps";
+import type { SyncSnapshot } from "./stage3/readinessTypes";
+import { CalendarView } from "./features/calendar";
+import { BundleEditorPanel } from "./features/bundles";
+import { RolloverPanel, RosterImportPanel } from "./features/admin";
+import { ActivityView } from "./features/activity";
+import { cadetLabel } from "./stage3/domain";
+import { UnitGate } from "./unit/screens/UnitGate";
+import { MembersPanel, WalletPanel } from "./unit/screens/UnitPanels";
+import { roleLabel, syncLabel, syncOutcome } from "./unit/screens/labels";
 import {
-  buildAuthenticatedController,
-  identityGateRequired,
-} from "./identity/runtime";
-import {
-  admitPerson,
-  knownPeople,
-  type DeviceIdentityRecord,
-  type DeviceRole,
-  type KnownPerson,
-  type UnlockedDeviceIdentity,
-} from "./identity/deviceIdentity";
+  DeviceNotificationSettings,
+  useDeviceNotifications,
+} from "./notifications";
+import type {
+  UnitRuntime,
+  UnitRuntimeOptions,
+  UnitStatus,
+} from "./unit/runtime";
 
-export type Tab = "count" | "inventory" | "cadets" | "activity" | "more";
+export type Tab =
+  | "home"
+  | "count"
+  | "inventory"
+  | "cadets"
+  | "calendar"
+  | "activity"
+  | "more";
 type Panel =
-  | "review"
-  | "cadet"
-  | "issue"
-  | "return"
+  | "cadet-issue"
+  | "cadet-return"
   | "bundles"
   | "needed"
-  | "roster"
-  | "import"
-  | "roles"
-  | "rollover"
+  | "members"
+  | "wallet"
+  | "conflicts"
   | "diagnostics"
+  | "import"
+  | "rollover"
   | null;
 const nav: Array<{ id: Tab; label: string; icon: typeof Activity }> = [
+  { id: "home", label: "Home", icon: Home },
   { id: "count", label: "Count", icon: ClipboardCheck },
   { id: "inventory", label: "Inventory", icon: Boxes },
   { id: "cadets", label: "Cadets", icon: Users },
+  { id: "calendar", label: "Calendar", icon: CalendarRange },
   { id: "activity", label: "Activity", icon: History },
   { id: "more", label: "More", icon: LayoutGrid },
 ];
+/** Phones get the five most-used sections; Calendar and Activity are one tap away from Home. */
+const mobileNav = nav.filter((item) =>
+  ["home", "count", "inventory", "cadets", "more"].includes(item.id),
+);
 const pageTitle = (tab: Tab) =>
   ({
-    count: "Physical Count",
+    home: "Home",
+    count: "Shared Count",
     inventory: "Inventory",
     cadets: "Cadets",
+    calendar: "Supply Calendar",
     activity: "Activity",
     more: "Command Center",
   })[tab];
-const initials = (name: string) =>
-  name
-    .split(/\s+/)
-    .map((p) => p[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-const eventLabel = (type: string) =>
-  ({
-    CADET_CREATED: "Cadet Created",
-    CADET_UPDATED: "Cadet Updated",
-    BUNDLE_UPDATED: "Bundle Updated",
-    STILL_NEEDED_ADDED: "Still Needed Added",
-    INVENTORY_COUNT_SUBMITTED: "Physical Count Submitted",
-    INVENTORY_ITEM_CREATED: "Inventory Item Created",
-    INVENTORY_ITEM_UPDATED: "Inventory Item Updated",
-    ITEM_ISSUED: "Issue",
-    ITEM_RETURNED: "Return",
-  })[type] ?? type.replaceAll("_", " ").toLowerCase();
-const activityLabel = (
-  projection: ArgusAppProjection,
-  eventId: string,
-  type: string,
-) => {
-  const transaction = projection.transactions.find(
-    (candidate) => candidate.eventId === eventId,
-  );
-  if (!transaction) return eventLabel(type);
-  const cadet = projection.cadets.find(
-    (candidate) => candidate.cadetId === transaction.cadetId,
-  );
-  const quantity = transaction.lines.reduce(
-    (sum, line) => sum + line.quantity,
-    0,
-  );
-  const isIssue = transaction.transactionType === "ISSUE";
-  const verb = isIssue ? "Issued" : "Returned";
-  const preposition = isIssue ? "to" : "from";
-  const plural = quantity === 1 ? "" : "s";
-  return `${verb} ${quantity} item${plural} ${preposition} ${cadet?.fullName ?? "cadet"}`;
-};
+
 type Props = {
+  /** Supplying a controller skips the unit gate (tests and mock-development demos). */
   controller?: DistributedAppController;
   settingsStorage?: SettingsStorage;
-  walletStatusProvider?: TestnetWalletStatusProvider;
+  runtimeOptions?: UnitRuntimeOptions;
+  storage?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
 };
 
-export default function App({ controller: supplied, ...rest }: Props) {
-  return supplied ? (
-    <AuthenticatedApp controller={supplied} {...rest} />
-  ) : (
-    <IdentityGatedApp {...rest} />
-  );
-}
-
-/** Shows the first-run/unlock screens outside mock-development; mock-development keeps today's single-tap demo boot. */
-function IdentityGatedApp(props: Omit<Props, "controller">) {
-  const [unlocked, setUnlocked] = useState<UnlockedDeviceIdentity>();
-  const [record, setRecord] = useState<DeviceIdentityRecord>();
-  const controller = useMemo(() => {
-    if (!identityGateRequired()) return new DistributedAppController();
-    if (unlocked?.authorization)
-      return buildAuthenticatedController({
-        ...unlocked,
-        authorization: unlocked.authorization,
-      });
-    return undefined;
-  }, [unlocked]);
-  const lock = () => {
-    setUnlocked(undefined);
-    setRecord(undefined);
-  };
-  if (!controller) {
-    if (unlocked && record)
-      return (
-        <PendingAdmissionScreen
-          publicIdentity={unlocked.publicIdentity}
-          identity={unlocked.identity}
-          record={record}
-          onAdmitted={(updatedRecord, authorization) => {
-            setRecord(updatedRecord);
-            setUnlocked(
-              (current) =>
-                current && {
-                  ...current,
-                  role: updatedRecord.role,
-                  authorization,
-                },
-            );
-          }}
-          onLock={lock}
-        />
-      );
-    return (
-      <IdentityGate
-        onUnlock={(unlockedIdentity, loadedRecord) => {
-          setUnlocked(unlockedIdentity);
-          setRecord(loadedRecord);
-        }}
-      />
-    );
-  }
-  const admit =
-    unlocked?.authoritySigner && record
-      ? async (
-          identityCode: string,
-          role: Exclude<ArgusRole, "MASTER">,
-          expiresAt?: string,
-        ) => {
-          const result = await admitPerson(
-            record,
-            unlocked.authoritySigner!,
-            identityCode,
-            role,
-            expiresAt,
-          );
-          setRecord(result.record);
-          return result.credentialCode;
-        }
-      : undefined;
+/**
+ * The live app always goes through the unit gate: each person unlocks their own device key, and
+ * the unit's shared data comes from BSV testnet. Only an explicit mock-development build (or a
+ * test that passes a controller) runs the single-device demo.
+ */
+export default function App({
+  controller,
+  runtimeOptions,
+  storage,
+  ...rest
+}: Props) {
+  if (controller) return <AuthenticatedApp controller={controller} {...rest} />;
+  if (
+    resolveBlockchainMode(import.meta.env.VITE_ARGUS_BLOCKCHAIN_MODE) ===
+    "mock-development"
+  )
+    return <DemoApp {...rest} />;
   return (
-    <AuthenticatedApp
-      controller={controller}
-      identity={
-        unlocked && {
-          publicIdentity: unlocked.publicIdentity,
-          role: unlocked.role,
-          people: record ? knownPeople(record) : [],
-          admit,
-        }
-      }
-      onLock={identityGateRequired() ? lock : undefined}
-      {...props}
-    />
+    <UnitGate
+      runtimeOptions={runtimeOptions}
+      {...(storage ? { storage } : {})}
+    >
+      {(runtime, lock) => (
+        <AuthenticatedApp
+          controller={runtime.controller}
+          runtime={runtime}
+          onLock={lock}
+          {...rest}
+        />
+      )}
+    </UnitGate>
   );
 }
 
-type AuthenticatedAppProps = Omit<Props, "controller"> & {
+/** The mock-development demo keeps its (plaintext, demo-only) records in its own IndexedDB database so a reload keeps them. */
+const DEMO_DATABASE_NAME = "argus-demo";
+function DemoApp(props: Omit<Props, "controller">) {
+  const [controller] = useState(
+    () =>
+      new DistributedAppController(
+        globalThis.indexedDB
+          ? new IndexedDbRepository(DEMO_DATABASE_NAME)
+          : new MemoryRepository(),
+      ),
+  );
+  return <AuthenticatedApp controller={controller} {...props} />;
+}
+
+type AuthenticatedAppProps = Omit<
+  Props,
+  "controller" | "runtimeOptions" | "storage"
+> & {
   controller: DistributedAppController;
-  identity?: {
-    publicIdentity: string;
-    role: DeviceRole;
-    people: KnownPerson[];
-    admit?: (
-      identityCode: string,
-      role: Exclude<ArgusRole, "MASTER">,
-      expiresAt?: string,
-    ) => Promise<string>;
-  };
+  runtime?: UnitRuntime;
   onLock?: () => void;
 };
 
 function AuthenticatedApp({
   controller,
+  runtime,
   settingsStorage: suppliedSettings,
-  walletStatusProvider,
-  identity,
   onLock,
 }: AuthenticatedAppProps) {
   const [settingsStorage] = useState(
     () => suppliedSettings ?? new LocalSettingsStorage(),
   );
   const [preferences, setPreferences] = useState<UserSettings>(() =>
-      settingsStorage.load(),
-    ),
-    [projection, setProjection] = useState<ArgusAppProjection>();
-  const [tab, setTab] = useState<Tab>(preferences.defaultSection),
-    [panel, setPanel] = useState<Panel>(null),
-    [settingsOpen, setSettingsOpen] = useState(false),
-    [walletOpen, setWalletOpen] = useState(false),
-    [addOpen, setAddOpen] = useState(false);
-  const [walletProvider] = useState<TestnetWalletStatusProvider>(
-    () => walletStatusProvider ?? new UnconfiguredTestnetWalletStatusProvider(),
+    settingsStorage.load(),
   );
-  const [selectedId, setSelectedId] = useState(""),
-    [selectedCadetId, setSelectedCadetId] = useState(""),
-    [count, setCount] = useState(0),
-    [step, setStep] = useState(1),
-    [countNote, setCountNote] = useState("");
-  const [query, setQuery] = useState(""),
-    [cadetQuery, setCadetQuery] = useState(""),
-    [notice, setNotice] = useState(""),
-    [history, setHistory] = useState<
-      Array<{ itemId: string; name: string; from: number; to: number }>
-    >([]);
+  const [projection, setProjection] = useState<ArgusAppProjection>();
+  const [reportedStatus, setStatus] = useState<UnitStatus | undefined>(() =>
+    runtime?.status(),
+  );
+  const [selectedTab, setTab] = useState<Tab>(preferences.defaultSection);
+  const [panel, setPanel] = useState<Panel>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [countItemId, setCountItemId] = useState<string>();
+  const [workflowCadetId, setWorkflowCadetId] = useState<string>();
+  // The exact record an alert or readiness link opened (event drawer, cadet,
+  // filtered inventory); plain navigation clears it.
+  const [focus, setFocus] = useState<{
+    target: DashboardTarget;
+    nonce: number;
+  }>();
+
   useEffect(() => {
     let active = true,
       stopSync: undefined | (() => void);
-    controller
-      .initialize()
+    const stopProjection = runtime?.onProjection((next) => {
+      if (active) setProjection(next);
+    });
+    const stopStatus = runtime?.onStatus((next) => {
+      if (active) setStatus(next);
+    });
+    // A unit runtime was initialized by the gate; a bare controller (demo/tests) initializes here.
+    (runtime ? controller.project() : controller.initialize())
       .then((p) => {
         if (!active) return;
         setProjection(p);
-        if (p.inventory[0]) {
-          setSelectedId(p.inventory[0].entityId);
-          setCount(p.inventory[0].onHand);
-          setStep(p.inventory[0].countIncrement);
-        }
         stopSync = controller.startAutoSync((next) => {
           if (active) setProjection(next);
         });
@@ -297,8 +228,10 @@ function AuthenticatedApp({
     return () => {
       active = false;
       stopSync?.();
+      stopProjection?.();
+      stopStatus?.();
     };
-  }, [controller]);
+  }, [controller, runtime]);
   useEffect(() => {
     settingsStorage.save(preferences);
     Object.assign(document.documentElement.dataset, {
@@ -310,136 +243,212 @@ function AuthenticatedApp({
   }, [preferences, settingsStorage]);
   useEffect(() => {
     if (!notice) return;
-    const timer = setTimeout(() => setNotice(""), 5000);
+    const timer = setTimeout(() => setNotice(""), 6000);
     return () => clearTimeout(timer);
   }, [notice]);
-  const selected =
-    projection?.inventory.find((i) => i.entityId === selectedId) ??
-    projection?.inventory[0];
-  const filtered = useMemo(
-    () =>
-      projection?.inventory.filter((i) =>
-        matchesSearch(query, i.name, i.category, i.variant, i.niin),
-      ) ?? [],
-    [projection, query],
+
+  const role: ArgusRole | "PENDING" =
+    runtime?.device.record.role ?? "SUPPLY_OFFICER";
+  // Permissions come from the person's signed credential (spec §4: configurable, not scattered through the UI); a removed person has none.
+  const revoked = Boolean(reportedStatus?.revoked);
+  const credential = runtime?.device.record.credential;
+  const can = useCallback(
+    (permission: ArgusPermission) =>
+      role !== "PENDING" &&
+      !revoked &&
+      (runtime
+        ? (credential?.permissions ?? [])
+        : ROLE_PERMISSIONS.SUPPLY_OFFICER
+      ).includes(permission),
+    [role, revoked, runtime, credential],
   );
-  const choose = (item: InventoryProjection) => {
-    setSelectedId(item.entityId);
-    setCount(item.onHand);
-    setStep(item.countIncrement);
-    setQuery("");
-  };
-  const updateCount = (next: number) => {
-    if (!selected) return;
-    const safe = Math.max(0, next);
-    if (safe === count) return;
-    setHistory((h) => [
-      ...h,
-      {
-        itemId: selected.entityId,
-        name: `${selected.name} · ${selected.variant}`,
-        from: count,
-        to: safe,
-      },
-    ]);
-    setCount(safe);
-  };
-  const undo = () => {
-    const last = history.at(-1);
-    if (!last || !projection) return;
-    const item = projection.inventory.find((i) => i.entityId === last.itemId);
-    if (!item) return;
-    setSelectedId(item.entityId);
-    setCount(last.from);
-    setStep(item.countIncrement);
-    setHistory((h) => h.slice(0, -1));
-    setNotice(`Undid ${last.name}: ${last.to} → ${last.from}.`);
-  };
-  const command = async (
-    operation: () => Promise<ArgusAppProjection>,
-    success: string,
-  ) => {
-    try {
-      setProjection(await operation());
-      setNotice(success);
-    } catch (e) {
-      setNotice(
-        e instanceof Error
-          ? e.message
-          : "The signed operation could not be completed.",
+  // The audit trail is for people with audit.read (not Supply Assistants): no tab, no route.
+  const canViewActivity = can("audit.read");
+  const tab: Tab =
+    selectedTab === "activity" && !canViewActivity ? "home" : selectedTab;
+  const sections = nav.filter(
+    (item) => item.id !== "activity" || canViewActivity,
+  );
+  const memberName = useCallback(
+    (publicIdentity: string) => {
+      if (projection && publicIdentity === projection.actor) return "You";
+      return (
+        projection?.members.find(
+          (member) => member.publicIdentity === publicIdentity,
+        )?.displayName ?? "Unit member"
       );
+    },
+    [projection],
+  );
+  const notify = useCallback((message: string) => setNotice(message), []);
+  // Sync now (Count): says what actually happened, never "synchronized" while the network is unreachable.
+  const syncNow = useCallback(async () => {
+    if (!runtime) {
+      const next = await controller.sync();
+      return {
+        projection: next,
+        message: "Up to date. This demo keeps its records on this device only.",
+      };
     }
+    const next = await runtime.syncNow();
+    return { projection: next, message: syncOutcome(runtime.status()).message };
+  }, [controller, runtime]);
+  // The local copy knows every change still waiting to publish even while the last network check failed.
+  const waiting = Math.max(
+    reportedStatus?.queued ?? 0,
+    projection?.sync.outbox ?? 0,
+  );
+  const status: UnitStatus | undefined = reportedStatus && {
+    ...reportedStatus,
+    queued: waiting,
   };
+  // Tier 2 device notifications (spec §20); a notification click routes like a dashboard alert click.
+  useDeviceNotifications({
+    enabled: preferences.deviceNotifications,
+    projection,
+    sync: {
+      needsFunding: Boolean(status?.needsFunding),
+      state: status?.state,
+      queued: waiting,
+    },
+    onOpen: ({ tab: next, panel: nextPanel }) => {
+      setSettingsOpen(false);
+      setTab(next);
+      setPanel(nextPanel ?? null);
+    },
+  });
+  const mode = runtime ? "testnet" : "mock";
+
   if (!projection)
     return (
       <main className="loading-state" aria-live="polite">
-        <strong>Loading A.R.G.U.S. local data…</strong>
+        <strong>Loading A.R.G.U.S.…</strong>
         {notice && <p role="alert">{notice}</p>}
       </main>
     );
-  const cadet = projection.cadets.find((c) => c.cadetId === selectedCadetId);
-  const sync = projection.sync.openConflicts
+  const syncText = projection.sync.openConflicts
     ? "CONFLICT · ACTION REQUIRED"
-    : projection.sync.mode === "remote"
-      ? projection.sync.outbox
-        ? `SHARED SYNC · ${projection.sync.outbox} QUEUED`
-        : "SHARED SYNC · CONNECTED"
-      : projection.sync.outbox
-        ? `LOCAL · ${projection.sync.outbox} CHANGES QUEUED`
-        : "LOCAL · THIS DEVICE ONLY";
+    : status
+      ? syncLabel(status)
+      : "MOCK · THIS DEVICE ONLY";
+  const who = runtime?.device.record.displayName ?? "Demo user";
+  const initialsOf = who
+    .split(/\s+/)
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  const openCadetWorkflow = (
+    kind: "cadet-issue" | "cadet-return",
+    cadetId: string,
+  ) => {
+    setWorkflowCadetId(cadetId);
+    setPanel(kind);
+  };
+  const openTarget = (target: DashboardTarget) => {
+    setTab(target.tab);
+    setPanel(target.panel ?? null);
+    const exact = Boolean(
+      target.calendarEventId || target.cadetId || target.itemId || target.filter,
+    );
+    setFocus((previous) =>
+      exact ? { target, nonce: (previous?.nonce ?? 0) + 1 } : undefined,
+    );
+  };
+  const showTab = (next: Tab) => {
+    setTab(next);
+    setFocus(undefined);
+  };
+  const focused = (which: Tab) =>
+    focus?.target.tab === which ? focus : undefined;
+  const syncSnapshot: SyncSnapshot = {
+    needsFunding: Boolean(status?.needsFunding),
+    state: status?.state,
+    queued: waiting,
+    unreadable: status?.unreadable,
+    lastScanAt: status?.lastScanAt,
+    revoked: status?.revoked,
+  };
+  // Master spec §5: the dashboard is itself the navigation surface, so the normal taskbar is hidden there.
+  const onDashboard = tab === "home";
   return (
-    <div className="app-shell">
+    <div className={onDashboard ? "app-shell dashboard-mode" : "app-shell"}>
       <div className="aether-field" aria-hidden="true">
         <span />
         <span />
         <span />
       </div>
-      <aside className="sidebar">
-        <Brand />
-        <nav aria-label="Primary navigation">
-          {nav.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              className={tab === id ? "nav-item active" : "nav-item"}
-              onClick={() => setTab(id)}
-            >
-              <Icon size={19} />
-              <span>{label}</span>
-              {id === "count" && <span className="nav-dot" />}
-            </button>
-          ))}
-        </nav>
-        <div className="system-card">
-          <span className="pulse" />
-          <strong>Prototype mode</strong>
-          <p>Repository-backed · local preview</p>
-        </div>
-        <button className="profile" onClick={() => setSettingsOpen(true)}>
-          <span className="avatar">SO</span>
-          <span>
-            <strong>Development User</strong>
-            <small>Supply Officer</small>
-          </span>
-          <ChevronDown size={16} />
-        </button>
-      </aside>
+      {!onDashboard && (
+        <aside className="sidebar">
+          <Brand />
+          <nav aria-label="Primary navigation">
+            {sections.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                className={tab === id ? "nav-item active" : "nav-item"}
+                onClick={() => showTab(id)}
+              >
+                <Icon size={19} />
+                <span>{label}</span>
+              </button>
+            ))}
+          </nav>
+          <div className="system-card">
+            <span className="pulse" />
+            <strong>
+              {runtime ? runtime.device.record.unit?.unitName : "Demo unit"}
+            </strong>
+            <p>{syncText}</p>
+          </div>
+          <button className="profile" onClick={() => setSettingsOpen(true)}>
+            <span className="avatar">{initialsOf}</span>
+            <span>
+              <strong>{who}</strong>
+              <small>{roleLabel(role)}</small>
+            </span>
+            <ChevronDown size={16} />
+          </button>
+        </aside>
+      )}
       <main className="main-stage">
-        <div
-          className={`environment-banner ${resolveBlockchainMode(import.meta.env.VITE_ARGUS_BLOCKCHAIN_MODE)}`}
-        >
-          <strong>BSV TESTNET</strong>
-          <span>Mainnet disabled</span>
+        <div className={`environment-banner ${mode}`} role="note">
+          <strong>{mode === "testnet" ? "BSV TESTNET" : "MOCK BLOCKCHAIN"}</strong>
+          <span>Development Environment · No Production Transactions</span>
         </div>
+        {revoked && (
+          <div className="workflow-error" role="alert">
+            A Master removed your access to {status?.unitName}. This device
+            still shows what it already had, but nothing new you record will
+            be accepted, and it cannot read anything written after your
+            removal.
+          </div>
+        )}
         <header className="topbar">
           <div>
-            <p className="eyebrow">BETHEL NJROTC SUPPLY</p>
+            <p className="eyebrow">
+              {(
+                runtime?.device.record.unit?.unitName ?? "A.R.G.U.S. demo"
+              ).toUpperCase()}
+            </p>
             <h1>{pageTitle(tab)}</h1>
           </div>
           <div className="top-actions">
-            <span className="sync">
+            <button
+              className="sync"
+              title={syncText}
+              onClick={() =>
+                setPanel(
+                  projection.sync.openConflicts
+                    ? "conflicts"
+                    : runtime
+                      ? "wallet"
+                      : null,
+                )
+              }
+            >
               <Wifi size={15} />
-              {sync}
-            </span>
+              <span className="sync-text">{syncText}</span>
+            </button>
             <button
               aria-label="Settings"
               className="icon-button"
@@ -447,218 +456,235 @@ function AuthenticatedApp({
             >
               <Settings size={20} />
             </button>
-            <span className="top-avatar">SO</span>
+            <button
+              className="top-identity"
+              onClick={() => setSettingsOpen(true)}
+              aria-label={`Signed in as ${who}, ${roleLabel(role)}`}
+              title={`${who} · ${roleLabel(role)}`}
+            >
+              <b aria-hidden="true">{initialsOf}</b>
+              <span>
+                <span>{who}</span>
+                <small>{roleLabel(role)}</small>
+              </span>
+            </button>
           </div>
         </header>
-        {notice && (
-          <div className="app-notice" role="status">
-            {notice}
-          </div>
+        {tab === "home" && (
+          <Dashboard
+            projection={projection}
+            sync={{ label: syncText, ...syncSnapshot }}
+            weights={preferences.readinessWeights}
+            unitName={
+              runtime?.device.record.unit?.unitName ?? "A.R.G.U.S. demo"
+            }
+            canViewActivity={canViewActivity}
+            navigate={openTarget}
+            onQuickAction={(action) => {
+              if (action === "count") setTab("count");
+              else {
+                setWorkflowCadetId(undefined);
+                setPanel(action === "issue" ? "cadet-issue" : "cadet-return");
+              }
+            }}
+          />
         )}
-        {tab === "count" && selected && (
-          <CountView
-            selected={selected}
-            count={count}
-            step={step}
-            query={query}
-            filtered={filtered}
-            last={history.at(-1)}
-            setQuery={setQuery}
-            setStep={setStep}
-            setCount={updateCount}
-            choose={choose}
-            undo={undo}
-            review={() => setPanel("review")}
+        {tab === "calendar" && (
+          <CalendarView
+            key={`calendar-${focused("calendar")?.nonce ?? 0}`}
+            initialEventId={focused("calendar")?.target.calendarEventId}
+            sync={syncSnapshot}
+            navigate={openTarget}
+            projection={projection}
+            controller={controller}
+            can={can}
+            memberName={memberName}
+            onProjection={setProjection}
+            notify={notify}
+          />
+        )}
+        {tab === "count" && (
+          <SharedCountView
+            key={countItemId ?? "count"}
+            projection={projection}
+            controller={controller}
+            can={can}
+            memberName={memberName}
+            onProjection={setProjection}
+            notify={notify}
+            syncNow={syncNow}
+            {...(countItemId ? { initialItemId: countItemId } : {})}
           />
         )}
         {tab === "inventory" && (
-          <InventoryView
-            items={filtered}
-            all={projection.inventory}
-            query={query}
-            setQuery={setQuery}
-            onAdd={() => setAddOpen(true)}
-            choose={(i) => {
-              choose(i);
+          <InventoryCatalogView
+            key={`inventory-${focused("inventory")?.nonce ?? 0}`}
+            initialAttentionOnly={
+              focused("inventory")?.target.filter === "attention"
+            }
+            initialItemId={focused("inventory")?.target.itemId}
+            projection={projection}
+            controller={controller}
+            can={can}
+            onProjection={setProjection}
+            notify={notify}
+            onCount={(itemId) => {
+              setCountItemId(itemId);
               setTab("count");
             }}
+            onOpenConflicts={() => setPanel("conflicts")}
+            countIntervalDays={preferences.countIntervalDays}
           />
         )}
         {tab === "cadets" && (
           <CadetsView
+            key={`cadets-${focused("cadets")?.nonce ?? 0}`}
+            initialCadetId={focused("cadets")?.target.cadetId}
+            initialFilter={
+              focused("cadets")?.target.filter === "inactive"
+                ? "INACTIVE"
+                : undefined
+            }
             projection={projection}
-            query={cadetQuery}
-            setQuery={setCadetQuery}
-            open={(id) => {
-              setSelectedCadetId(id);
-              setPanel("cadet");
-            }}
+            controller={controller}
+            can={can}
+            onProjection={setProjection}
+            notify={notify}
+            onIssue={(cadetId) => openCadetWorkflow("cadet-issue", cadetId)}
+            onReturn={(cadetId) => openCadetWorkflow("cadet-return", cadetId)}
           />
         )}
         {tab === "activity" && (
           <ActivityView
             projection={projection}
-            wallet={() => setWalletOpen(true)}
+            memberName={memberName}
+            runtime={runtime}
+            status={status}
           />
-        )}{" "}
+        )}
         {tab === "more" && (
           <CommandCenter
+            projection={projection}
+            hasRuntime={Boolean(runtime)}
+            can={can}
             open={setPanel}
             settings={() => setSettingsOpen(true)}
             lock={onLock}
           />
         )}
       </main>
-      <nav className="mobile-nav" aria-label="Mobile navigation">
-        {nav.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            className={tab === id ? "active" : ""}
-            onClick={() => setTab(id)}
-          >
-            <Icon size={21} />
-            <span>{label}</span>
-          </button>
-        ))}
-      </nav>
-      {panel === "review" && selected && (
-        <Drawer
-          title="Review physical count"
-          icon={<ClipboardCheck />}
-          close={() => setPanel(null)}
-        >
-          <div className="review-hero">
-            <div>
-              <small>OFFICIAL</small>
-              <strong>{selected.onHand}</strong>
-            </div>
-            <ArrowRight />
-            <div>
-              <small>PHYSICAL</small>
-              <strong>{count}</strong>
-            </div>
-          </div>
-          <div className={count === selected.onHand ? "validation" : "notice"}>
-            <Activity />
-            <div>
-              <strong>
-                {count - selected.onHand > 0 ? "+" : ""}
-                {count - selected.onHand} units
-              </strong>
-              <p>
-                {count === selected.onHand
-                  ? "Inventory matches the official record."
-                  : "Discrepancy will be recorded for review."}
-              </p>
-            </div>
-          </div>
-          <label className="field">
-            OPTIONAL NOTE
-            <textarea
-              maxLength={500}
-              value={countNote}
-              onChange={(event) => setCountNote(event.target.value)}
-              placeholder="Add context for this count…"
-            />
-          </label>
-          <p className="safe-note">
-            <ShieldCheck size={14} /> A signed event is created only when
-            submitted.
-          </p>
-          <button
-            className="primary-button"
-            onClick={() => {
-              const sessionId = `count_${crypto.randomUUID()}`,
-                note = countNote;
-              setPanel(null);
-              setCountNote("");
-              void command(
-                () =>
-                  controller.submitCount(
-                    selected.entityId,
-                    count,
-                    sessionId,
-                    note,
-                  ),
-                "Physical count submitted.",
-              );
-            }}
-          >
-            Submit count <Check />
-          </button>
-        </Drawer>
+      {notice && (
+        // Outside <main> and exempt from the drawers' inert background, so results of a drawer action are still announced.
+        <div className="app-notice" role="status" data-modal-keep>
+          {notice}
+        </div>
       )}
-      {panel === "cadet" && cadet && (
-        <CadetDrawer
-          cadet={cadet}
-          needs={projection.stillNeeded.filter(
-            (n) => n.cadetId === cadet.cadetId,
-          )}
-          close={() => setPanel(null)}
-          issue={() => setPanel("issue")}
-          returnItems={() => setPanel("return")}
-        />
+      {!onDashboard && (
+        <nav className="mobile-nav" aria-label="Mobile navigation">
+          {mobileNav.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              className={tab === id ? "active" : ""}
+              onClick={() => showTab(id)}
+            >
+              <Icon size={21} />
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
       )}
-      {(panel === "issue" || panel === "return") && (
+      {(panel === "cadet-issue" || panel === "cadet-return") && (
         <SupplyWorkflow
-          mode={panel === "issue" ? "ISSUE" : "RETURN"}
+          mode={panel === "cadet-issue" ? "ISSUE" : "RETURN"}
           projection={projection}
           controller={controller}
-          selectedCadetId={selectedCadetId || undefined}
+          selectedCadetId={workflowCadetId}
           onClose={() => setPanel(null)}
           onChanged={setProjection}
         />
       )}
       {panel === "bundles" && (
-        <BundlesPanel projection={projection} close={() => setPanel(null)} />
-      )}{" "}
+        <BundleEditorPanel
+          projection={projection}
+          controller={controller}
+          can={can}
+          memberName={memberName}
+          onProjection={setProjection}
+          notify={notify}
+          close={() => setPanel(null)}
+        />
+      )}
+      {panel === "import" && (
+        <RosterImportPanel
+          projection={projection}
+          controller={controller}
+          can={can}
+          onProjection={setProjection}
+          notify={notify}
+          close={() => setPanel(null)}
+        />
+      )}
+      {panel === "rollover" && (
+        <RolloverPanel
+          projection={projection}
+          controller={controller}
+          can={can}
+          onProjection={setProjection}
+          notify={notify}
+          close={() => setPanel(null)}
+        />
+      )}
       {panel === "needed" && (
-        <NeededPanel projection={projection} close={() => setPanel(null)} />
-      )}{" "}
-      {panel === "roles" && (
-        <RolesPanel identity={identity} close={() => setPanel(null)} />
-      )}{" "}
-      {panel && isComingPanel(panel) && (
-        <ComingPanel
-          panel={panel}
+        <NeededPanel
+          projection={projection}
+          close={() => setPanel(null)}
+          controller={controller}
+          canManage={can("cadets.manage")}
+          onProjection={setProjection}
+          notify={notify}
+          openCadet={(cadetId) => openTarget({ tab: "cadets", cadetId })}
+        />
+      )}
+      {panel === "conflicts" && (
+        <ConflictsPanel
+          projection={projection}
+          controller={controller}
+          can={can}
+          memberName={memberName}
+          close={() => setPanel(null)}
+          onProjection={setProjection}
+          notify={notify}
+        />
+      )}
+      {panel === "members" && runtime && (
+        <MembersPanel
+          runtime={runtime}
+          projection={projection}
+          close={() => setPanel(null)}
+          onProjection={setProjection}
+          notify={notify}
+        />
+      )}
+      {panel === "wallet" && runtime && status && (
+        <WalletPanel
+          runtime={runtime}
+          status={status}
+          close={() => setPanel(null)}
+          notify={notify}
+        />
+      )}
+      {panel === "diagnostics" && (
+        <DiagnosticsPanel
           projection={projection}
           close={() => setPanel(null)}
         />
       )}
       {settingsOpen && (
         <SettingsPanel
+          sections={sections}
           value={preferences}
-          projection={projection}
           change={setPreferences}
-          wallet={() => setWalletOpen(true)}
-          syncNow={() =>
-            command(
-              () => controller.sync(),
-              projection.sync.mode === "remote"
-                ? "Shared history synchronized."
-                : "Local repository checked; shared synchronization is not configured on this device.",
-            )
-          }
           close={() => setSettingsOpen(false)}
-        />
-      )}{" "}
-      {walletOpen && (
-        <WalletStatusPanel
-          provider={walletProvider}
-          close={() => setWalletOpen(false)}
-        />
-      )}{" "}
-      {addOpen && (
-        <AddItem
-          inventory={projection.inventory}
-          close={() => setAddOpen(false)}
-          save={(input) => {
-            setAddOpen(false);
-            void command(
-              () => controller.createInventoryItem(input),
-              `${input.name} was added.`,
-            );
-          }}
         />
       )}
     </div>
@@ -676,559 +702,84 @@ function Brand() {
     </div>
   );
 }
-function CountView({
-  selected,
-  count,
-  step,
-  query,
-  filtered,
-  last,
-  setQuery,
-  setStep,
-  setCount,
-  choose,
-  undo,
-  review,
-}: {
-  selected: InventoryProjection;
-  count: number;
-  step: number;
-  query: string;
-  filtered: InventoryProjection[];
-  last?: { name: string; from: number; to: number };
-  setQuery: (s: string) => void;
-  setStep: (n: number) => void;
-  setCount: (n: number) => void;
-  choose: (i: InventoryProjection) => void;
-  undo: () => void;
-  review: () => void;
-}) {
-  const difference = count - selected.onHand;
-  const custom = () => {
-    const n = Number.parseInt(
-      prompt("Enter a count increment greater than zero", String(step)) ?? "",
-      10,
-    );
-    if (Number.isInteger(n) && n > 0) setStep(n);
-  };
-  return (
-    <div className="content count-page">
-      <section className="hero-row">
-        <div>
-          <div className="section-kicker">
-            <span />
-            <b>ACTIVE SESSION</b>
-            <span />
-          </div>
-          <h2>Count with confidence.</h2>
-          <p>
-            Every tap stays in this local draft. Official inventory changes only
-            after review.
-          </p>
-        </div>
-        <div className="session-chip">
-          <span className="pulse" />
-          <div>
-            <small>DRAFT</small>
-            <strong>Physical inventory</strong>
-          </div>
-          <ChevronDown size={16} />
-        </div>
-      </section>
-      <div className="search-wrap">
-        <Search />
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search item name or CDMIS NIIN…"
-          aria-label="Search inventory"
-        />
-        <kbd>⌘ K</kbd>
-        {query && (
-          <div className="search-results">
-            {filtered.length ? (
-              filtered.map((i) => (
-                <button key={i.entityId} onClick={() => choose(i)}>
-                  <span>
-                    <strong>{i.name}</strong>
-                    <small>
-                      {i.category} · {i.niin}
-                    </small>
-                  </span>
-                  <b>{i.variant}</b>
-                </button>
-              ))
-            ) : (
-              <p>No inventory matches that search.</p>
-            )}
-          </div>
-        )}
-      </div>
-      <div className="count-layout">
-        <section className="count-card marble-card">
-          <div className="item-heading">
-            <div className="item-icon">
-              <Boxes />
-            </div>
-            <div>
-              <span>{selected.category.toUpperCase()}</span>
-              <h3>{selected.name}</h3>
-              <p>
-                Size: <strong>{selected.variant}</strong> · {selected.niin}
-              </p>
-            </div>
-          </div>
-          <div className="count-display">
-            <small>YOUR PHYSICAL COUNT</small>
-            <strong>{count}</strong>
-            <span>UNITS COUNTED</span>
-          </div>
-          <div className="step-label">
-            <span>COUNT BY</span>
-            <div>
-              {[1, 5, 10].map((n) => (
-                <button
-                  key={n}
-                  className={step === n ? "active" : ""}
-                  onClick={() => setStep(n)}
-                >
-                  {n}
-                </button>
-              ))}
-              <button
-                className={![1, 5, 10].includes(step) ? "active" : ""}
-                onClick={custom}
-              >
-                {![1, 5, 10].includes(step) ? step : "Custom"}
-              </button>
-            </div>
-          </div>
-          <div className="counter-actions">
-            <button
-              className="stone-button minus"
-              onClick={() => setCount(count - step)}
-            >
-              <Minus />
-              <span>Subtract {step}</span>
-            </button>
-            <button
-              className="stone-button plus"
-              onClick={() => setCount(count + step)}
-            >
-              <Plus />
-              <span>Add {step}</span>
-            </button>
-          </div>
-          <button className="undo-button" disabled={!last} onClick={undo}>
-            <RotateCcw size={16} />
-            {last
-              ? `Undo ${last.name}: ${last.to} → ${last.from}`
-              : "Nothing to undo"}
-          </button>
-        </section>
-        <aside className="review-card">
-          <div className="card-title">
-            <span>
-              <ClipboardCheck />
-            </span>
-            <div>
-              <small>LIVE COMPARISON</small>
-              <h3>Count review</h3>
-            </div>
-          </div>
-          <div className="stat-row">
-            <span>
-              Official on hand<small>Before this count</small>
-            </span>
-            <strong>{selected.onHand}</strong>
-          </div>
-          <div className="stat-row">
-            <span>
-              Physical count<small>Local draft</small>
-            </span>
-            <strong>{count}</strong>
-          </div>
-          <div
-            className={
-              difference === 0 ? "difference match" : "difference warning"
-            }
-          >
-            <span>{difference === 0 ? <ShieldCheck /> : <Activity />}</span>
-            <div>
-              <small>DIFFERENCE</small>
-              <strong>
-                {difference > 0 ? "+" : ""}
-                {difference} units
-              </strong>
-              <p>
-                {difference === 0
-                  ? "Inventory matches the record."
-                  : "Administrator review required."}
-              </p>
-            </div>
-          </div>
-          <div className="contributors">
-            <p>
-              <strong>Local counting session</strong>
-              <br />
-              Draft saved in this view
-            </p>
-            <Cloud />
-          </div>
-          <button className="primary-button" onClick={review}>
-            Review &amp; submit <ArrowRight />
-          </button>
-          <p className="safe-note">
-            <ShieldCheck />
-            Draft only—official inventory is unchanged
-          </p>
-        </aside>
-      </div>
-    </div>
-  );
-}
 
-function Summary({
-  label,
-  value,
-  detail,
-  accent = false,
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  accent?: boolean;
-}) {
-  return (
-    <div className={accent ? "summary-card accent" : "summary-card"}>
-      <small>{label.toUpperCase()}</small>
-      <strong>{value}</strong>
-      <p>{detail}</p>
-    </div>
-  );
-}
-function InventoryView({
-  items,
-  all,
-  query,
-  setQuery,
-  onAdd,
-  choose,
-}: {
-  items: InventoryProjection[];
-  all: InventoryProjection[];
-  query: string;
-  setQuery: (s: string) => void;
-  onAdd: () => void;
-  choose: (i: InventoryProjection) => void;
-}) {
-  const health = (i: InventoryProjection) =>
-    i.reorderAt !== undefined && i.onHand <= i.reorderAt
-      ? "Low stock"
-      : i.active
-        ? "Healthy"
-        : "Inactive";
-  return (
-    <div className="content">
-      <section className="page-intro">
-        <div>
-          <p className="eyebrow">SERVICEABLE INVENTORY</p>
-          <h2>Every asset, accounted for.</h2>
-          <p>Search by item, size, category, or CDMIS NIIN.</p>
-        </div>
-        <button className="gold-button" onClick={onAdd}>
-          <PackagePlus />
-          Add item
-        </button>
-      </section>
-      <div className="summary-grid">
-        <Summary
-          label="On hand"
-          value={String(all.reduce((s, i) => s + i.onHand, 0))}
-          detail={`${all.length} tracked variants`}
-        />
-        <Summary
-          label="Issued"
-          value={String(all.reduce((s, i) => s + i.issued, 0))}
-          detail="Across active cadets"
-        />
-        <Summary
-          label="Needs attention"
-          value={String(all.filter((i) => health(i) !== "Healthy").length)}
-          detail="Low stock or inactive"
-          accent
-        />
-      </div>
-      <div className="table-card">
-        <div className="table-tools">
-          <div className="inline-search">
-            <Search />
-            <input
-              aria-label="Search inventory table"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search inventory…"
-            />
-          </div>
-          <button>
-            <Settings />
-            Filters
-          </button>
-        </div>
-        <div className="inventory-list">
-          {items.length ? (
-            items.map((i) => (
-              <button
-                className="inventory-row"
-                key={i.entityId}
-                onClick={() => choose(i)}
-              >
-                <span className="category-mark">
-                  {i.name.slice(0, 2).toUpperCase()}
-                </span>
-                <span className="item-name">
-                  <strong>{i.name}</strong>
-                  <small>
-                    {i.category} · {i.niin}
-                  </small>
-                </span>
-                <span>
-                  <small>SIZE</small>
-                  <b>{i.variant}</b>
-                </span>
-                <span>
-                  <small>ON HAND</small>
-                  <b>{i.onHand}</b>
-                </span>
-                <span>
-                  <small>ISSUED</small>
-                  <b>{i.issued}</b>
-                </span>
-                <em className={health(i) === "Healthy" ? "ready" : "attention"}>
-                  {health(i)}
-                </em>
-                <ArrowRight />
-              </button>
-            ))
-          ) : (
-            <p className="empty-state">No inventory matches that search.</p>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-function CadetsView({
-  projection,
-  query,
-  setQuery,
-  open,
-}: {
-  projection: ArgusAppProjection;
-  query: string;
-  setQuery: (s: string) => void;
-  open: (id: string) => void;
-}) {
-  const visible = projection.cadets.filter((c) =>
-    matchesSearch(query, c.fullName, c.nsLevel, c.gender, c.status),
-  );
-  return (
-    <div className="content">
-      <section className="page-intro">
-        <div>
-          <p className="eyebrow">PERSONNEL ACCOUNTABILITY</p>
-          <h2>Cadet property records.</h2>
-          <p>
-            Readiness is derived from current property and Still Needed
-            requirements.
-          </p>
-        </div>
-        <button className="gold-button" disabled title="Coming Later">
-          <UserRound />
-          Add cadet · Coming Later
-        </button>
-      </section>
-      <div className="table-card">
-        <div className="table-tools">
-          <div className="inline-search">
-            <Search />
-            <input
-              aria-label="Search cadets"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search cadet name…"
-            />
-          </div>
-        </div>
-        <div className="cadet-grid">
-          {visible.map((c) => (
-            <button
-              className="cadet-card"
-              key={c.cadetId}
-              onClick={() => open(c.cadetId)}
-            >
-              <span className="large-avatar">{initials(c.fullName)}</span>
-              <span>
-                <strong>{c.fullName}</strong>
-                <small>
-                  {c.nsLevel} · {c.gender} · {c.status}
-                </small>
-              </span>
-              <div>
-                <b>{c.propertyCount}</b>
-                <small>Current property</small>
-              </div>
-              <em
-                className={
-                  c.readiness.status === "READY" ? "ready" : "attention"
-                }
-              >
-                {c.readiness.status} · {c.stillNeededCount} needed
-              </em>
-              <ArrowRight />
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-function ActivityView({
-  projection,
-  wallet,
-}: {
-  projection: ArgusAppProjection;
-  wallet: () => void;
-}) {
-  return (
-    <div className="content">
-      <section className="page-intro">
-        <div>
-          <p className="eyebrow">AUDIT TRAIL</p>
-          <h2>Nothing changes silently.</h2>
-          <p>
-            Operational details remain private; public audit state is reported
-            separately and truthfully.
-          </p>
-        </div>
-        <button onClick={wallet}>Testnet wallet status</button>
-      </section>
-      <section
-        className="distributed-panel"
-        aria-label="A.R.G.U.S. distributed system"
-      >
-        <strong>DISTRIBUTED SYSTEM · LOCAL DEVELOPMENT</strong>
-        <div>
-          <span>
-            <small>IDENTITY</small>supply-officer-development
-          </span>
-          <span>
-            <small>AUTHORIZATION</small>SUPPLY OFFICER
-          </span>
-          <span>
-            <small>LOCAL STORE</small>IndexedDB v4
-          </span>
-          <span>
-            <small>EVENTS</small>
-            {projection.events.length}
-          </span>
-          <span>
-            <small>OUTBOX</small>
-            {projection.sync.outbox}
-          </span>
-          <span>
-            <small>CONFLICTS</small>
-            {projection.sync.openConflicts}
-          </span>
-          <span>
-            <small>PRIVATE SYNC</small>
-            {projection.sync.outbox ? "QUEUED" : "LOCAL ONLY"}
-          </span>
-          <span>
-            <small>AUDIT TARGET</small>TESTNET / MOCK
-          </span>
-        </div>
-      </section>
-      <div className="timeline">
-        {projection.events.length ? (
-          projection.events.map((r) => (
-            <div className="event" key={r.event.eventId}>
-              <span className="event-icon">
-                <Activity />
-              </span>
-              <div>
-                <strong>
-                  {activityLabel(
-                    projection,
-                    r.event.eventId,
-                    r.event.eventType,
-                  )}
-                </strong>
-                <p>
-                  {r.event.eventType} · {r.event.entityId}
-                </p>
-                <div className="audit-metadata">
-                  <span>
-                    <b>Actor</b>
-                    {r.event.actorPublicIdentity}
-                  </span>
-                  <span>
-                    <b>Local</b>Persisted
-                  </span>
-                  <span>
-                    <b>Private sync</b>
-                    {r.syncStatus}
-                  </span>
-                  <span>
-                    <b>BSV audit</b>
-                    {r.auditStatus}
-                  </span>
-                </div>
-              </div>
-              <span className="event-user">SO</span>
-              <time>{new Date(r.event.timestamp).toLocaleString()}</time>
-            </div>
-          ))
-        ) : (
-          <p className="empty-state">No signed operational events yet.</p>
-        )}
-      </div>
-    </div>
-  );
-}
+type CommandAction = [Exclude<Panel, null>, string, string, typeof Activity];
 function CommandCenter({
+  projection,
+  hasRuntime,
+  can,
   open,
   settings,
   lock,
 }: {
+  projection: ArgusAppProjection;
+  hasRuntime: boolean;
+  can: (permission: ArgusPermission) => boolean;
   open: (p: Panel) => void;
   settings: () => void;
   lock?: () => void;
 }) {
-  const actions = [
+  const unitActions: CommandAction[] = hasRuntime
+    ? [
+        [
+          "members",
+          "Members & access",
+          "Admit people with a join code, see who is in the unit",
+          KeyRound,
+        ],
+        [
+          "wallet",
+          "Wallet & sync",
+          "This device's testnet coins and chain sync status",
+          Wallet,
+        ],
+      ]
+    : [];
+  const actions: CommandAction[] = [
+    ...unitActions,
+    [
+      "conflicts",
+      `Conflicts${projection.sync.openConflicts ? ` · ${projection.sync.openConflicts} open` : ""}`,
+      "Competing offline changes that need a decision",
+      AlertTriangle,
+    ],
     [
       "bundles",
       "Issue bundles",
-      "Configure exact uniform bundle mappings",
+      can("bundles.manage")
+        ? "Edit bundle contents; every change is a new version"
+        : "Bundle contents and version history",
       Shirt,
     ],
+    ...(can("cadets.manage")
+      ? ([
+          [
+            "import",
+            "Import cadets",
+            "Add a class of cadets by cadet ID (e.g. for NCO)",
+            UserPlus,
+          ],
+          [
+            "rollover",
+            "Annual rollover",
+            "Advance NS levels and graduate NS4 cadets",
+            GraduationCap,
+          ],
+        ] as CommandAction[])
+      : []),
     [
       "needed",
       "Still needed",
-      "Track unfulfilled cadet requirements",
+      "Unfulfilled cadet requirements",
       ClipboardCheck,
     ],
-    ["roster", "Roster administration", "Manage cadet lifecycle", Users],
-    ["import", "Import preview", "Review roster imports safely", FileUp],
-    ["roles", "Roles & access", "Authorization and credentials", KeyRound],
-    ["rollover", "Annual rollover", "Preview lifecycle changes", CalendarRange],
     [
       "diagnostics",
       "Diagnostics",
-      "Repository health and migration warnings",
+      "Data integrity and records that could not be applied",
       ShieldCheck,
     ],
-  ] as const;
+  ];
   return (
     <div className="content">
       <section className="page-intro">
@@ -1248,7 +799,6 @@ function CommandCenter({
               <strong>{title}</strong>
               <p>{detail}</p>
             </div>
-            <ArrowRight />
           </button>
         ))}
         <button onClick={settings}>
@@ -1257,9 +807,8 @@ function CommandCenter({
           </span>
           <div>
             <strong>Settings</strong>
-            <p>Appearance, behavior, and diagnostics</p>
+            <p>Appearance and behavior on this device</p>
           </div>
-          <ArrowRight />
         </button>
         {lock && (
           <button onClick={lock}>
@@ -1268,215 +817,37 @@ function CommandCenter({
             </span>
             <div>
               <strong>Lock this device</strong>
-              <p>Return to the passphrase unlock screen</p>
+              <p>Clear decrypted data from memory and require the passphrase</p>
             </div>
-            <ArrowRight />
           </button>
         )}
       </div>
+      <p className="safe-note">
+        <ShieldCheck size={14} />{" "}
+        {hasRuntime
+          ? "Limitation: “verified” means the BSV testnet service reports the change in a mined block; this app does not yet check the block’s proof itself."
+          : "Demo: records stay on this device and are never written to a blockchain."}
+      </p>
     </div>
   );
 }
-function Drawer({
-  title,
-  icon,
-  close,
-  children,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  close: () => void;
-  children: React.ReactNode;
-}) {
-  useEffect(() => {
-    const dismiss = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-    document.addEventListener("keydown", dismiss);
-    return () => document.removeEventListener("keydown", dismiss);
-  }, [close]);
-  return (
-    <div
-      className="drawer-backdrop"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) close();
-      }}
-    >
-      <aside
-        className="demo-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-      >
-        <header>
-          <span className="drawer-icon">{icon}</span>
-          <div>
-            <small>A.R.G.U.S. COMMAND PANEL</small>
-            <h2>{title}</h2>
-          </div>
-          <button
-            className="drawer-close"
-            aria-label="Close panel"
-            onClick={close}
-          >
-            <X />
-          </button>
-        </header>
-        {children}
-      </aside>
-    </div>
-  );
-}
-function CadetDrawer({
-  cadet,
-  needs,
-  close,
-  issue,
-  returnItems,
-}: {
-  cadet: ArgusAppProjection["cadets"][number];
-  needs: ArgusAppProjection["stillNeeded"];
-  close: () => void;
-  issue: () => void;
-  returnItems: () => void;
-}) {
-  return (
-    <Drawer title={cadet.fullName} icon={<UserRound />} close={close}>
-      <div className="record-hero">
-        <span className="large-avatar">{initials(cadet.fullName)}</span>
-        <div>
-          <strong>
-            {cadet.nsLevel} · {cadet.gender}
-          </strong>
-          <p>{cadet.status} personnel record</p>
-        </div>
-        <em
-          className={cadet.readiness.status === "READY" ? "ready" : "attention"}
-        >
-          {cadet.readiness.status}
-        </em>
-      </div>
-      {cadet.profileNeedsReview && (
-        <div className="notice" role="alert">
-          <Activity />
-          <span>
-            <strong>Profile review required</strong>
-            <br />
-            Migrated profile information could not be fully verified.
-          </span>
-        </div>
-      )}
-      <div className="record-stats">
-        <Summary
-          label="Property"
-          value={String(cadet.propertyCount)}
-          detail="Items currently held"
-        />
-        <Summary
-          label="Readiness"
-          value={`${cadet.readiness.percent}%`}
-          detail={`${cadet.stillNeededCount} still needed`}
-        />
-      </div>
-      <h3>Current Property</h3>
-      <div className="panel-rows">
-        {cadet.currentProperty.length ? (
-          cadet.currentProperty.map((p) => (
-            <div className="needed-row" key={p.propertyId}>
-              <span>
-                <strong>{p.label}</strong>
-                <small>
-                  {p.variant} · quantity {p.quantity}
-                </small>
-              </span>
-            </div>
-          ))
-        ) : (
-          <p className="empty-state">No current property.</p>
-        )}
-      </div>
-      <h3>Still Needed</h3>
-      {needs.length ? (
-        needs.map((n) => (
-          <div className="needed-row" key={n.requirementId}>
-            <span>
-              <strong>{n.displayLabel}</strong>
-              <small>
-                {n.size ?? "No variant"} · {n.status}
-              </small>
-            </span>
-            <b>{n.quantityNeeded - n.quantityFulfilled}</b>
-          </div>
-        ))
-      ) : (
-        <p>No open requirements.</p>
-      )}
-      <div className="split-actions">
-        <button onClick={returnItems}>Return Items</button>
-        <button
-          className="primary-button"
-          disabled={cadet.status !== "ACTIVE"}
-          onClick={issue}
-        >
-          Issue Items
-        </button>
-      </div>
-    </Drawer>
-  );
-}
-function BundlesPanel({
-  projection,
-  close,
-}: {
-  projection: ArgusAppProjection;
-  close: () => void;
-}) {
-  return (
-    <Drawer title="Bundle selection" icon={<Shirt />} close={close}>
-      {projection.bundles.map((b) => {
-        const current = b.versions.find((v) => v.version === b.currentVersion)!;
-        return (
-          <details className="panel-rows" key={b.bundleId}>
-            <summary>
-              <strong>{current.displayName}</strong> · v{b.currentVersion} ·{" "}
-              {current.active ? "ACTIVE" : "INACTIVE"}
-              <small>
-                {current.genderApplicability} · {b.mapping.mapped}/
-                {b.mapping.total} mapped
-              </small>
-            </summary>
-            <div>
-              {current.lines
-                .sort((a, z) => a.order - z.order)
-                .map((l) => (
-                  <p key={l.lineId}>
-                    <b>{l.displayLabel}</b> ·{" "}
-                    {l.required ? "Required" : "Optional"} ·{" "}
-                    {l.itemId ? "Mapped" : "Inventory item not configured"}
-                  </p>
-                ))}
-              <h4>Version history</h4>
-              {[...b.versions].reverse().map((v) => (
-                <p key={v.version}>
-                  v{v.version}
-                  {v.version === b.currentVersion ? " · CURRENT" : ""} ·{" "}
-                  {new Date(v.createdAt).toLocaleDateString()} ·{" "}
-                  {v.actorPublicIdentity}
-                </p>
-              ))}
-            </div>
-          </details>
-        );
-      })}
-    </Drawer>
-  );
-}
+
 function NeededPanel({
   projection,
   close,
+  controller,
+  canManage,
+  onProjection,
+  notify,
+  openCadet,
 }: {
   projection: ArgusAppProjection;
   close: () => void;
+  controller: DistributedAppController;
+  canManage: boolean;
+  onProjection: (projection: ArgusAppProjection) => void;
+  notify: (message: string) => void;
+  openCadet: (cadetId: string) => void;
 }) {
   const requirements = projection.stillNeeded,
     remaining = requirements.reduce(
@@ -1492,8 +863,11 @@ function NeededPanel({
           <small>OPEN REQUIREMENTS</small>
           <strong>{requirements.length}</strong>
           <span>
-            Across {new Set(requirements.map((item) => item.cadetId)).size}{" "}
-            cadets
+            Across{" "}
+            {plural(
+              new Set(requirements.map((item) => item.cadetId)).size,
+              "cadet",
+            )}
           </span>
         </div>
         <div>
@@ -1502,42 +876,22 @@ function NeededPanel({
           <span>{ready} ready to issue</span>
         </div>
       </section>
-      <div className="needed-section-heading">
-        <div>
-          <p className="operational-label">READINESS QUEUE</p>
-          <h3>Unfulfilled equipment</h3>
-        </div>
-        <span>{requirements.length} records</span>
-      </div>
       <div className="needed-list">
         {requirements.length ? (
           requirements.map((n) => {
-            const count = Math.max(0, n.quantityNeeded - n.quantityFulfilled),
-              status = !n.availability.configured
-                ? "Not configured"
-                : n.availability.available
-                  ? `${n.availability.onHand} available`
-                  : "Awaiting stock",
-              progressPercent = Math.min(
-                100,
-                n.quantityNeeded
-                  ? (100 * n.quantityFulfilled) / n.quantityNeeded
-                  : 100,
-              );
+            const count = Math.max(0, n.quantityNeeded - n.quantityFulfilled);
+            const cadet = projection.cadets.find(
+              (c) => c.cadetId === n.cadetId,
+            );
+            const code = cadet ? cadetLabel(cadet) : "Missing cadet";
             return (
               <article className="needed-card" key={n.requirementId}>
                 <div className="needed-card-main">
                   <span className="needed-initials" aria-hidden="true">
-                    {initials(
-                      projection.cadets.find((c) => c.cadetId === n.cadetId)
-                        ?.fullName ?? "?",
-                    )}
+                    {code.slice(2, 4)}
                   </span>
                   <div>
-                    <strong>
-                      {projection.cadets.find((c) => c.cadetId === n.cadetId)
-                        ?.fullName ?? "Missing cadet"}
-                    </strong>
+                    <strong>{code}</strong>
                     <p>
                       {n.displayLabel}
                       <span>·</span>
@@ -1568,22 +922,24 @@ function NeededPanel({
                     }
                   >
                     <span />
-                    {status}
+                    {!n.availability.configured
+                      ? "Not configured"
+                      : n.availability.available
+                        ? `${n.availability.onHand} available`
+                        : "Awaiting stock"}
                   </em>
                 </div>
-                <div
-                  className="needed-progress"
-                  aria-label={`${n.quantityFulfilled} of ${n.quantityNeeded} fulfilled`}
-                >
-                  <span
-                    style={{
-                      width: `${progressPercent}%`,
-                    }}
-                  />
-                  <small>
-                    {n.quantityFulfilled} of {n.quantityNeeded} fulfilled
-                  </small>
-                </div>
+                {canManage && (
+                  <div className="needed-card-actions">
+                    <StillNeededActions
+                      need={n}
+                      owner={code}
+                      controller={controller}
+                      onProjection={onProjection}
+                      notify={notify}
+                    />
+                  </div>
+                )}
               </article>
             );
           })
@@ -1594,307 +950,75 @@ function NeededPanel({
           </p>
         )}
       </div>
+      <StandardIssueGaps projection={projection} openCadet={openCadet} />
     </Drawer>
   );
 }
-function isComingPanel(
-  panel: Panel,
-): panel is "roster" | "import" | "rollover" | "diagnostics" {
-  return (
-    panel !== null &&
-    ["roster", "import", "rollover", "diagnostics"].includes(panel)
-  );
-}
-function RolesPanel({
-  identity,
+
+function DiagnosticsPanel({
+  projection,
   close,
 }: {
-  identity?: {
-    publicIdentity: string;
-    role: DeviceRole;
-    people: KnownPerson[];
-    admit?: (
-      identityCode: string,
-      role: Exclude<ArgusRole, "MASTER">,
-      expiresAt?: string,
-    ) => Promise<string>;
-  };
+  projection: ArgusAppProjection;
   close: () => void;
 }) {
+  const report = projection.integrity;
   return (
-    <Drawer title="Roles & access" icon={<KeyRound />} close={close}>
-      {identity ? (
-        <>
-          <div className="panel-rows">
-            <p>
-              <small>IDENTITY</small>
-              <br />
-              {identity.publicIdentity}
-            </p>
-            <p>
-              <small>ROLE</small>
-              <br />
-              {identity.role}
-            </p>
-          </div>
-          <PeopleList
-            people={identity.people}
-            isMaster={identity.role === "MASTER"}
-          />
-          {identity.admit && <AdmitPersonForm admit={identity.admit} />}
-        </>
-      ) : (
-        <div className="notice">
-          <Activity />
-          <span>
-            <strong>Coming Later</strong>
-            <br />
-            This workflow remains visible but disabled until it can use the
-            authoritative repository command model.
-          </span>
+    <Drawer title="Diagnostics" icon={<ShieldCheck />} close={close}>
+      <div className={report.healthy ? "validation" : "notice"}>
+        <ShieldCheck />
+        <div>
+          <strong>
+            {report.healthy ? "Data integrity healthy" : "Attention required"}
+          </strong>
+          <p>
+            {report.issues.length
+              ? `${plural(report.issues.length, "problem")} found in the records on this device. Nothing was changed or deleted.`
+              : "No problems found in the records on this device."}
+          </p>
         </div>
-      )}
-    </Drawer>
-  );
-}
-
-function PeopleList({
-  people,
-  isMaster,
-}: {
-  people: KnownPerson[];
-  isMaster: boolean;
-}) {
-  return (
-    <div className="panel-rows">
-      <p>
-        <small>PEOPLE THIS DEVICE KNOWS</small>
-      </p>
-      <ul aria-label="People this device knows">
-        {people.map((person) => (
-          <li key={person.publicIdentity}>
-            <p>
-              {person.you && <strong>You · </strong>}
-              <span>{person.role}</span>
-              {person.issuedAt &&
-                ` · admitted ${new Date(person.issuedAt).toLocaleDateString()}`}
-              <br />
-              <small>{person.publicIdentity}</small>
-            </p>
-          </li>
-        ))}
-      </ul>
-      {!isMaster && (
-        <p>
-          Other devices this unit has admitted are learned through the chain in
-          a later epic; for now this device knows only itself and the Master
-          that admitted it.
-        </p>
-      )}
-    </div>
-  );
-}
-
-function AdmitPersonForm({
-  admit,
-}: {
-  admit: (
-    identityCode: string,
-    role: Exclude<ArgusRole, "MASTER">,
-    expiresAt?: string,
-  ) => Promise<string>;
-}) {
-  const [identityCode, setIdentityCode] = useState("");
-  const [role, setRole] =
-    useState<Exclude<ArgusRole, "MASTER">>("SUPPLY_OFFICER");
-  const [expiresAt, setExpiresAt] = useState("");
-  const [credentialCode, setCredentialCode] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-    setCredentialCode("");
-    setCopied(false);
-    try {
-      const code = await admit(
-        identityCode,
-        role,
-        expiresAt ? new Date(expiresAt).toISOString() : undefined,
-      );
-      setCredentialCode(code);
-      setIdentityCode("");
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "This person could not be admitted.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const copy = async () => {
-    await navigator.clipboard.writeText(credentialCode);
-    setCopied(true);
-  };
-
-  return (
-    <form className="panel-rows" aria-label="Admit a person" onSubmit={submit}>
-      <p>
-        <small>ADMIT A PERSON</small>
-      </p>
-      <label className="field">
-        IDENTITY CODE
-        <textarea
-          aria-label="Identity code"
-          value={identityCode}
-          onChange={(event) => setIdentityCode(event.target.value)}
-          rows={3}
-          required
-        />
-      </label>
-      <label className="field">
-        ROLE
-        <select
-          aria-label="Role"
-          value={role}
-          onChange={(event) =>
-            setRole(event.target.value as Exclude<ArgusRole, "MASTER">)
-          }
-        >
-          <option value="INSTRUCTOR">Instructor</option>
-          <option value="SUPPLY_OFFICER">Supply Officer</option>
-          <option value="SUPPLY_ASSISTANT">Supply Assistant</option>
-        </select>
-      </label>
-      <label className="field">
-        EXPIRES (OPTIONAL)
-        <input
-          type="date"
-          aria-label="Expires"
-          value={expiresAt}
-          onChange={(event) => setExpiresAt(event.target.value)}
-        />
-      </label>
-      {error && (
-        <div className="workflow-error" role="alert">
-          {error}
-        </div>
-      )}
-      <div className="modal-actions">
-        <button className="primary-button" type="submit" disabled={busy}>
-          Admit
-        </button>
       </div>
-      {credentialCode && (
-        <>
-          <label className="field">
-            CREDENTIAL CODE FOR THIS PERSON
-            <textarea
-              readOnly
-              aria-label="Credential code"
-              value={credentialCode}
-              rows={3}
-            />
-          </label>
-          <div className="modal-actions">
-            <button type="button" onClick={() => void copy()}>
-              {copied ? "Credential code copied ✓" : "Copy credential code"}
-            </button>
-          </div>
-        </>
-      )}
-    </form>
-  );
-}
-function ComingPanel({
-  panel,
-  projection,
-  close,
-}: {
-  panel: Exclude<
-    Panel,
-    | null
-    | "review"
-    | "cadet"
-    | "issue"
-    | "return"
-    | "bundles"
-    | "needed"
-    | "roles"
-  >;
-  projection: ArgusAppProjection;
-  close: () => void;
-}) {
-  const title = {
-    roster: "Cadet roster",
-    import: "Import 24 cadets",
-    rollover: "Annual rollover preview",
-    diagnostics: "Repository diagnostics",
-  }[panel];
-  return (
-    <Drawer title={title} icon={<ShieldCheck />} close={close}>
-      {panel === "diagnostics" ? (
-        <>
-          <div
-            className={projection.integrity.healthy ? "validation" : "notice"}
-          >
-            <ShieldCheck />
-            <div>
-              <strong>
-                {projection.integrity.healthy
-                  ? "Repository healthy"
-                  : "Attention required"}
-              </strong>
-              <p>
-                {projection.integrity.issues.length} issues detected
-                non-destructively.
-              </p>
-            </div>
-          </div>
-          <div className="panel-rows">
-            <p>Orphan references: {projection.integrity.orphanReferences}</p>
-            <p>Projection errors: {projection.integrity.projectionErrors}</p>
-            <p>Migration warnings: {projection.integrity.migrationWarnings}</p>
-          </div>
-        </>
-      ) : (
-        <div className="notice">
-          <Activity />
-          <span>
-            <strong>Coming Later</strong>
-            <br />
-            This workflow remains visible but disabled until it can use the
-            authoritative repository command model.
-          </span>
+      <div className="panel-rows">
+        <Summary
+          label="Events"
+          value={String(projection.events.length)}
+          detail="Signed changes known to this device"
+        />
+        <Summary
+          label="Not applied"
+          value={String(projection.rejected.length)}
+          detail="Kept, re-checked whenever new history arrives"
+          accent={projection.rejected.length > 0}
+        />
+      </div>
+      {projection.rejected.length > 0 && (
+        <div className="panel-rows" aria-label="Records not applied">
+          {projection.rejected.map((r) => (
+            <p key={r.eventId}>
+              <b>{r.eventType.replaceAll("_", " ").toLowerCase()}</b> ·{" "}
+              {r.reason}
+            </p>
+          ))}
         </div>
       )}
+      <p>A.R.G.U.S. version {__APP_VERSION__}</p>
     </Drawer>
   );
 }
+
 function SettingsPanel({
+  sections,
   value,
-  projection,
   change,
-  wallet,
-  syncNow,
   close,
 }: {
+  sections: typeof nav;
   value: UserSettings;
-  projection: ArgusAppProjection;
   change: (v: UserSettings) => void;
-  wallet: () => void;
-  syncNow: () => Promise<void>;
   close: () => void;
 }) {
   const set = <K extends keyof UserSettings>(k: K, v: UserSettings[K]) =>
     change({ ...value, [k]: v });
-  const report = projection.integrity;
   return (
     <Drawer title="Settings" icon={<Settings />} close={close}>
       <h3>Appearance</h3>
@@ -1958,700 +1082,38 @@ function SettingsPanel({
           value={value.defaultSection}
           onChange={(e) => set("defaultSection", e.target.value as Tab)}
         >
-          {nav.map((n) => (
+          {sections.map((n) => (
             <option key={n.id} value={n.id}>
               {pageTitle(n.id)}
             </option>
           ))}
         </select>
       </label>
-      <h3>Shared Synchronization</h3>
-      <div
-        className={projection.sync.mode === "remote" ? "validation" : "notice"}
-        role="status"
-      >
-        <Wifi />
-        <div>
-          <strong>
-            {projection.sync.mode === "remote"
-              ? "SHARED SYNC · CONNECTED"
-              : "LOCAL ONLY"}
-          </strong>
-          <p>
-            Pending: {projection.sync.outbox} · Conflicts:{" "}
-            {projection.sync.openConflicts}
-          </p>
-        </div>
-      </div>
-      <button onClick={() => void syncNow()}>Sync now</button>
-      <h3>BSV testnet</h3>
-      <button onClick={wallet}>Open Testnet Wallet Status</button>
-      <h3>Diagnostics</h3>
-      <div className={report.healthy ? "validation" : "notice"}>
-        <ShieldCheck />
-        <div>
-          <strong>
-            DATA INTEGRITY · {report.healthy ? "Healthy" : "Action required"}
-          </strong>
-          <p>
-            {report.orphanReferences} orphans · {report.projectionErrors}{" "}
-            projection errors · {report.migrationWarnings} migration warnings
-          </p>
-        </div>
-      </div>
+      <h3>Notifications</h3>
+      <DeviceNotificationSettings
+        enabled={value.deviceNotifications}
+        onChange={(on) => set("deviceNotifications", on)}
+      />
+      <ReadinessWeightsEditor
+        value={value.readinessWeights}
+        change={(weights) => set("readinessWeights", weights)}
+      />
+      <h3>Inventory</h3>
+      <label className="field">
+        COUNT DUE AFTER
+        <select
+          aria-label="Count due after"
+          value={value.countIntervalDays}
+          onChange={(e) => set("countIntervalDays", Number(e.target.value))}
+        >
+          {COUNT_INTERVAL_CHOICES.map((days) => (
+            <option key={days} value={days}>
+              {days} days without a count
+            </option>
+          ))}
+        </select>
+      </label>
       <p>A.R.G.U.S. version {__APP_VERSION__}</p>
-      <button disabled>Replay Tutorial — Coming Later</button>
     </Drawer>
-  );
-}
-function WalletStatusPanel({
-  provider,
-  close,
-}: {
-  provider: TestnetWalletStatusProvider;
-  close: () => void;
-}) {
-  const [status, setStatus] = useState<TestnetWalletStatus>(),
-    [error, setError] = useState(""),
-    [copied, setCopied] = useState(false),
-    [loading, setLoading] = useState(true),
-    [password, setPassword] = useState(""),
-    [confirm, setConfirm] = useState(""),
-    [failures, setFailures] = useState(0),
-    [backupPassword, setBackupPassword] = useState(""),
-    [recoveryFile, setRecoveryFile] = useState(""),
-    [recoveryPassword, setRecoveryPassword] = useState(""),
-    [recoveryAddress, setRecoveryAddress] = useState(""),
-    [recoveryDetails, setRecoveryDetails] = useState<{
-      address: string;
-      currentAddress?: string;
-      rollbackWarning: boolean;
-    }>(),
-    [replaceConfirmed, setReplaceConfirmed] = useState(false),
-    [rollbackConfirmed, setRollbackConfirmed] = useState(false);
-  const refresh = () => {
-    setLoading(true);
-    setError("");
-    provider
-      .getStatus()
-      .then(setStatus)
-      .catch((reason) =>
-        setError(
-          reason instanceof Error
-            ? reason.message
-            : "Wallet status is unavailable.",
-        ),
-      )
-      .finally(() => setLoading(false));
-  };
-  useEffect(() => {
-    let active = true;
-    provider
-      .getStatus()
-      .then((value) => {
-        if (active) setStatus(value);
-      })
-      .catch((reason) => {
-        if (active)
-          setError(
-            reason instanceof Error
-              ? reason.message
-              : "Wallet status is unavailable.",
-          );
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [provider]);
-  const attempt = async (kind: "create" | "unlock") => {
-    if (failures >= 5) {
-      setError(
-        "Too many failed unlock attempts. Wait and reopen the wallet panel.",
-      );
-      return;
-    }
-    const entered = password;
-    setPassword("");
-    setConfirm("");
-    setLoading(true);
-    try {
-      if (kind === "create" && entered !== confirm)
-        throw new Error("Wallet passwords do not match.");
-      const next = await provider[kind]?.(entered);
-      if (!next)
-        throw new Error(
-          "This wallet provider does not support that lifecycle operation.",
-        );
-      setStatus(next);
-      setFailures(0);
-      setError("");
-    } catch (reason) {
-      setFailures((value) => value + 1);
-      setError(
-        reason instanceof Error ? reason.message : "Wallet operation failed.",
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
-  const copy = async () => {
-    if (!status?.receivingAddress) return;
-    await navigator.clipboard.writeText(status.receivingAddress);
-    setCopied(true);
-  };
-  const backup = async () => {
-    try {
-      if (!provider.exportBackup)
-        throw new Error("Backup is unavailable for this wallet provider.");
-      const contents = await provider.exportBackup(backupPassword);
-      setBackupPassword("");
-      const url = URL.createObjectURL(
-          new Blob([contents], { type: "application/vnd.argus.wallet+json" }),
-        ),
-        link = document.createElement("a");
-      link.href = url;
-      link.download = `argus-testnet-wallet-${new Date().toISOString().slice(0, 10)}.argus-wallet`;
-      link.click();
-      URL.revokeObjectURL(url);
-      setError(
-        "Recovery package downloaded. Store it securely; A.R.G.U.S. cannot recover its password.",
-      );
-    } catch (reason) {
-      setBackupPassword("");
-      setError(reason instanceof Error ? reason.message : "Backup failed.");
-    }
-  };
-  const inspectRecovery = async () => {
-    try {
-      if (!provider.inspectBackup)
-        throw new Error("Recovery is unavailable for this wallet provider.");
-      const details = await provider.inspectBackup(
-        recoveryFile,
-        recoveryPassword,
-      );
-      setRecoveryDetails(details);
-      setRecoveryAddress("");
-      setError(
-        "Recovery package authenticated. Confirm the recovered address before installing it.",
-      );
-    } catch (reason) {
-      setRecoveryDetails(undefined);
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : "Recovery package could not be inspected.",
-      );
-    }
-  };
-  const installRecovery = async () => {
-    try {
-      if (!provider.recoverBackup || !recoveryDetails)
-        throw new Error("Inspect the recovery package first.");
-      const next = await provider.recoverBackup(
-        recoveryFile,
-        recoveryPassword,
-        {
-          address: recoveryAddress,
-          replaceExisting: Boolean(recoveryDetails.currentAddress),
-          currentWalletBackedUp: replaceConfirmed,
-          allowRollback: rollbackConfirmed,
-        },
-      );
-      setRecoveryPassword("");
-      setRecoveryFile("");
-      setRecoveryDetails(undefined);
-      setStatus(next);
-      setError("Organization testnet wallet recovered successfully.");
-    } catch (reason) {
-      setRecoveryPassword("");
-      setError(
-        reason instanceof Error ? reason.message : "Wallet recovery failed.",
-      );
-    }
-  };
-  const address = status?.receivingAddress;
-  return (
-    <Drawer
-      title="Organization Testnet Wallet"
-      icon={<KeyRound />}
-      close={close}
-    >
-      <div className="notice" role="status">
-        <ShieldCheck />
-        <span>
-          <strong>BSV TESTNET · MAINNET IMPOSSIBLE</strong>
-          <br />
-          {status?.mode === "EMBEDDED"
-            ? "Encrypted organization wallet"
-            : status?.mode === "LIVE"
-              ? "External BRC-100 testnet wallet"
-              : status?.mode === "MOCK"
-                ? "MOCK TEST DATA"
-                : "Wallet unconfigured"}
-        </span>
-      </div>
-      {error && (
-        <p role={error.includes("downloaded") ? "status" : "alert"}>{error}</p>
-      )}
-      {status?.requiresSetup && (
-        <section className="wallet-lifecycle">
-          <h3>Create organization testnet wallet</h3>
-          <p>
-            This creates a testnet-only spending key for audit publication. It
-            is separate from user passwords and signing credentials.
-          </p>
-          <div className="notice">
-            <ShieldCheck />
-            <span>
-              Before creation, choose a unique strong password and plan secure
-              recovery-package storage. Forgotten passwords cannot be recovered.
-            </span>
-          </div>
-          <label className="field">
-            WALLET PASSWORD
-            <input
-              type="password"
-              autoComplete="new-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </label>
-          <label className="field">
-            CONFIRM PASSWORD
-            <input
-              type="password"
-              autoComplete="new-password"
-              value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
-            />
-          </label>
-          <button
-            className="primary-button"
-            disabled={loading}
-            onClick={() => void attempt("create")}
-          >
-            {loading ? "Creating…" : "Create encrypted testnet wallet"}
-          </button>
-        </section>
-      )}
-      {status?.requiresUnlock && (
-        <section className="wallet-lifecycle">
-          <h3>Wallet locked</h3>
-          <p>Known public address</p>
-          <code>{address}</code>
-          <label className="field">
-            WALLET PASSWORD
-            <input
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </label>
-          <button
-            className="primary-button"
-            disabled={loading || failures >= 5}
-            onClick={() => void attempt("unlock")}
-          >
-            {loading ? "Unlocking…" : "Unlock wallet"}
-          </button>
-          <small>
-            {Math.max(0, 5 - failures)} attempts remaining in this panel.
-          </small>
-        </section>
-      )}
-      {status?.connection === "ERROR" && (
-        <section>
-          <h3>Testnet service unavailable</h3>
-          <p>
-            The known wallet address is preserved. This is separate from a
-            password or vault failure.
-          </p>
-          {address && <code>{address}</code>}
-          <button disabled={loading} onClick={refresh}>
-            Retry network
-          </button>
-        </section>
-      )}
-      {status?.connection === "CONNECTED" && address && (
-        <section className="wallet-lifecycle">
-          <h3>Connected</h3>
-          <label className="field">
-            PUBLIC TESTNET FAUCET ADDRESS
-            <input readOnly value={address} />
-          </label>
-          <p>
-            <strong>Full testnet address</strong>
-            <br />
-            <code>{address}</code>
-            <br />
-            <small>
-              {address.slice(0, 8)}…{address.slice(-8)}
-            </small>
-          </p>
-          <button onClick={() => void copy()}>
-            {copied ? "Address copied ✓" : "Copy address"}
-          </button>
-          <div className="record-stats">
-            <Summary
-              label="Confirmed balance"
-              value={`${(status.balanceSatoshis ?? 0).toLocaleString()} sat`}
-              detail="Spendable testnet balance"
-            />
-            <Summary
-              label="Unconfirmed"
-              value={
-                status.unconfirmedBalanceSatoshis === undefined
-                  ? "Unavailable"
-                  : `${status.unconfirmedBalanceSatoshis.toLocaleString()} sat`
-              }
-              detail={
-                status.unconfirmedBalanceSatoshis === undefined
-                  ? "Provider does not separate it"
-                  : "Seen but not yet confirmed"
-              }
-            />
-          </div>
-          <div className="split-actions">
-            <button onClick={refresh}>Refresh</button>
-            <button
-              onClick={() => {
-                provider.lock?.();
-                refresh();
-              }}
-            >
-              Lock
-            </button>
-          </div>
-          <h3>Encrypted recovery package</h3>
-          <p>
-            The package never contains a plaintext WIF, mnemonic, or password.
-            A.R.G.U.S. cannot recover a forgotten backup password.
-          </p>
-          <label className="field">
-            BACKUP PASSWORD
-            <input
-              type="password"
-              autoComplete="new-password"
-              value={backupPassword}
-              onChange={(e) => setBackupPassword(e.target.value)}
-            />
-          </label>
-          <button onClick={() => void backup()}>
-            Download .argus-wallet backup
-          </button>
-        </section>
-      )}
-      {!status?.requiresSetup &&
-        !status?.requiresUnlock &&
-        status?.connection !== "CONNECTED" &&
-        status?.connection !== "ERROR" && (
-          <>
-            <h3>No wallet connected</h3>
-            <p>
-              Choose an explicit embedded-testnet or external-brc100-testnet
-              mode. No mock fallback will be used.
-            </p>
-            <button disabled={loading} onClick={refresh}>
-              {loading ? "Checking…" : "Retry"}
-            </button>
-          </>
-        )}
-      {provider.inspectBackup && provider.recoverBackup && (
-        <details className="panel-rows">
-          <summary>
-            <strong>Import recovery package</strong>
-            <small>For an empty device or explicit wallet replacement</small>
-          </summary>
-          <label className="field">
-            RECOVERY FILE
-            <input
-              type="file"
-              accept=".argus-wallet,application/json"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void file.text().then(setRecoveryFile);
-              }}
-            />
-          </label>
-          <label className="field">
-            RECOVERY PASSWORD
-            <input
-              type="password"
-              autoComplete="off"
-              value={recoveryPassword}
-              onChange={(event) => setRecoveryPassword(event.target.value)}
-            />
-          </label>
-          <button
-            disabled={!recoveryFile || !recoveryPassword}
-            onClick={() => void inspectRecovery()}
-          >
-            Inspect recovery package
-          </button>
-          {recoveryDetails && (
-            <div className="notice" role="status">
-              <ShieldCheck />
-              <span>
-                <strong>Recovered address</strong>
-                <br />
-                <code>{recoveryDetails.address}</code>
-                {recoveryDetails.currentAddress && (
-                  <>
-                    <br />
-                    <strong>Current address</strong>
-                    <br />
-                    <code>{recoveryDetails.currentAddress}</code>
-                  </>
-                )}
-                {recoveryDetails.rollbackWarning && (
-                  <>
-                    <br />
-                    <strong>
-                      WARNING: this backup is older than the local wallet.
-                    </strong>
-                  </>
-                )}
-              </span>
-            </div>
-          )}
-          {recoveryDetails && (
-            <>
-              <label className="field">
-                TYPE RECOVERED ADDRESS
-                <input
-                  value={recoveryAddress}
-                  onChange={(event) => setRecoveryAddress(event.target.value)}
-                  autoComplete="off"
-                />
-              </label>
-              {recoveryDetails.currentAddress && (
-                <label className="threshold-toggle">
-                  <input
-                    type="checkbox"
-                    checked={replaceConfirmed}
-                    onChange={(event) =>
-                      setReplaceConfirmed(event.target.checked)
-                    }
-                  />
-                  I exported or accept losing access to the current wallet and
-                  explicitly authorize replacement.
-                </label>
-              )}
-              {recoveryDetails.rollbackWarning && (
-                <label className="threshold-toggle">
-                  <input
-                    type="checkbox"
-                    checked={rollbackConfirmed}
-                    onChange={(event) =>
-                      setRollbackConfirmed(event.target.checked)
-                    }
-                  />
-                  I understand this is an older backup and explicitly authorize
-                  rollback.
-                </label>
-              )}
-              <button
-                className="primary-button"
-                disabled={
-                  recoveryAddress !== recoveryDetails.address ||
-                  Boolean(
-                    recoveryDetails.currentAddress && !replaceConfirmed,
-                  ) ||
-                  Boolean(recoveryDetails.rollbackWarning && !rollbackConfirmed)
-                }
-                onClick={() => void installRecovery()}
-              >
-                Recover organization wallet
-              </button>
-            </>
-          )}
-        </details>
-      )}
-      <h3>Recent A.R.G.U.S. transactions</h3>
-      {status?.recentTransactions.length ? (
-        status.recentTransactions.map((transaction) => (
-          <p key={transaction.transactionId}>
-            <a
-              href={`https://test.whatsonchain.com/tx/${transaction.transactionId}`}
-              target="_blank"
-              rel="noreferrer"
-            >
-              <code>{transaction.transactionId}</code>
-            </a>
-            <br />
-            {transaction.status}
-            {transaction.timestamp && (
-              <>
-                {" "}
-                ·{" "}
-                <time dateTime={transaction.timestamp}>
-                  {new Date(transaction.timestamp).toLocaleString()}
-                </time>
-              </>
-            )}
-          </p>
-        ))
-      ) : (
-        <p>No wallet transactions reported.</p>
-      )}
-      <p className="safe-note">
-        <ShieldCheck />
-        Audit publication is successful only after the broadcaster returns a
-        real 64-character TXID.
-      </p>
-    </Drawer>
-  );
-}
-function AddItem({
-  inventory,
-  close,
-  save,
-}: {
-  inventory: InventoryProjection[];
-  close: () => void;
-  save: (
-    v: Omit<
-      InventoryProjection,
-      "entityId" | "version" | "appliedEventIds" | "issued"
-    >,
-  ) => void;
-}) {
-  const [name, setName] = useState(""),
-    [category, setCategory] = useState(""),
-    [variant, setVariant] = useState("No variant"),
-    [niin, setNiin] = useState("Not assigned"),
-    [onHand, setOnHand] = useState(0),
-    [threshold, setThreshold] = useState(false),
-    [reorderAt, setReorderAt] = useState(0),
-    [countIncrement, setIncrement] = useState(1);
-  const duplicate = inventory.find(
-    (i) =>
-      (matchesSearch(name, i.name) &&
-        name.trim().toLowerCase() === i.name.trim().toLowerCase()) ||
-      (niin !== "Not assigned" &&
-        niin.replace(/\W/g, "").toLowerCase() ===
-          i.niin.replace(/\W/g, "").toLowerCase()),
-  );
-  return (
-    <div className="modal-backdrop">
-      <form
-        className="modal"
-        aria-label="Add inventory item"
-        onSubmit={(e) => {
-          e.preventDefault();
-          save({
-            name: name.trim(),
-            category: category.trim(),
-            variant: variant.trim(),
-            niin: niin.trim(),
-            onHand,
-            reorderAt: threshold ? reorderAt : undefined,
-            countIncrement,
-            active: true,
-          });
-        }}
-      >
-        <div className="modal-heading">
-          <div>
-            <p className="eyebrow">INVENTORY CONTROL</p>
-            <h2>Add a new item</h2>
-          </div>
-          <button type="button" aria-label="Close add item" onClick={close}>
-            <X />
-          </button>
-        </div>
-        <p>Create an authoritative inventory variant with a signed event.</p>
-        {duplicate && (
-          <div className="duplicate-warning" role="alert">
-            <strong>Possible duplicate</strong>
-            <span>
-              {duplicate.name} · {duplicate.variant} · {duplicate.niin}
-            </span>
-          </div>
-        )}
-        <div className="form-grid">
-          <label>
-            Item name
-            <input
-              required
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </label>
-          <label>
-            Category
-            <input
-              required
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-            />
-          </label>
-          <label>
-            Size or variant
-            <input
-              value={variant}
-              onChange={(e) => setVariant(e.target.value)}
-            />
-          </label>
-          <label>
-            CDMIS NIIN
-            <input value={niin} onChange={(e) => setNiin(e.target.value)} />
-          </label>
-          <label>
-            Initial on hand
-            <input
-              type="number"
-              min="0"
-              value={onHand}
-              onChange={(e) => setOnHand(Number(e.target.value))}
-            />
-          </label>
-          <label>
-            Count increment
-            <input
-              type="number"
-              min="1"
-              value={countIncrement}
-              onChange={(e) =>
-                setIncrement(Math.max(1, Number(e.target.value)))
-              }
-            />
-          </label>
-          <label className="threshold-toggle">
-            <input
-              type="checkbox"
-              aria-label="Enable low-stock warning"
-              checked={threshold}
-              onChange={(e) => setThreshold(e.target.checked)}
-            />
-            Enable low-stock warning
-          </label>
-          {threshold && (
-            <label>
-              Low-stock threshold
-              <input
-                aria-label="Low-stock threshold"
-                type="number"
-                min="0"
-                value={reorderAt}
-                onChange={(e) => setReorderAt(Number(e.target.value))}
-              />
-            </label>
-          )}
-        </div>
-        <div className="modal-actions">
-          <button type="button" onClick={close}>
-            Cancel
-          </button>
-          <button className="primary-button" type="submit">
-            Add item
-          </button>
-        </div>
-      </form>
-    </div>
   );
 }

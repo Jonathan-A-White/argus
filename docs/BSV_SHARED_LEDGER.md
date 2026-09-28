@@ -76,8 +76,9 @@ conflict is deterministic (every device sees the same one) and is resolved with 
 | signing key (ECDSA P-256) | signs every event this person creates |
 | ECDH key (P-256) | lets the Master hand this device the unit data key |
 | wallet key (secp256k1, testnet) | pays the few satoshis each record costs |
-| unit data key (AES-256), per epoch | encrypts everything the unit writes |
-| authority key (Master only) | signs member credentials |
+| unit data key (AES-256), per key generation | encrypts everything the unit writes |
+| authority key (original or recovered Master only) | signs member credentials; the only key that makes or removes Masters |
+| recovery key (ECDH P-256, original or recovered Master only) | opens every key generation on behalf of the recovery file |
 
 One PBKDF2-SHA-256 (600k) derivation unlocks them; each secret is separately AES-GCM sealed.
 Admission uses two **public** codes: the joiner’s `ARGUS-JOIN-1` (signing key, ECDH public key,
@@ -89,6 +90,44 @@ and wallet, and can optionally send the new member testnet satoshis (default 2,0
 Every envelope carries its author’s Master-signed credential inside the ciphertext, so any member
 can verify any other member’s role without a directory server. Revocation is an
 `AUTHORITY_REVOKED` event; it forces a re-fold so a revoked member’s later events stop applying.
+Credentials and revocations that arrive before the credential they depend on (chain history is not
+delivered in causal order) are retried after every pull, so every device converges on the same
+answer to “was this person allowed to do this?”.
+
+### Removing someone: the unit key is replaced
+
+Removing a member publishes the revocation and then a `UNIT_KEY_ROTATED` event. The removing
+Master creates a new unit data key generation (named `e<n>-<random>` so two Masters rotating at
+once never collide), wraps one copy to every remaining active member’s ECDH public key (published
+in their admission) and one to the unit recovery key, and announces the list **encrypted under the
+previous key**. Every device opens its own copy after the next sync and writes with the newest
+generation it holds; concurrent rotations resolve to the same “newest” everywhere (canonical
+order). The removed person can decrypt the announcement but none of the copies, so nothing written
+afterwards is readable to them. Their earlier work stays in history. Members admitted before
+member ECDH keys were recorded are reported as needing re-admission.
+
+### Delegated Masters and role changes (spec §3)
+
+Master authority is delegated without copying any key: the unit authority signs a `MASTER`
+credential for a trusted member (at admission, or later via **Change role**). A delegated Master
+admits, re-roles and removes people with its **own** key; its authority-signed credential travels
+in the admission code so the new member can verify the chain offline. Only the unit authority
+(the original Master device, or one restored from a recovery file) can make or remove a Master.
+`ROLE_CHANGED` issues the new credential and revokes the old one in one signed event, so there is
+never a moment with two roles or none, and the person’s own device adopts its new role on the next
+sync.
+
+### Recovery file
+
+The original Master can download an `ARGUS-RECOVERY-1` file from **Members & access**. It holds the
+unit authority key, the recovery key and the unit data keys, encrypted under a separate recovery
+passphrase (PBKDF2-SHA-256 600k + AES-256-GCM); only the unit ID is visible outside the
+encryption. Exporting registers the recovery key’s public half with the unit
+(`RECOVERY_KEY_REGISTERED`), and every later key rotation wraps a copy to it, so the file never
+goes stale. **Restore Master from a recovery file** (first screen) sets up a new device with its
+own signing, ECDH and wallet keys, self-issues a Master credential with the restored authority,
+reads everything (including key generations created after the file), and can then remove the lost
+device. Keep the file offline (USB stick or printed) and the passphrase somewhere else.
 
 ### What is public on chain
 
@@ -179,10 +218,12 @@ the 1,534-byte setup transaction and 7 for the 6,038-byte one. The network accep
 * **Discovery relies on WhatsOnChain** (a third-party indexer) — it is not our server, but it is a
   dependency. An outage means devices keep working locally and catch up later. Swapping in another
   indexer means implementing `ChainApi` (`src/chain/types.ts`).
-* **Key rotation after revocation is not yet implemented.** A revoked member can no longer write,
-  but a device that already holds the unit key could still decrypt new records if it keeps reading
-  the chain. Rotation (new epoch key wrapped to remaining members as `'G'` records) is the next
-  security task.
+* **Removal protects the future, not the past.** Rotation stops a removed member reading anything
+  written afterwards; whatever they already decrypted (or could decrypt with older keys) stays
+  readable to them.
+* **A removed member can still backdate.** They keep older unit keys and could publish events
+  claiming a time before their removal (see device-claimed timestamps below). Such events are
+  signed with their identity and appear under their name in Activity.
 * **Encrypted data on a public chain is permanent.** If a unit key ever leaks, that epoch’s history
   is readable forever. The school/command should approve storing even encrypted, ID-only student
   records this way before real cadet data is entered.
@@ -191,4 +232,5 @@ the 1,534-byte setup transaction and 7 for the 6,038-byte one. The network accep
 * **Merkle-proof (SPV) verification is not wired in.** `VERIFIED` means signature and role were
   checked by this device; `src/blockchain/spv.ts` is ready for adding chain-inclusion proofs.
 * **Passphrases cannot be recovered.** Losing one means erasing the device and being re-admitted;
-  unpublished changes on that device are lost.
+  unpublished changes on that device are lost. For the Master, the recovery file restores the Master
+  role on a new device; without one (or a delegated Master), nobody could admit or remove people.

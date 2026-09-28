@@ -192,9 +192,7 @@ export async function admitMember(master: UnlockedDevice, joinCode: string, role
     grants.push(await wrapEpochKeyForGrant({ epochKey, organizationId: record.unit.unitId, epochId, granteePublicIdentity: request.identity, grantorPublicIdentity: record.signingIdentity, grantorEcdhPrivateKey: master.ecdhPrivateKey, granteeEcdhPublicKey: granteeEcdh, grantorSigner: master.identity }))
   }
   const admission: AdmissionPackage = { unit: { unitId: record.unit.unitId, unitName: record.unit.unitName, authorityIdentity: record.unit.authorityIdentity }, credential, grantor: { identity: record.signingIdentity, ecdh: record.ecdhPublicKey, credential: record.credential }, grants, currentEpoch: record.unit.currentEpoch }
-  const entry: AdmissionRecord = { credential, displayName, walletAddress: request.wallet, admittedAt: credential.issuedAt }
-  record.admissions = [...(record.admissions ?? []).filter(existing => existing.credential.subjectPublicIdentity !== request.identity), entry]
-  saveDeviceVault(record, options.storage ?? localStorage)
+  // Members' names and wallets are not kept in this device record (it is plaintext storage); the unit's encrypted history holds them.
   return { admissionCode: await encodeCode('ADMIT', admission), credential, displayName, walletAddress: request.wallet, ecdhPublicKey: request.ecdh }
 }
 

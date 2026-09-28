@@ -11,7 +11,9 @@ import type { UnitEnvelope } from './envelope'
  *         CONFIRMED  seen on the anchor history (height 0 = mempool, > 0 = mined)
  */
 export type EnvelopeStatus = 'QUEUED' | 'PUBLISHING' | 'BROADCAST' | 'CONFIRMED'
-export type StoredEnvelope = { eventId: string; envelope: UnitEnvelope; origin: 'local' | 'chain'; status: EnvelopeStatus; txid?: string; height?: number; addedAt: string; lastError?: string }
+/** alternates: other copies seen on chain under the same event ID that could not be checked yet (no key for their generation); the valid one wins when opened. */
+export type StoredEnvelope = { eventId: string; envelope: UnitEnvelope; origin: 'local' | 'chain'; status: EnvelopeStatus; txid?: string; height?: number; addedAt: string; lastError?: string; alternates?: Array<{ envelope: UnitEnvelope; txid: string; height: number }> }
+export const MAX_ALTERNATES = 4
 export type SeenTransaction = { txid: string; height: number; eventIds: string[]; scannedAt: string }
 export type ScanCursor = { confirmedHeight: number; lastScanAt?: string; lastError?: string }
 
@@ -21,6 +23,10 @@ export interface LedgerStore {
   /** Inserts when new; never replaces an existing envelope's bytes (exact-once identity). Returns false if the event ID already exists. */
   addEnvelope(value: StoredEnvelope): Promise<boolean>
   updateEnvelopes(eventIds: string[], change: Partial<Pick<StoredEnvelope, 'status' | 'txid' | 'height' | 'lastError'>> & { clearTxid?: boolean }): Promise<void>
+  /** Keeps another on-chain copy under an existing event ID (bounded), for when the stored one turns out to be a forgery. */
+  addAlternate(eventId: string, alternate: NonNullable<StoredEnvelope['alternates']>[number]): Promise<void>
+  /** Replaces a stored record wholesale: only used to promote a verified alternate over a forged copy. */
+  replaceEnvelope(value: StoredEnvelope): Promise<void>
   seen(txid: string): Promise<SeenTransaction | undefined>
   markSeen(value: SeenTransaction): Promise<void>
   cursor(): Promise<ScanCursor>
@@ -28,6 +34,11 @@ export interface LedgerStore {
 }
 
 const clone = <T,>(value: T): T => structuredClone(value)
+function withAlternate(record: StoredEnvelope, alternate: NonNullable<StoredEnvelope['alternates']>[number]) {
+  const alternates = record.alternates ?? []
+  if (alternates.length >= MAX_ALTERNATES || alternates.some(entry => JSON.stringify(entry.envelope) === JSON.stringify(alternate.envelope))) return false
+  record.alternates = [...alternates, alternate]; return true
+}
 function applyChange(record: StoredEnvelope, change: Parameters<LedgerStore['updateEnvelopes']>[1]) {
   const { clearTxid, ...rest } = change
   Object.assign(record, rest)
@@ -42,6 +53,8 @@ export class MemoryLedgerStore implements LedgerStore {
   async envelope(eventId: string) { const value = this.items.get(eventId); return value && clone(value) }
   async addEnvelope(value: StoredEnvelope) { if (this.items.has(value.eventId)) return false; this.items.set(value.eventId, clone(value)); return true }
   async updateEnvelopes(eventIds: string[], change: Parameters<LedgerStore['updateEnvelopes']>[1]) { for (const id of eventIds) { const record = this.items.get(id); if (record) applyChange(record, change) } }
+  async addAlternate(eventId: string, alternate: NonNullable<StoredEnvelope['alternates']>[number]) { const record = this.items.get(eventId); if (record) withAlternate(record, clone(alternate)) }
+  async replaceEnvelope(value: StoredEnvelope) { this.items.set(value.eventId, clone(value)) }
   async seen(txid: string) { const value = this.transactions.get(txid); return value && clone(value) }
   async markSeen(value: SeenTransaction) { this.transactions.set(value.txid, clone(value)) }
   async cursor() { return clone(this.scan) }
@@ -83,6 +96,10 @@ export class IndexedDbLedgerStore implements LedgerStore {
   async updateEnvelopes(eventIds: string[], change: Parameters<LedgerStore['updateEnvelopes']>[1]) {
     await this.run([ENVELOPES], 'readwrite', tx => { const store = tx.objectStore(ENVELOPES); for (const id of eventIds) { const request = store.get(id) as IDBRequest<StoredEnvelope | undefined>; request.onsuccess = () => { if (request.result) { applyChange(request.result, change); store.put(request.result, id) } } } })
   }
+  async addAlternate(eventId: string, alternate: NonNullable<StoredEnvelope['alternates']>[number]) {
+    await this.run([ENVELOPES], 'readwrite', tx => { const store = tx.objectStore(ENVELOPES), request = store.get(eventId) as IDBRequest<StoredEnvelope | undefined>; request.onsuccess = () => { if (request.result && withAlternate(request.result, alternate)) store.put(request.result, eventId) } })
+  }
+  async replaceEnvelope(value: StoredEnvelope) { await this.run([ENVELOPES], 'readwrite', tx => { tx.objectStore(ENVELOPES).put(value, value.eventId) }) }
   seen(txid: string) { return this.run<SeenTransaction>([SEEN], 'readonly', tx => tx.objectStore(SEEN).get(txid) as IDBRequest<SeenTransaction>) }
   async markSeen(value: SeenTransaction) { await this.run([SEEN], 'readwrite', tx => { tx.objectStore(SEEN).put(value, value.txid) }) }
   async cursor() { return (await this.run<ScanCursor>([META], 'readonly', tx => tx.objectStore(META).get('scan') as IDBRequest<ScanCursor>)) ?? { confirmedHeight: 0 } }

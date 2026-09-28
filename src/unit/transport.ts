@@ -166,8 +166,10 @@ export class ChainTransport {
         eventIds.push(envelope.eventId)
         const existing = await store.envelope(envelope.eventId)
         if (existing) {
-          // Same event ID with different bytes is a collision (a replay or forgery attempt): the first stored copy wins.
           if (canonicalize(existing.envelope) === canonicalize(envelope)) await store.updateEnvelopes([envelope.eventId], { status: 'CONFIRMED', txid: item.txid, height: item.height })
+          // Same event ID, different bytes: a replay or forgery attempt. Checkable copies were already verified above; one this
+          // device cannot open yet is kept beside the stored copy, and whichever proves genuine wins once the key arrives.
+          else if (existing.origin === 'chain') await store.addAlternate(envelope.eventId, { envelope, txid: item.txid, height: item.height })
           continue
         }
         const stored: StoredEnvelope = { eventId: envelope.eventId, envelope, origin: 'chain', status: 'CONFIRMED', txid: item.txid, height: item.height, addedAt: this.now() }

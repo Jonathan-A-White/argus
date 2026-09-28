@@ -376,12 +376,20 @@ export class DeviceWallet {
 
     const known = new Set<string>()
     const kept: WalletCoin[] = []
+    const vanished = new Map<string, boolean>()
     for (const coin of next.coins) {
       const key = outpointKey(coin)
       known.add(key)
       const onChain = reportedByOutpoint.get(key)
       if (onChain) {
-        // Still listed: keep it (and any spentBy: a listed coin we already spent is never resurrected).
+        // Still listed. A coin we spent stays reserved while that spend is pending or known to the
+        // network (the index lags). If the network accepted the broadcast but never kept the
+        // transaction (it is neither pending here nor known anywhere), the coin is released.
+        const spend = coin.spentBy
+        if (spend !== undefined && !pendingTxids.has(spend)) {
+          if (!vanished.has(spend)) vanished.set(spend, await this.transactionUnknown(spend))
+          if (vanished.get(spend)) { kept.push({ ...withoutSpentBy(coin), height: onChain.height }); continue }
+        }
         kept.push({ ...coin, height: onChain.height })
       } else if (coin.spentBy !== undefined) {
         // Keep while our spend is pending so a rollback can release it. Once our spend was
@@ -405,6 +413,11 @@ export class DeviceWallet {
     const committed = await this.commit(next)
     this.suspectOutpoints.clear()
     return committed
+  }
+
+  /** True only when the network positively reports the transaction as unknown (404); any other failure keeps the coin reserved. */
+  private async transactionUnknown(txid: string): Promise<boolean> {
+    try { await this.api.txHex(txid); return false } catch (error) { return error instanceof Error && (error as { status?: number }).status === 404 }
   }
 
   /**

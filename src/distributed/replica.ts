@@ -1,5 +1,5 @@
-import type { AuthorizationService } from '../auth/authorization'
-import { canonicalize } from './canonical'
+import { ROLE_PERMISSIONS, type AuthorizationService } from '../auth/authorization'
+import { canonicalize, sha256 } from './canonical'
 import type { ArgusIdentityProvider } from '../identity/identity'
 import type { ArgusPermission, AuthorityCredential, AuthorityRevocation, CalendarEventProjection, CalendarTaskProjection, CatalogItemProjection, NsLevel, SupplyEventKind, ConflictRecord, CountAssignment, CountObservation, CountSessionProjection, DistributedEventType, InventoryProjection, MissingIssueLine, SignedArgusEvent, SupplyTransactionLine, UnsignedArgusEvent } from './types'
 import type { ArgusRepository, RepositoryState } from '../storage/repository'
@@ -26,7 +26,25 @@ const PERMISSION_FOR: Partial<Record<DistributedEventType, ArgusPermission>> = {
 }
 /** Unit key generations are named e<n>-<random> so two Masters rotating at once never reuse a name. */
 export const EPOCH_ID_PATTERN = /^e[1-9][0-9]{0,5}(-[0-9a-f]{4,16})?$/
+/** Lamport clocks stay far below the 12-digit sort key; one event may not jump the unit's clock far ahead (it would stall ordering for everyone). */
+export const MAX_EVENT_CLOCK = 100_000_000_000
+export const MAX_CLOCK_JUMP = 100_000
+/** Short, public tag of an author: event IDs start with it, so nobody can publish a record under someone else's event ID. */
+export const authorTag = async (actorPublicIdentity: string) => (await sha256(actorPublicIdentity)).slice(0, 12)
+export const authorBoundEventId = async (actorPublicIdentity: string, base: string) => { const tag = await authorTag(actorPublicIdentity); return base.startsWith(`${tag}.`) ? base : `${tag}.${base}` }
+export const isAuthorBoundEventId = async (eventId: string, actorPublicIdentity: string) => eventId.startsWith(`${await authorTag(actorPublicIdentity)}.`)
+/** Thrown by the fold when an event would leave the projection in an impossible state; the event is set aside and history re-folded without it. */
+class UnsafeEvent extends Error {}
+/** The quantity rules every projection must keep (the repository enforces the same ones on save). Cheap enough to check after every event. */
+function projectionViolation(state: RepositoryState) {
+  for (const item of state.inventory) if (!Number.isInteger(item.onHand) || item.onHand < 0 || !Number.isInteger(item.issued) || item.issued < 0) return true
+  for (const cadet of state.cadets) for (const line of cadet.currentProperty) if (!Number.isInteger(line.quantity) || line.quantity <= 0) return true
+  for (const need of state.stillNeeded) if (!(need.quantityFulfilled >= 0 && need.quantityFulfilled <= need.quantityNeeded)) return true
+  return false
+}
 const unsigned = (event: SignedArgusEvent) => { const rest: Partial<SignedArgusEvent> = { ...event }; delete rest.signature; return canonicalize(rest) }
+/** The exact text an event's signature covers. */
+export const unsignedEventJson = unsigned
 /** Canonical fold order shared by every device: Lamport clock, then event ID as a stable tie-break. */
 export const eventSortKey = (event: Pick<SignedArgusEvent, 'clock' | 'eventId'>) => `${String(Math.max(0, Math.floor(event.clock ?? 0))).padStart(12, '0')}|${event.eventId}`
 const pick = <T extends object>(source: Record<string, unknown>, allowed: ReadonlyArray<keyof T>): Partial<T> => Object.fromEntries(Object.entries(source).filter(([key]) => (allowed as ReadonlyArray<string>).includes(key))) as Partial<T>
@@ -56,7 +74,9 @@ type InitialInventory = Array<Pick<InventoryProjection, 'entityId' | 'name' | 'o
 export class ArgusReplica {
   online = true
   private syncing?: Promise<void>
-  constructor(readonly repository: ArgusRepository, private identity: ArgusIdentityProvider, private authorization: AuthorizationService, private provider: EventSyncProvider, readonly organizationId = 'argus-demo-organization', private readonly options: { genesisCatalog?: boolean; strictPublish?: boolean } = {}) {}
+  constructor(readonly repository: ArgusRepository, private identity: ArgusIdentityProvider, private authorization: AuthorizationService, private provider: EventSyncProvider, readonly organizationId = 'argus-demo-organization', private readonly options: { genesisCatalog?: boolean; strictPublish?: boolean; authorBoundEventIds?: boolean } = {}) {}
+  /** Events that would corrupt the projection at their place in history (derived, the same on every device). */
+  private readonly unsafeEvents = new Set<string>()
 
   async initialize(items: InitialInventory = []) {
     await this.repository.initialize()
@@ -78,16 +98,21 @@ export class ArgusReplica {
 
   private async signed(input: Omit<UnsignedArgusEvent, 'protocol' | 'protocolVersion' | 'organizationId' | 'eventVersion' | 'eventId' | 'actorPublicIdentity' | 'timestamp' | 'clock'> & CommandOptions) {
     const clock = (await this.repository.snapshot()).clock + 1
-    const event: UnsignedArgusEvent = { protocol: 'ARGUS', protocolVersion: 1, organizationId: this.organizationId, eventVersion: 1, eventId: input.eventId ?? crypto.randomUUID(), eventType: input.eventType, entityId: input.entityId, actorPublicIdentity: await this.identity.getPublicIdentity(), timestamp: input.timestamp ?? new Date().toISOString(), clock, ...(input.baseVersion === undefined ? {} : { baseVersion: input.baseVersion }), payload: input.payload }
+    const event: UnsignedArgusEvent = { protocol: 'ARGUS', protocolVersion: 1, organizationId: this.organizationId, eventVersion: 1, eventId: await this.ownEventId(input.eventId ?? crypto.randomUUID()), eventType: input.eventType, entityId: input.entityId, actorPublicIdentity: await this.identity.getPublicIdentity(), timestamp: input.timestamp ?? new Date().toISOString(), clock, ...(input.baseVersion === undefined ? {} : { baseVersion: input.baseVersion }), payload: input.payload }
     return { ...event, signature: await this.identity.sign(canonicalize(event)) } as SignedArgusEvent
   }
+  /** With author-bound IDs (the shared chain ledger), every event ID this device creates starts with its author tag; retries map to the same ID. */
+  private async ownEventId(base: string) { return this.options.authorBoundEventIds ? authorBoundEventId(await this.identity.getPublicIdentity(), base) : base }
   private async actor(permission: ArgusPermission, at?: string) { const actor = await this.identity.getPublicIdentity(); this.authorization.require(actor, permission, at); return actor }
   /** Signs, applies locally (throwing if the event would be rejected), queues for publication, then opportunistically syncs. */
   private async commit(input: Parameters<ArgusReplica['signed']>[0]) {
     const event = await this.signed(input)
+    // A record that can never be published (e.g. too large to seal) is refused before it touches local state.
+    await this.provider.preflight?.(event)
     await this.persistLocal(event)
-    // With a durable local provider (the encrypted chain ledger) a failed hand-off must surface; a remote-only provider may fail quietly and retry.
-    if (this.online) await this.sync().catch(error => { if (this.options.strictPublish) throw error })
+    // With a durable local provider (the encrypted chain ledger) a failed hand-off of THIS record must surface; another queued
+    // record failing is reported by the sync status, not as this command's failure. A remote-only provider may fail quietly.
+    if (this.online) await this.sync().catch(async error => { if (this.options.strictPublish && (await this.repository.snapshot()).outbox.some(record => record.eventId === event.eventId && record.status === 'FAILED')) throw error })
     return event
   }
   /** Re-folds the whole history (after authority changes that can alter past authorization). */
@@ -157,7 +182,7 @@ export class ArgusReplica {
     const state = await this.repository.snapshot(), cadet = state.cadets.find(candidate => candidate.cadetId === input.cadetId)
     if (!cadet) throw new Error('Cadet was not found.'); if (cadet.status !== 'ACTIVE') throw new Error('Inactive cadets cannot receive inventory.')
     this.validateDraftIdentity(input.transactionId, input.lines, input.missingLines)
-    const retry = options.eventId ? state.events.find(record => record.event.eventId === options.eventId) : undefined
+    const retryId = options.eventId ? await this.ownEventId(options.eventId) : undefined, retry = retryId ? state.events.find(record => record.event.eventId === retryId) : undefined
     if (retry) { const prior = retry.event.payload as { transactionId?:unknown;cadetId?:unknown;lines?:Array<{lineId:string;itemId:string;quantity:number}> }; if (retry.event.eventType !== 'ITEM_ISSUED' || prior.transactionId !== input.transactionId || prior.cadetId !== input.cadetId || canonicalize(prior.lines?.map(({lineId,itemId,quantity})=>({lineId,itemId,quantity}))??[]) !== canonicalize(input.lines.map(({lineId,itemId,quantity})=>({lineId,itemId,quantity})))) throw new Error('Event ID collision detected.'); return retry.event }
     const lines = input.lines.map(line => { const item = state.inventory.find(candidate => candidate.entityId === line.itemId); if (!item) throw new Error('Inventory item was not found.'); if (!item.active) throw new Error(`${item.name} · ${item.variant} is inactive.`); this.validateQuantity(line.quantity); if (item.onHand < line.quantity) throw new Error(`Stock changed before confirmation. ${item.name} · ${item.variant} is no longer available.`); return { ...line, label: item.name, variant: item.variant, baseVersion: item.version } })
     const bundle = input.bundleId ? state.bundles.find(candidate => candidate.bundleId === input.bundleId)?.versions.find(version => version.version === input.bundleVersion) : undefined
@@ -168,7 +193,7 @@ export class ArgusReplica {
     await this.actor('inventory.return', options.timestamp)
     const state = await this.repository.snapshot(), cadet = state.cadets.find(candidate => candidate.cadetId === input.cadetId); if (!cadet) throw new Error('Cadet was not found.')
     this.validateDraftIdentity(input.transactionId, input.lines)
-    const retry = options.eventId ? state.events.find(record => record.event.eventId === options.eventId) : undefined
+    const retryId = options.eventId ? await this.ownEventId(options.eventId) : undefined, retry = retryId ? state.events.find(record => record.event.eventId === retryId) : undefined
     if (retry) { const prior = retry.event.payload as { transactionId?:unknown;cadetId?:unknown;lines?:Array<{lineId:string;propertyId:string;quantity:number}> }; if (retry.event.eventType !== 'ITEM_RETURNED' || prior.transactionId !== input.transactionId || prior.cadetId !== input.cadetId || canonicalize(prior.lines?.map(({lineId,propertyId,quantity})=>({lineId,propertyId,quantity}))??[]) !== canonicalize(input.lines)) throw new Error('Event ID collision detected.'); return retry.event }
     const lines = input.lines.map(line => { const property = cadet.currentProperty.find(candidate => candidate.propertyId === line.propertyId); if (!property) throw new Error('This cadet no longer has the selected item.'); this.validateQuantity(line.quantity); if (line.quantity > property.quantity) throw new Error('Return quantity exceeds current property.'); const item = state.inventory.find(candidate => candidate.entityId === property.itemId); if (!item) throw new Error('Inventory mapping for returned property was not found.'); return { ...line, itemId: item.entityId, label: item.name, variant: item.variant, baseVersion: item.version } })
     return this.commit({ eventType: 'ITEM_RETURNED', entityId: input.transactionId, payload: { transactionId: input.transactionId, cadetId: input.cadetId, lines }, ...options })
@@ -345,7 +370,9 @@ export class ArgusReplica {
     if (!/^\d{4}-\d{4}$/.test(schoolYear)) throw new Error('School year looks like 2026-2027.')
     if ((await this.repository.snapshot()).rollovers.some(record => record.schoolYear === schoolYear)) throw new Error(`Rollover for ${schoolYear} is already complete.`)
     await this.actor('cadets.manage', options.timestamp)
-    return this.commit({ eventType: 'ANNUAL_ROLLOVER_COMPLETED', entityId: `rollover:${schoolYear}`, payload: { schoolYear }, ...options })
+    // The cadets to advance are fixed when the rollover is made, so a class imported concurrently on another device is not promoted with it.
+    const cadetIds = (await this.repository.snapshot()).cadets.filter(cadet => cadet.status === 'ACTIVE').map(cadet => cadet.cadetId).sort()
+    return this.commit({ eventType: 'ANNUAL_ROLLOVER_COMPLETED', entityId: `rollover:${schoolYear}`, payload: { schoolYear, cadetIds }, ...options })
   }
   /** Adds many cadets in one event (e.g. the incoming NS1 class for NCO). Names are optional and stay encrypted. */
   async importCadets(rows: Array<{ gender: CadetProjection['gender']; nsLevel: NsLevel; fullName?: string; cadetCode?: string; sizes?: Record<string, string> }>, options: CommandOptions = {}) {
@@ -392,6 +419,13 @@ export class ArgusReplica {
   // ---------- canonical fold ----------
   private applyEvent(state: RepositoryState, event: SignedArgusEvent) {
     const permission = PERMISSION_FOR[event.eventType]; if (permission) this.authorization.require(event.actorPublicIdentity, permission, event.timestamp)
+    if (permission) {
+      // Judged by position in the shared history, not only by the author-claimed timestamp: once a removal or role change is
+      // folded, the author's later records are held to it, so a back-dated timestamp cannot slip work past it.
+      const member = state.members.find(candidate => candidate.publicIdentity === event.actorPublicIdentity)
+      if (member?.status === 'REVOKED') throw new Error('Recorded after the author’s access was removed.')
+      if (member?.roleChangedAt && !ROLE_PERMISSIONS[member.role].includes(permission)) throw new Error(`Unauthorized: ${permission} is required.`)
+    }
     switch (event.eventType) {
       case 'INVENTORY_ITEM_CREATED': {
         if (state.inventory.some(item => item.entityId === event.entityId)) throw new Error('Inventory item ID already exists.')
@@ -581,7 +615,8 @@ export class ArgusReplica {
         if (!/^\d{4}-\d{4}$/.test(schoolYear)) throw new Error('Corrupted rollover event.')
         if (state.rollovers.some(record => record.schoolYear === schoolYear)) throw new Error(`Rollover for ${schoolYear} is already complete.`)
         let advanced = 0, graduated = 0
-        for (const cadet of state.cadets.filter(candidate => candidate.status === 'ACTIVE')) {
+        const chosen = Array.isArray(event.payload.cadetIds) ? new Set(event.payload.cadetIds.filter((id): id is string => typeof id === 'string')) : undefined
+        for (const cadet of state.cadets.filter(candidate => candidate.status === 'ACTIVE' && (!chosen || chosen.has(candidate.cadetId)))) {
           const next = NEXT_LEVEL[cadet.nsLevel]
           if (next === 'GRADUATED') { cadet.status = 'INACTIVE'; graduated++ } else { cadet.nsLevel = next; advanced++ }
           cadet.version++; cadet.updatedAt = event.timestamp; cadet.appliedEventIds.push(event.eventId)
@@ -692,7 +727,12 @@ export class ArgusReplica {
 
   /** Resets projections to genesis and folds every known event in canonical order. Deterministic: same events ⇒ same state on every device. */
   private rebuild(state: RepositoryState) {
+    // Each pass either finishes or sets aside one more unsafe event, so this terminates.
+    for (;;) { try { this.rebuildOnce(state); return } catch (error) { if (!(error instanceof UnsafeEvent)) throw error } }
+  }
+  private rebuildOnce(state: RepositoryState) {
     const genesis = state.genesis ?? { inventory: [], catalog: [] }
+    state.clock = 0
     state.inventory = structuredClone(genesis.inventory); state.catalog = structuredClone(genesis.catalog)
     state.countSessions = []; state.cadets = []; state.stillNeeded = []; state.transactions = []; state.conflicts = []; state.members = []; state.rejected = []; state.calendar = []; state.corrections = []; state.rollovers = []; state.keyEpochs = []; delete state.recoveryKey
     state.bundles = FACTORY_BUNDLES.map(source => factoryBundle(source, state.inventory))
@@ -701,8 +741,16 @@ export class ArgusReplica {
     state.lastAppliedKey = ordered.length ? eventSortKey(ordered[ordered.length - 1].event) : undefined
   }
   private tryApply(state: RepositoryState, event: SignedArgusEvent) {
+    const reject = (reason: string) => { state.rejected.push({ eventId: event.eventId, eventType: event.eventType, reason }) }
+    const clock = Math.floor(event.clock ?? 0)
+    if (this.unsafeEvents.has(event.eventId)) { reject('This record would have corrupted the shared state and was set aside.'); return }
+    if (clock > state.clock + MAX_CLOCK_JUMP) { reject('This record’s logical clock jumps too far ahead of the unit’s history.'); return }
     try { this.applyEvent(state, event) }
-    catch (error) { state.rejected.push({ eventId: event.eventId, eventType: event.eventType, reason: error instanceof Error ? error.message : 'Event could not be applied.' }) }
+    catch (error) { reject(error instanceof Error ? error.message : 'Event could not be applied.'); return }
+    // An event that passed its own checks but leaves an impossible state (e.g. negative stock) is set aside and history re-folded without it.
+    if (projectionViolation(state)) { this.unsafeEvents.add(event.eventId); throw new UnsafeEvent(event.eventId) }
+    // Only applied records move the clock: a rejected one (e.g. from an outsider) cannot push everyone's ordering around.
+    state.clock = Math.max(state.clock, clock)
   }
   /** Adds verified events and brings the projection up to date: incrementally when they extend the canonical order, otherwise by a full rebuild. */
   private integrate(state: RepositoryState, events: SignedArgusEvent[], status: StoredStatus) {
@@ -716,11 +764,13 @@ export class ArgusReplica {
     if (!fresh.length) return fresh
     fresh.sort((a, b) => eventSortKey(a) < eventSortKey(b) ? -1 : 1)
     const receivedAt = new Date().toISOString()
-    for (const event of fresh) { state.events.push({ event, syncStatus: status.syncStatus, auditStatus: 'PENDING', receivedAt, ...(status.transactionId ? { transactionId: status.transactionId } : {}) }); state.clock = Math.max(state.clock, Math.floor(event.clock ?? 0)) }
+    for (const event of fresh) state.events.push({ event, syncStatus: status.syncStatus, auditStatus: 'PENDING', receivedAt, ...(status.transactionId ? { transactionId: status.transactionId } : {}) })
     // A revocation can invalidate already-applied events of the revoked member, so it always re-folds history.
     const inOrder = !state.rejected.length && !fresh.some(event => event.eventType === 'AUTHORITY_REVOKED' || event.eventType === 'ROLE_CHANGED') && (state.lastAppliedKey === undefined || eventSortKey(fresh[0]) > state.lastAppliedKey)
-    if (inOrder) { for (const event of fresh) this.tryApply(state, event); state.lastAppliedKey = eventSortKey(fresh[fresh.length - 1]) }
-    else this.rebuild(state)
+    if (inOrder) {
+      try { for (const event of fresh) this.tryApply(state, event); state.lastAppliedKey = eventSortKey(fresh[fresh.length - 1]) }
+      catch (error) { if (!(error instanceof UnsafeEvent)) throw error; this.rebuild(state) }
+    } else this.rebuild(state)
     return fresh
   }
   private async persistLocal(event: SignedArgusEvent) {
@@ -734,7 +784,7 @@ export class ArgusReplica {
   }
   private async verify(event: SignedArgusEvent) {
     if (event.protocol !== 'ARGUS' || event.protocolVersion !== 1 || event.eventVersion !== 1 || event.organizationId !== this.organizationId || !event.eventId || !event.actorPublicIdentity || !event.signature || !event.payload || typeof event.payload !== 'object') throw new Error('Malformed or unsupported distributed event.')
-    if (event.clock !== undefined && (!Number.isInteger(event.clock) || event.clock < 0)) throw new Error('Malformed event clock.')
+    if (event.clock !== undefined && (!Number.isSafeInteger(event.clock) || event.clock < 0 || event.clock > MAX_EVENT_CLOCK)) throw new Error('Malformed event clock.')
     if (!(await this.identity.verify(unsigned(event), event.signature, event.actorPublicIdentity))) throw new Error('Invalid event signature.')
   }
   async receive(event: SignedArgusEvent) {
@@ -767,7 +817,11 @@ export class ArgusReplica {
     }
     // A device that cannot publish (offline wallet, no testnet coins) must still receive everyone else's work.
     const pending = await this.provider.pull()
-    if (pending.length) await this.receiveMany(pending, await this.provider.transactionIds?.(pending.map(event => event.eventId)) ?? {})
+    if (pending.length) {
+      // If folding fails, the provider hands the same records over again next time instead of dropping them for the session.
+      try { await this.receiveMany(pending, await this.provider.transactionIds?.(pending.map(event => event.eventId)) ?? {}) }
+      catch (error) { this.provider.requeue?.(pending.map(event => event.eventId)); throw error }
+    }
     if (failure) throw failure
   }
   /** Marks locally authored events as confirmed on chain once the transport has published them. */

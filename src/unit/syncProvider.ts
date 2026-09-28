@@ -2,7 +2,7 @@ import type { AuthorizationService } from '../auth/authorization'
 import type { AuthorityCredential, AuthorityRevocation, SignedArgusEvent } from '../distributed/types'
 import type { EventSyncProvider } from '../sync/mock'
 import { openEnvelope, sealEnvelope } from './envelope'
-import type { LedgerStore } from './ledgerStore'
+import type { LedgerStore, StoredEnvelope } from './ledgerStore'
 
 export type UnitSyncProviderDependencies = {
   unitId: string
@@ -14,6 +14,8 @@ export type UnitSyncProviderDependencies = {
   authorization: AuthorizationService
   /** Called after a local event is durably queued so the chain transport can publish promptly. */
   onQueued?: () => void
+  /** Checks an opened record is genuine (author-bound event ID, author's signature). Forged copies are set aside, never folded. */
+  validate?: (event: SignedArgusEvent) => Promise<boolean>
 }
 
 /**
@@ -38,6 +40,8 @@ export class UnitEventSyncProvider implements EventSyncProvider {
   private readonly pendingRevocations = new Map<string, AuthorityRevocation>()
   /** Envelopes that could not be opened yet (no key for their epoch, damaged): retried on each pull. */
   readonly unreadable = new Map<string, string>()
+  /** Records set aside as forged or tampered (by event ID). */
+  readonly forged = new Map<string, string>()
 
   constructor(private readonly deps: UnitSyncProviderDependencies) {}
 
@@ -47,13 +51,19 @@ export class UnitEventSyncProvider implements EventSyncProvider {
 
   async publish(event: SignedArgusEvent) {
     if (this.delivered.has(event.eventId) || await this.deps.store.envelope(event.eventId)) { this.delivered.add(event.eventId); this.backlog.delete(event.eventId); return }
-    // A new key generation is announced under the previous key: remaining members can read it, and only they can unwrap their copy.
-    const epochId = event.eventType === 'UNIT_KEY_ROTATED' && typeof event.payload.previousEpoch === 'string' ? event.payload.previousEpoch : this.deps.currentEpoch(), key = await this.deps.keyFor(epochId)
-    if (!key) throw new Error(`This device has no unit key for ${epochId}.`)
-    const envelope = await sealEnvelope({ unitId: this.deps.unitId, epochId, key, plaintext: { event, credential: this.deps.credential() } })
+    const envelope = await this.seal(event)
     await this.deps.store.addEnvelope({ eventId: event.eventId, envelope, origin: 'local', status: 'QUEUED', addedAt: new Date().toISOString() })
     this.delivered.add(event.eventId); this.backlog.delete(event.eventId)
     this.deps.onQueued?.()
+  }
+  /** Seals without storing: a record that can never be published (too large) is refused before it changes local state. */
+  async preflight(event: SignedArgusEvent) { await this.seal(event) }
+  requeue(eventIds: string[]) { for (const id of eventIds) { this.delivered.delete(id); this.backlog.add(id) } }
+  private async seal(event: SignedArgusEvent) {
+    // A new key generation is announced under the previous key: remaining members can read it, and only they can unwrap their copy.
+    const epochId = event.eventType === 'UNIT_KEY_ROTATED' && typeof event.payload.previousEpoch === 'string' ? event.payload.previousEpoch : this.deps.currentEpoch(), key = await this.deps.keyFor(epochId)
+    if (!key) throw new Error(`This device has no unit key for ${epochId}.`)
+    return sealEnvelope({ unitId: this.deps.unitId, epochId, key, plaintext: { event, credential: this.deps.credential() } })
   }
 
   async pull(): Promise<SignedArgusEvent[]> {
@@ -62,7 +72,9 @@ export class UnitEventSyncProvider implements EventSyncProvider {
       const record = await this.deps.store.envelope(eventId)
       if (!record) { this.backlog.delete(eventId); continue }
       try {
-        const { event, credential } = await openEnvelope(record.envelope, this.deps.keyFor)
+        const opened = await this.openGenuine(record)
+        if (!opened) { this.forged.set(eventId, 'Forged or tampered record set aside.'); this.delivered.add(eventId); this.backlog.delete(eventId); this.unreadable.delete(eventId); continue }
+        const { event, credential } = opened
         if (credential) await this.acceptCredential(credential)
         await this.acceptAuthorityPayload(event)
         events.push(event)
@@ -71,6 +83,25 @@ export class UnitEventSyncProvider implements EventSyncProvider {
     }
     await this.retryPendingCredentials()
     return events
+  }
+
+  /**
+   * Opens the stored copy, or one of the other copies seen under the same event ID, and returns the first that is genuine
+   * (promoting it). Returns undefined when every copy is openable but forged; throws while a copy still cannot be opened
+   * (no key yet), so it is retried later.
+   */
+  private async openGenuine(record: StoredEnvelope) {
+    const candidates = [{ envelope: record.envelope, txid: record.txid, height: record.height }, ...(record.alternates ?? [])]
+    let waiting: unknown
+    for (const [index, candidate] of candidates.entries()) {
+      let opened
+      try { opened = await openEnvelope(candidate.envelope, this.deps.keyFor) } catch (error) { if (error instanceof Error && error.message.startsWith('NO_EPOCH_KEY')) waiting ??= error; continue }
+      if (this.deps.validate && !(await this.deps.validate(opened.event))) continue
+      if (index > 0) await this.deps.store.replaceEnvelope({ ...record, envelope: candidate.envelope, ...(candidate.txid ? { txid: candidate.txid } : {}), ...(candidate.height !== undefined ? { height: candidate.height } : {}), alternates: candidates.filter((_, other) => other !== index && other > 0).map(entry => ({ envelope: entry.envelope, txid: entry.txid ?? '', height: entry.height ?? 0 })) })
+      return opened
+    }
+    if (waiting) throw waiting
+    return undefined
   }
 
   /** Accepts a credential now if its issuer is known, otherwise keeps it until the issuer's own credential arrives. */

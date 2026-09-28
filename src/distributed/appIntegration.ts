@@ -16,7 +16,7 @@ const auditFrom = (state: Awaited<ReturnType<ArgusRepository['snapshot']>>): Aud
   audit: { status: auditStatus === 'FAILED' ? 'FAILED' : auditStatus === 'CONFIRMED' || auditStatus === 'PROOF_VERIFIED' ? 'CONFIRMED' : 'QUEUED_FOR_AUDIT', targetNetwork: 'TESTNET' },
 }))
 
-export type ControllerDependencies = { identity: ArgusIdentityProvider; authorization: AuthorizationService; provider: EventSyncProvider; organizationId: string; genesisCatalog?: boolean; strictPublish?: boolean }
+export type ControllerDependencies = { identity: ArgusIdentityProvider; authorization: AuthorizationService; provider: EventSyncProvider; organizationId: string; genesisCatalog?: boolean; strictPublish?: boolean; authorBoundEventIds?: boolean }
 
 /**
  * The single application-facing API. Every mutation is a signed, permission-checked domain event
@@ -32,7 +32,7 @@ export class DistributedAppController {
   private readonly authorization?: AuthorizationService
   private readonly organizationId: string
   private readonly demo: boolean
-  private readonly options: { genesisCatalog: boolean; strictPublish: boolean }
+  private readonly options: { genesisCatalog: boolean; strictPublish: boolean; authorBoundEventIds: boolean }
   readonly syncMode: 'local'|'remote'
   constructor(repository: ArgusRepository = new MemoryRepository(), dependencies?: ControllerDependencies) {
     this.repository = repository
@@ -42,7 +42,7 @@ export class DistributedAppController {
     this.provider = dependencies?.provider ?? new MockSyncProvider()
     this.authorization = dependencies?.authorization
     this.organizationId = dependencies?.organizationId ?? 'argus-demo-organization'
-    this.options = { genesisCatalog: dependencies?.genesisCatalog ?? true, strictPublish: dependencies?.strictPublish ?? false }
+    this.options = { genesisCatalog: dependencies?.genesisCatalog ?? true, strictPublish: dependencies?.strictPublish ?? false, authorBoundEventIds: dependencies?.authorBoundEventIds ?? false }
   }
   async initialize() {
     let authorization = this.authorization

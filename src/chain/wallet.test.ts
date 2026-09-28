@@ -371,8 +371,11 @@ describe('flush outcomes', () => {
     const result = await wallet.flush()
     expect(result.rolledBack.map((entry) => [entry.txid, entry.status])).toEqual([[orphan.txid, 'conflict']])
 
+    // Never the phantom change again. The coin the lost transaction spent is still on chain and the network
+    // does not know that transaction, so it is released and may be chosen as well as the spare.
     const retry = await wallet.prepareRecords([record(2)], ANCHOR, ['e2'])
-    expect(inputsOf(retry.hex)).toEqual([`${spare}:0`])
+    expect(inputsOf(retry.hex)).not.toContain(`${lost.txid}:2`)
+    expect(inputsOf(retry.hex).every((input) => input === `${spare}:0` || !input.startsWith(lost.txid))).toBe(true)
     expect((await wallet.flush()).broadcast).toEqual([retry.txid])
   })
 
@@ -385,5 +388,26 @@ describe('flush outcomes', () => {
     await expect(wallet.prepareRecords([record(1)], ANCHOR, ['e1'])).rejects.toMatchObject({ status: 404 })
     expect(store.saveCount).toBe(saves)
     await expect(wallet.prepareRecords([record(1)], ANCHOR, ['e1'])).resolves.toMatchObject({ status: 'pending' })
+  })
+})
+
+describe('coins behind a broadcast the network accepted but never kept', () => {
+  it('are released once the network reports that transaction unknown, so the wallet can spend what the chain still lists', async () => {
+    const chain = new FakeChain(), wallet = DeviceWallet.fromWif(DeviceWallet.generateWif(), chain, new MemoryWalletStateStore()), anchor = fakeAddress()
+    const rec = (seed: number) => ({ kind: 'E' as const, payload: new Uint8Array(48).fill(seed) })
+    chain.fund(wallet.address, 10_000, { confirmed: true }); await wallet.refresh()
+    await wallet.prepareRecords([rec(1)], anchor, ['e1']); chain.failNextBroadcasts('accepted'); await wallet.flush()
+    await wallet.prepareRecords([rec(2)], anchor, ['e2']); await wallet.flush() // spends the phantom change: refused
+    for (let round = 0; round < 3; round++) { chain.mine(); await wallet.refresh() }
+    expect((await wallet.balance()).spendable).toBe(chain.balanceOf(wallet.address))
+    await expect(wallet.prepareRecords([rec(3)], anchor, ['e3'])).resolves.toMatchObject({ status: 'pending' })
+  })
+
+  it('stay reserved while the spending transaction is still known to the network (the index only lags)', async () => {
+    const chain = new FakeChain({ unspentLag: true } as FakeChainOptions), wallet = DeviceWallet.fromWif(DeviceWallet.generateWif(), chain, new MemoryWalletStateStore()), anchor = fakeAddress()
+    chain.fund(wallet.address, 10_000, { confirmed: true }); await wallet.refresh()
+    await wallet.prepareRecords([{ kind: 'E', payload: new Uint8Array(48).fill(1) }], anchor, ['e1']); await wallet.flush()
+    await wallet.refresh()
+    expect((await wallet.balance()).spendable).toBeLessThan(10_000)
   })
 })

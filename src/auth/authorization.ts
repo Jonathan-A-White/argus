@@ -63,7 +63,8 @@ export class AuthorizationService {
   credentialFor(identity: string, at: string) { return [...this.credentials.values()].find(c => c.subjectPublicIdentity === identity && this.credentialActiveAt(c, at) && this.issuerCanAuthorize(c.issuedBy, c.issuedAt)) }
   require(identity: string, permission: ArgusPermission, at = new Date().toISOString()) {
     if (identity === this.rootIdentity) return
-    const credential = this.credentialFor(identity, at)
-    if (!credential || !credential.permissions.includes(permission)) throw new Error(`Unauthorized: ${permission} is required.`)
+    // Any active credential may grant it: a device must not decide by which credential it happened to learn first.
+    const granted = [...this.credentials.values()].some(c => c.subjectPublicIdentity === identity && c.permissions.includes(permission) && this.credentialActiveAt(c, at) && this.issuerCanAuthorize(c.issuedBy, c.issuedAt))
+    if (!granted) throw new Error(`Unauthorized: ${permission} is required.`)
   }
 }

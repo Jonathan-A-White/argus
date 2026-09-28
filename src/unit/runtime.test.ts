@@ -93,6 +93,7 @@ describe('unit runtime over a (fake) BSV testnet chain', { timeout: 120_000 }, (
     const masterDevice = await createMasterDevice({ passphrase: 'supply closet 42', displayName: 'Chief', unitName: 'Unit' }, storage())
     const master = await open(masterDevice, chain)
     await master.controller.receiveStock((await master.controller.project()).inventory[0].entityId, 3)
+    await master.syncNow() // first chain scan: the Master then introduces itself (after the scan, so it never duplicates one already on chain)
     await master.syncNow()
     expect(master.status().needsFunding?.address).toBe(masterDevice.record.walletAddress)
     expect(master.status().queued).toBe(2) // the stock receipt and the Master introducing itself
@@ -135,6 +136,50 @@ describe('chain hygiene', { timeout: 120_000 }, () => {
     const view = await b.controller.project()
     expect(view.inventory.find(item => item.entityId === medium)?.onHand).toBe(7)
     expect(view.rejected).toEqual([])
+  })
+
+  it('a member cannot suppress another member’s record by publishing a different record under its event ID', async () => {
+    const { canonicalize } = await import('../distributed/canonical')
+    const { sealEnvelope, serializeEnvelope } = await import('./envelope')
+    const chain = new FakeChain()
+    const { master: a, joiners: [b, c] } = await unitWithMembers(chain)
+    await a.controller.addCatalogSizes(PT_SHORTS, ['M'])
+    await a.syncNow(); chain.mine(); await b.syncNow(); await c.syncNow()
+    const medium = (await a.controller.project()).inventory.find(item => item.catalogId === PT_SHORTS)!.entityId
+    chain.failNextBroadcasts('ambiguous', 50)
+    const received = await a.controller.receiveStock(medium, 7)
+    await a.syncNow()
+    const real = received.events.find(record => record.event.eventType === 'INVENTORY_RECEIVED')!.event
+    chain.clearInjectedFailures()
+    // Assistant C holds the unit key, signs its own record and seals it under A's public event ID; it is mined first.
+    const unit = c.device.record.unit!
+    const forgedUnsigned = { protocol: 'ARGUS' as const, protocolVersion: 1 as const, organizationId: unit.unitId, eventVersion: 1 as const, eventId: real.eventId, eventType: 'INVENTORY_RECEIVED' as const, entityId: medium, actorPublicIdentity: await c.device.identity.getPublicIdentity(), timestamp: new Date().toISOString(), clock: real.clock, payload: { quantity: 1 } }
+    const forged = { ...forgedUnsigned, signature: await c.device.identity.sign(canonicalize(forgedUnsigned)) }
+    const envelope = await sealEnvelope({ unitId: unit.unitId, epochId: unit.currentEpoch, key: c.device.unitKeys.get(unit.currentEpoch)!, plaintext: { event: forged, credential: c.device.record.credential } })
+    await c.wallet.prepareRecords([{ kind: 'E', payload: serializeEnvelope(envelope) }], c.transport.anchorAddress, [real.eventId])
+    expect((await c.wallet.flush()).broadcast).toHaveLength(1)
+    chain.mine()
+    await a.syncNow(); chain.mine() // A's real record lands one block later
+    await b.syncNow()
+    const view = await b.controller.project()
+    expect(view.inventory.find(item => item.entityId === medium)?.onHand).toBe(7)
+    expect(view.events.find(record => record.event.eventId === real.eventId)?.event.actorPublicIdentity).toBe(real.actorPublicIdentity)
+  })
+
+  it('refuses a record too large to ever publish before it changes anything, and later commands are unaffected', async () => {
+    const chain = new FakeChain()
+    const masterDevice = await createMasterDevice({ passphrase: 'supply closet 42', displayName: 'Chief', unitName: 'Unit' }, storage())
+    chain.fund(masterDevice.record.walletAddress, 50_000, { confirmed: true })
+    const master = await open(masterDevice, chain)
+    await master.syncNow(); chain.mine()
+    const sizes = Object.fromEntries(GENESIS_CATALOG.slice(0, 12).map(item => [item.catalogId, 'XL']))
+    // Random names do not compress, so this roster cannot fit in one record.
+    const rows = Array.from({ length: 200 }, () => ({ gender: 'Male' as const, nsLevel: 'NS1' as const, fullName: Array.from(crypto.getRandomValues(new Uint8Array(24)), byte => String.fromCharCode(97 + (byte % 26))).join(''), sizes }))
+    await expect(master.controller.importCadets(rows)).rejects.toThrow(/too large/)
+    expect((await master.controller.project()).cadets).toHaveLength(0)
+    const belt = (await master.controller.project()).inventory.find(item => item.name === 'Black Belt')!.entityId
+    await expect(master.controller.receiveStock(belt, 3)).resolves.toBeDefined()
+    expect((await master.controller.project()).inventory.find(item => item.entityId === belt)?.onHand).toBe(3)
   })
 
   it('catches up with everyone else the moment the app is back on screen, without waiting for the next poll', async () => {

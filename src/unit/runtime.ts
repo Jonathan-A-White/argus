@@ -5,7 +5,8 @@ import { IndexedDbWalletStateStore } from '../chain/walletStore'
 import { WhatsOnChainApi } from '../chain/woc'
 import { canonicalize } from '../distributed/canonical'
 import { DistributedAppController, type ArgusAppProjection } from '../distributed/appIntegration'
-import type { ArgusRole, AuthorityCredential } from '../distributed/types'
+import { isAuthorBoundEventId, unsignedEventJson } from '../distributed/replica'
+import type { ArgusRole, AuthorityCredential, SignedArgusEvent } from '../distributed/types'
 import { unsignedKeyGrantFields, unwrapEpochKeyFromGrant, wrapEpochKeyForGrant } from '../private-sync/keyGrant'
 import { parseKeyGrantRecord } from '../private-sync/schema'
 import type { KeyGrantRecord } from '../private-sync/types'
@@ -62,26 +63,25 @@ export class UnitRuntime {
     const wallet = DeviceWallet.fromWif(device.walletWif, api, options.walletStore ?? new IndexedDbWalletStateStore())
     // The provider, transport and runtime refer to each other through callbacks that only run after construction.
     const late: { transport?: ChainTransport; runtime?: UnitRuntime } = {}
+    // A record is genuine only if its event ID is bound to its author and the author's signature checks out: nobody holding
+    // the unit key can publish under someone else's event ID and so suppress their record on other devices.
+    const genuine = async (event: SignedArgusEvent) => await isAuthorBoundEventId(event.eventId, event.actorPublicIdentity) && device.identity.verify(unsignedEventJson(event), event.signature, event.actorPublicIdentity)
     // Epoch and credential are read live: a key rotation or role change takes effect for the very next record.
-    const provider = new UnitEventSyncProvider({ unitId: unit.unitId, store: ledger, currentEpoch: () => device.record.unit!.currentEpoch, keyFor: async epoch => device.unitKeys.get(epoch), credential: () => device.record.credential!, authorization, onQueued: () => { void late.transport?.poke() } })
+    const provider = new UnitEventSyncProvider({ unitId: unit.unitId, store: ledger, currentEpoch: () => device.record.unit!.currentEpoch, keyFor: async epoch => device.unitKeys.get(epoch), credential: () => device.record.credential!, authorization, validate: genuine, onQueued: () => { void late.transport?.poke() } })
     // A device admitted by a delegated Master needs that Master's credential before its own can be verified.
     if (record.issuerCredential) await provider.offerCredential(record.issuerCredential)
     await provider.offerCredential(record.credential)
-    const controller = new DistributedAppController(new MemoryRepository(), { identity: device.identity, authorization, provider, organizationId: unit.unitId, genesisCatalog: true, strictPublish: true })
+    const controller = new DistributedAppController(new MemoryRepository(), { identity: device.identity, authorization, provider, organizationId: unit.unitId, genesisCatalog: true, strictPublish: true, authorBoundEventIds: true })
     const transport = late.transport = new ChainTransport({
       unitId: unit.unitId, api, wallet, store: ledger,
       onRemoteEnvelopes: async records => { provider.enqueueRemote(records.map(item => item.eventId)); await late.runtime?.settle(await controller.sync()) },
       onPublished: async (eventIds, txid) => { await late.runtime?.settle(await controller.markPublished(eventIds, txid)) },
       onStatus: () => late.runtime?.emitStatus(),
-      checkEnvelope: async envelope => { try { await openEnvelope(envelope, async epoch => device.unitKeys.get(epoch)); return 'valid' } catch (error) { return error instanceof Error && error.message.startsWith('NO_EPOCH_KEY') ? 'unknown' : 'invalid' } },
+      checkEnvelope: async envelope => { try { const { event } = await openEnvelope(envelope, async epoch => device.unitKeys.get(epoch)); return await genuine(event) ? 'valid' : 'invalid' } catch (error) { return error instanceof Error && error.message.startsWith('NO_EPOCH_KEY') ? 'unknown' : 'invalid' } },
     })
     await provider.prime()
     const runtime = late.runtime = new UnitRuntime(device, controller, transport, wallet, authorization, provider, options)
-    let projection = await controller.initialize()
-    // A Master introduces itself once, so every other device can show its name instead of a key and can hand it future unit keys.
-    if (record.role === 'MASTER' && !projection.members.some(member => member.publicIdentity === record.signingIdentity && member.credentialId === record.credential!.credentialId))
-      projection = await controller.recordAdmission({ credential: record.credential, displayName: record.displayName, walletAddress: record.walletAddress, ecdhPublicKey: record.ecdhPublicKey })
-    await runtime.reconcile(projection)
+    await runtime.reconcile(await controller.initialize())
     return runtime
   }
 
@@ -112,6 +112,7 @@ export class UnitRuntime {
   private async reconcileOnce(initial: ArgusAppProjection): Promise<ArgusAppProjection> {
     let projection = initial
     for (let round = 0; round < 4; round++) {
+      projection = await this.introduceMaster(projection)
       await this.adoptOwnCredential(projection)
       const installed = await this.installGrantedKeys(projection)
       this.adoptCurrentEpoch(projection)
@@ -121,6 +122,16 @@ export class UnitRuntime {
     }
     this.emitStatus()
     return projection
+  }
+  /**
+   * A Master introduces itself once, so every device can show its name and hand it future unit keys. It waits for the first
+   * chain scan, so a device opened with an empty local copy does not republish an introduction the chain already has.
+   */
+  private async introduceMaster(projection: ArgusAppProjection) {
+    const { record } = this.device
+    if (record.role !== 'MASTER' || this.revoked || !this.transport.status().lastScanAt) return projection
+    if (projection.members.some(member => member.publicIdentity === record.signingIdentity && member.credentialId === record.credential?.credentialId)) return projection
+    return this.controller.recordAdmission({ credential: record.credential!, displayName: record.displayName, walletAddress: record.walletAddress, ecdhPublicKey: record.ecdhPublicKey })
   }
   private async adoptOwnCredential(projection: ArgusAppProjection) {
     const { record } = this.device, me = projection.members.find(member => member.publicIdentity === record.signingIdentity)

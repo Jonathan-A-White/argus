@@ -5,6 +5,10 @@ export interface EventSyncProvider {
   pull(): Promise<SignedArgusEvent[]>
   /** The chain transaction that carried each pulled event, where the provider knows it. */
   transactionIds?(eventIds: string[]): Promise<Record<string, string>>
+  /** Throws if this event could never be published (e.g. too large), before it is applied locally. */
+  preflight?(event: SignedArgusEvent): Promise<void>
+  /** Pulled events the replica could not fold: hand them over again on the next pull. */
+  requeue?(eventIds: string[]): void
 }
 
 export class MockSyncProvider implements EventSyncProvider {

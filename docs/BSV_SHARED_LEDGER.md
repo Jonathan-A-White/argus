@@ -131,6 +131,46 @@ npm run test:testnet     # creates a fresh unit, admits two members, A 3 + B 3 =
 The run writes `testnet/last-run.json` with the anchor address and every transaction ID
 (WhatsOnChain testnet links) as evidence. It needs outbound HTTPS to `api.whatsonchain.com`.
 
+### Live result (2026-09-27)
+
+**Passed on the first live run** against BSV testnet (23:34–23:35 UTC, about 51 s end to end, with no
+code change). The Master wallet `mxKM3Zc1ifZQcHHs9RJ6Nsrp4ixpkwggF1` started with 1,000 confirmed
+satoshis and finished with 681. Unit `u-32c7dc14f49157f9ab94`, anchor address
+[`mfa1zX3eq5SyA3PxWMQdW1WA7dg5HESboS`](https://test.whatsonchain.com/address/mfa1zX3eq5SyA3PxWMQdW1WA7dg5HESboS).
+B saw A's count session after 11 s. A, B and C each showed a shared total of 6, then on-hand 6 after
+A finalized. A brand-new device rebuilt on-hand 6 and all three members from the chain alone.
+
+The anchor address history holds five unit transactions, all mined in block 1760183:
+[`eb8e8d30…`](https://test.whatsonchain.com/tx/eb8e8d3089a33d11e9a23b871a044c180d5de4a40a407af40873d50901437f57),
+[`2e989308…`](https://test.whatsonchain.com/tx/2e9893085f189efe6fc1a748b2a14c32b765a9a809db5854c02aafb7c983eb31),
+[`52ca8c31…`](https://test.whatsonchain.com/tx/52ca8c31823c481143aaf6865eed8be846ad3094a7b42c4c27fd5088d741c88f),
+[`98c1620c…`](https://test.whatsonchain.com/tx/98c1620c576d6bf400ae1018369a77f885b95cbf2579c3874f9ec6ac5a2b4643)
+(B's count) and
+[`4d28d972…`](https://test.whatsonchain.com/tx/4d28d972fd63a0aaca421939904e3dde53f8e45002ecb199389628483dd2f89a).
+The Master's two member top-ups were
+[`eec9826c…`](https://test.whatsonchain.com/tx/eec9826ce055ce6b812674535598faa67edd8312669b858a77f0103fd6a1edf2)
+and [`16ea8148…`](https://test.whatsonchain.com/tx/16ea814889a83d08b5421666a678f67dffb7d5cb0320f31b669966f094566b0c).
+`testnet/last-run.json` lists only the transactions A published itself (four of the five). It reads
+transaction IDs from A's own event records, so B's count transaction is missing there.
+
+**API-shape fixes: none were needed.** WhatsOnChain's real answers matched what `src/chain/woc.ts`
+parses:
+* `/unspent/all` and the `/confirmed/history` and `/unconfirmed/history` endpoints return a
+  `{ address, script, result: [...], error: "" }` envelope, and `/unspent/all` items also carry
+  `status`.
+* The legacy `/unspent` and `/history` endpoints return bare arrays.
+* `/tx/{txid}/hex` returns bare hex.
+* No `nextPageToken` appeared.
+* `/confirmed/history` answers 404 `Not Found` (plain text) for an address with no confirmed
+  transactions, and for a `height=` past the last one. The client then falls back to `/history`
+  (also 404 on a fresh address) and reads the result as empty.
+* A made-up `token=` also answers 404.
+
+These bodies are now pinned verbatim in `src/chain/woc.test.ts` ("real WhatsOnChain testnet
+bodies"). Every transaction paid 1 sat/kB, so none needed a fee bump. For example, 2 satoshis for
+the 1,534-byte setup transaction and 7 for the 6,038-byte one. The network accepted the
+1-satoshi anchor outputs.
+
 ## Known limits and open decisions
 
 * **Discovery relies on WhatsOnChain** (a third-party indexer) — it is not our server, but it is a

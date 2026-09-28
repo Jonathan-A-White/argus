@@ -374,3 +374,76 @@ describe('tipHeight', () => {
     await expect(api.tipHeight()).rejects.toBeInstanceOf(ChainApiError)
   })
 })
+
+/**
+ * Bodies captured verbatim from api.whatsonchain.com/v1/bsv/test on 2026-09-27, for the live
+ * check's funded Master address and a fresh (never used) anchor address. The first live run
+ * (docs/BSV_SHARED_LEDGER.md, Live result) passed with the client as it is; these pin the real
+ * shapes so a change on WhatsOnChain's side shows up here rather than on the network.
+ */
+describe('real WhatsOnChain testnet bodies (2026-09-27)', () => {
+  const MASTER = 'mxKM3Zc1ifZQcHHs9RJ6Nsrp4ixpkwggF1'
+  const MASTER_SCRIPT = '039de9259e86f789d0c91f93ddbeef601b5a4b6536e9dba8707e4268b1f248a9'
+  const EMPTY = 'mqVC9uaJXH2bFFwwnqaGVzj73am9HzFKVn'
+  const EMPTY_SCRIPT = 'e6c5710b56ae7c48467bc7f6daee5078d62ef43425dc4be4e88b2afc9d70f3f2'
+  const FUNDING = '4935fb64f27e3df05a1a8f02fbc82457ddbed6d450c5266df594d8171903d4ab'
+  const FUNDING_HEX =
+    '01000000014ad9eb831937066c3aa43ee0781ec316cd5d3f4060565f8b4b94c09912dcc02a020000006a47304402207bb58f878f4236b6974d5eaf2a683b5e70452e4424e990bc849ee9215bf0e3f302207a1782bc6529ca40d79aeebb63d92378d10e08fb3cc985da9ae83ee800d25892412102ebe0cd3f6ba5b308d2da97aa53eb41c73061507a3e3af0bad6158c98a86ae50bffffffff02e8030000000000001976a914b848233d598749da81803a263a72ce30ed4aa1b388acaf320000000000001976a914738b3f109e355f291696280a5a1434d2904f5fdb88ac00000000'
+
+  it('reads the /unspent/all envelope, with its address, script, status and error fields', async () => {
+    const { api, calls } = harness(() =>
+      text(
+        `{"address":"${MASTER}","script":"${MASTER_SCRIPT}","result":[{"height":1760177,"tx_pos":0,"tx_hash":"${FUNDING}","value":1000,"isSpentInMempoolTx":false,"status":"confirmed"}],"error":""}`,
+      ),
+    )
+    await expect(api.unspent(MASTER)).resolves.toEqual([{ txid: FUNDING, vout: 0, satoshis: 1000, height: 1760177 }])
+    expect(calls.map((call) => call.url)).toEqual([`${BASE}/address/${MASTER}/unspent/all`])
+  })
+
+  it('reads the /unspent/all envelope of an address with no coins', async () => {
+    const { api } = harness(() => text(`{"address":"${EMPTY}","script":"${EMPTY_SCRIPT}","result":[],"error":""}`))
+    await expect(api.unspent(EMPTY)).resolves.toEqual([])
+  })
+
+  it('reads a confirmed history envelope without a next page token', async () => {
+    const { api } = harness(() =>
+      text(`{"address":"${MASTER}","script":"${MASTER_SCRIPT}","result":[{"tx_hash":"${FUNDING}","height":1760177}],"error":""}`),
+    )
+    await expect(api.confirmedHistory(MASTER)).resolves.toEqual({ items: [{ txid: FUNDING, height: 1760177 }] })
+  })
+
+  it('reads a fresh anchor, whose confirmed and legacy histories both answer 404 "Not Found", as empty', async () => {
+    const { api, calls } = harness(() => text('Not Found', 404))
+    await expect(api.confirmedHistory(EMPTY)).resolves.toEqual({ items: [] })
+    expect(calls.map((call) => call.url)).toEqual([
+      `${BASE}/address/${EMPTY}/confirmed/history?order=asc&limit=1000`,
+      `${BASE}/address/${EMPTY}/history`,
+    ])
+  })
+
+  it('reads a 404 "Not Found" for a height past the last confirmed transaction as nothing new', async () => {
+    const { api } = harness((url) =>
+      url.includes('/confirmed/history') ? text('Not Found', 404) : text(`[{"tx_hash":"${FUNDING}","height":1760177}]`),
+    )
+    await expect(api.confirmedHistory(MASTER, { fromHeight: 1760178 })).resolves.toEqual({ items: [] })
+  })
+
+  it('reads an empty unconfirmed history envelope', async () => {
+    const { api } = harness(() => text(`{"address":"${EMPTY}","script":"${EMPTY_SCRIPT}","result":[],"error":""}`))
+    await expect(api.unconfirmedHistory(EMPTY)).resolves.toEqual([])
+  })
+
+  it('reads the bare hex /tx/{txid}/hex returns', async () => {
+    const { api } = harness(() => text(FUNDING_HEX))
+    await expect(api.txHex(FUNDING)).resolves.toBe(FUNDING_HEX)
+  })
+
+  it('reads the tip from the /chain/info body', async () => {
+    const { api } = harness(() =>
+      text(
+        '{"chain":"test","blocks":1760182,"headers":1760182,"bestblockhash":"00000000024fc095834634aa33793b5d73aadeff7f4b595766a2ed8572661a8c","difficulty":11.39545593479368,"mediantime":1790550144,"verificationprogress":0.9999996379097088,"pruned":false,"chainwork":"00000000000000000000000000000000000000000000015828f6ba2ed82847eb"}',
+      ),
+    )
+    await expect(api.tipHeight()).resolves.toBe(1760182)
+  })
+})

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { UnitRuntime, type UnitRuntimeOptions } from '../runtime'
 import { acceptAdmission, createJoiningDevice, createMasterDevice, encodeJoinRequest, forgetDevice, loadDeviceVault, restoreFromRecoveryFile, unlockDevice, type DeviceVaultRecord, type UnlockedDevice } from '../vault'
+import { admissionCodeFromQrImage } from '../admissionQr'
 import './unit-gate.css'
 
 type Step = { kind: 'welcome' } | { kind: 'create' } | { kind: 'join' } | { kind: 'restore' } | { kind: 'unlock'; record: DeviceVaultRecord } | { kind: 'pending'; device: UnlockedDevice } | { kind: 'opening' } | { kind: 'ready'; runtime: UnitRuntime }
@@ -134,7 +135,7 @@ function Unlock({ record, unlock, reset, initialError }: { record: DeviceVaultRe
 }
 
 function Pending({ device, accept, lock }: { device: UnlockedDevice; accept: (admissionCode: string) => Promise<void>; lock: () => void }) {
-  const [joinCode, setJoinCode] = useState(''), [admissionCode, setAdmissionCode] = useState(''), [copied, setCopied] = useState(false), [error, setError] = useState(''), [busy, setBusy] = useState(false)
+  const [joinCode, setJoinCode] = useState(''), [admissionCode, setAdmissionCode] = useState(''), [copied, setCopied] = useState(false), [scanned, setScanned] = useState(false), [error, setError] = useState(''), [busy, setBusy] = useState(false)
   useEffect(() => { let active = true; void encodeJoinRequest(device).then(code => { if (active) setJoinCode(code) }); return () => { active = false } }, [device])
   const share = async () => {
     try {
@@ -154,8 +155,10 @@ function Pending({ device, accept, lock }: { device: UnlockedDevice; accept: (ad
         <p><strong>1.</strong> Send this join code to your unit&apos;s Master (text, email or AirDrop are all fine — it contains no secret).</p>
         <label className="field">YOUR JOIN CODE<textarea readOnly aria-label="Your join code" value={joinCode} rows={4} placeholder="Preparing your join code…" /></label>
         <div className="modal-actions"><button type="button" onClick={() => void share()} disabled={!joinCode}>{copied ? 'Join code copied ✓' : 'Share or copy join code'}</button></div>
-        <p><strong>2.</strong> Paste the admission code the Master sends back.</p>
-        <label className="field">ADMISSION CODE<textarea aria-label="Admission code" value={admissionCode} onChange={event => setAdmissionCode(event.target.value)} rows={4} required /></label>
+        <p><strong>2.</strong> Scan the QR on the Master&apos;s phone, or open the QR image they shared with you.</p>
+        <label className="field">ADMISSION QR IMAGE<input type="file" accept="image/*" capture="environment" aria-label="Admission QR image" onChange={event => { const file = event.target.files?.[0]; if (!file) return; setError(''); void admissionCodeFromQrImage(file).then(code => { setAdmissionCode(code); setScanned(true) }, cause => setError(cause instanceof Error ? cause.message : 'That QR image could not be read.')) }} /><small>Your phone may offer its camera or photo library. The image never leaves this device.</small></label>
+        {scanned && <div className="validation" role="status">Admission QR ready. Tap Join unit to finish.</div>}
+        <details><summary>Paste a code instead</summary><label className="field">ADMISSION CODE<textarea aria-label="Admission code" value={admissionCode} onChange={event => { setAdmissionCode(event.target.value); setScanned(false) }} rows={4} required /></label></details>
         {error && <div className="workflow-error" role="alert">{error}</div>}
         <div className="modal-actions">
           <button type="button" onClick={lock}>Lock</button>

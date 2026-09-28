@@ -11,3 +11,4 @@
 .unit-gate-reset summary { cursor: pointer; opacity: 0.8; }
 .unit-gate { gap: 16px; padding: 16px 0; }
 .unit-gate-banner { width: min(560px, calc(100vw - 32px)); border: 1px solid var(--color-warning); border-radius: 10px; padding: 8px 12px; font-size: 0.75rem; justify-self: center; }
+.admission-qr { display: block; width: min(100%, 360px); height: auto; margin: 12px auto; border: 8px solid white; border-radius: 8px; }

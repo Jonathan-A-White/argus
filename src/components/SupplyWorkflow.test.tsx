@@ -182,6 +182,28 @@ describe('closing the workflow (C1) and moving between steps', () => {
   })
 })
 
+describe('each workflow step starts at its top', () => {
+  it('opens the review (and Edit) scrolled to the top, not where the previous step was scrolled', async () => {
+    const { controller } = await stocked({ 'Black Belt': { one: 5 } })
+    const projection = await controller.createCadet({ gender: 'Male', nsLevel: 'NS1', status: 'ACTIVE' })
+    render(<Workflow controller={controller} initial={projection} cadetId={projection.cadets[0].cadetId} />)
+    const workflow = screen.getByRole('dialog', { name: 'Issue property' })
+    // jsdom does no layout: record what the workflow does to the drawer's scroll position.
+    let scrollTop = 0
+    Object.defineProperty(workflow, 'scrollTop', { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value } })
+    fireEvent.click(bundleButton(workflow, 'Male NSU'))
+    expect(scrollTop).toBe(0)
+    scrollTop = 640 // the person scrolled down the configure step
+    fireEvent.click(within(workflow).getByRole('button', { name: 'Review Issue' }))
+    expect(within(workflow).getByText('Issue to')).toBeInTheDocument()
+    expect(scrollTop).toBe(0)
+    scrollTop = 300
+    fireEvent.click(within(workflow).getByRole('button', { name: /Edit/ }))
+    expect(within(workflow).getByRole('heading', { name: 'Configure issue' })).toBeInTheDocument()
+    expect(scrollTop).toBe(0)
+  })
+})
+
 describe('required lines above stock (M5)', () => {
   it('issues what is on hand and records the remainder as Still Needed, shown on the line and the review screen', async () => {
     const { controller, variant } = await stocked({ 'Black Belt': { one: 5 } })

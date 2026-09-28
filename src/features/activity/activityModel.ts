@@ -112,8 +112,10 @@ export function describeActivity(projection: Projection, record: StoredEvent, me
       return { title: `Cancelled count ${count(event.entityId)}`, record: { kind: 'Count', label: count(event.entityId) } }
     case 'AUTHORITY_GRANTED': {
       const name = text(payload.displayName, person(event.entityId)), role = (payload.credential as { role?: string } | undefined)?.role
-      return { title: `Admitted ${name}${role ? ` as ${roleLabel(role)}` : ''}`, record: { kind: 'Member', label: name } }
+      return { title: `Invited ${name}${role ? ` as ${roleLabel(role)}` : ''}`, record: { kind: 'Member', label: name } }
     }
+    case 'ADMISSION_CONFIRMED':
+      return { title: `${person(event.entityId)} activated their device`, record: { kind: 'Member', label: person(event.entityId) } }
     case 'AUTHORITY_REVOKED':
       return { title: `Removed access for ${person(event.entityId)}`, record: { kind: 'Member', label: person(event.entityId) } }
     case 'ROLE_CHANGED': {

@@ -74,7 +74,7 @@ export function MembersPanel({ runtime, projection, close, onProjection, notify 
           return (
             <li key={member.publicIdentity}>
               <p>
-                <strong>{isYou ? `${member.displayName} (you)` : member.displayName}</strong> · {roleLabel(member.role)} · {member.status === 'ACTIVE' ? `since ${new Date(member.roleChangedAt ?? member.issuedAt).toLocaleDateString()}` : `access removed ${member.revokedAt ? new Date(member.revokedAt).toLocaleDateString() : ''}`}
+                <strong>{isYou ? `${member.displayName} (you)` : member.displayName}</strong> · {roleLabel(member.role)} · {member.status === 'INVITED' ? 'Invitation sent — waiting for their device' : member.status === 'ACTIVE' ? `since ${new Date(member.roleChangedAt ?? member.activatedAt ?? member.issuedAt).toLocaleDateString()}` : `access removed ${member.revokedAt ? new Date(member.revokedAt).toLocaleDateString() : ''}`}
                 {member.walletAddress && <><br /><small>Wallet <a href={explorer('address', member.walletAddress)} target="_blank" rel="noreferrer">{shortId(member.walletAddress)}</a></small></>}
               </p>
               {manageable && changing === member.publicIdentity && (
@@ -118,7 +118,7 @@ export function MembersPanel({ runtime, projection, close, onProjection, notify 
           {result && (
             <div className="validation" role="status">
               <div>
-                <strong>{result.name} admitted.</strong>
+                <strong>Invitation sent — waiting for their device.</strong>
                 <p>Send them this admission code. It is useless to anyone else.</p>
                 <label className="field">ADMISSION CODE<textarea readOnly aria-label="Admission code" rows={4} value={result.code} /></label>
                 <button type="button" onClick={() => void shareOrCopy(result.code, 'A.R.G.U.S. admission code').then(setShared)}>{shared === 'copied' ? 'Admission code copied ✓' : 'Share or copy admission code'}</button>

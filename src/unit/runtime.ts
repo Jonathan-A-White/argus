@@ -187,6 +187,16 @@ export class UnitRuntime {
     void this.transport.poke()
     return { ...result, ...(topUpTxid ? { topUpTxid } : {}), ...(topUpError ? { topUpError } : {}) }
   }
+  /** Confirms that this device, not merely the Master, opened its invitation successfully. */
+  async confirmAdmission() {
+    const credentialId = this.device.record.credential?.credentialId
+    if (!credentialId) throw new Error('This device has no admission credential to confirm.')
+    const projection = await this.controller.project()
+    if (projection.events.some(record => record.event.eventType === 'ADMISSION_CONFIRMED' && record.event.actorPublicIdentity === this.device.record.signingIdentity && record.event.payload.credentialId === credentialId)) return projection
+    const confirmed = await this.controller.confirmAdmission(credentialId)
+    void this.transport.poke()
+    return confirmed
+  }
   private signerFor(targetRole: ArgusRole, newRole?: ArgusRole) {
     // Masters are made and removed only with the unit authority key; everyone else by any Master's own key.
     if (targetRole === 'MASTER' || newRole === 'MASTER') { if (!this.device.authoritySigner) throw new Error(newRole === 'MASTER' ? 'Only the unit authority (the original or a recovered Master device) can make someone a Master.' : 'Only the unit authority (the original or a recovered Master device) can remove a Master.'); return this.device.authoritySigner }

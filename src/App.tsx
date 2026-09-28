@@ -51,6 +51,10 @@ import { cadetLabel } from "./stage3/domain";
 import { UnitGate } from "./unit/screens/UnitGate";
 import { MembersPanel, WalletPanel } from "./unit/screens/UnitPanels";
 import { roleLabel, syncLabel } from "./unit/screens/labels";
+import {
+  DeviceNotificationSettings,
+  useDeviceNotifications,
+} from "./notifications";
 import type {
   UnitRuntime,
   UnitRuntimeOptions,
@@ -252,6 +256,21 @@ function AuthenticatedApp({
     [projection],
   );
   const notify = useCallback((message: string) => setNotice(message), []);
+  // Tier 2 device notifications (spec §20); a notification click routes like a dashboard alert click.
+  useDeviceNotifications({
+    enabled: preferences.deviceNotifications,
+    projection,
+    sync: {
+      needsFunding: Boolean(status?.needsFunding),
+      state: status?.state,
+      queued: status?.queued ?? projection?.sync.outbox,
+    },
+    onOpen: ({ tab: next, panel: nextPanel }) => {
+      setSettingsOpen(false);
+      setTab(next);
+      setPanel(nextPanel ?? null);
+    },
+  });
   const mode = runtime ? "testnet" : "mock";
 
   if (!projection)
@@ -915,7 +934,7 @@ function CommandCenter({
         )}
       </div>
       <p className="safe-note">
-        <CalendarRange size={14} /> Planned next: device push notifications (spec §20 tier 2) and SPV inclusion proofs.
+        <CalendarRange size={14} /> Planned next: SPV inclusion proofs.
       </p>
     </div>
   );
@@ -1147,6 +1166,11 @@ function SettingsPanel({
           ))}
         </select>
       </label>
+      <h3>Notifications</h3>
+      <DeviceNotificationSettings
+        enabled={value.deviceNotifications}
+        onChange={(on) => set("deviceNotifications", on)}
+      />
       <p>A.R.G.U.S. version {__APP_VERSION__}</p>
     </Drawer>
   );

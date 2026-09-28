@@ -1,5 +1,7 @@
 # A.R.G.U.S. BSV architecture
 
+> **Superseded (2026-09-27):** see [BSV_SHARED_LEDGER.md](BSV_SHARED_LEDGER.md) and [ADR 010](adr/010-bsv-shared-ledger.md) for the current design. Kept for history.
+
 ## What BSV does—and does not do
 
 The planned role of Bitcoin SV (BSV) is to anchor a small, privacy-safe commitment proving that an important A.R.G.U.S. event existed. It is **not** the inventory database, roster, calendar, search engine, authentication system, or authorization system. Opening screens, searching, filtering, and reading records never create transactions.

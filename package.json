@@ -13,7 +13,9 @@
     "lint:css": "node scripts/check-css.mjs",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:deploy": "node scripts/deployment-smoke.mjs"
+    "test:deploy": "node scripts/deployment-smoke.mjs",
+    "test:testnet": "vitest run -c vitest.testnet.config.ts",
+    "testnet:keys": "node scripts/testnet-keys.mjs"
   },
   "dependencies": {
     "@bsv/sdk": "^2.8.8",

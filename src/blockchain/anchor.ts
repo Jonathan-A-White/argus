@@ -1,5 +1,5 @@
 import { Hash, P2PKH, Utils, type LockingScript } from '@bsv/sdk'
-import { assertTestnetOnly } from './ArgusWalletAdapter'
+import { assertTestnetOnly } from './config'
 
 const ANCHOR_LABEL = 'argus-unit-anchor:'
 const KEY_GRANT_ANCHOR_LABEL = 'argus-key-grant-anchor:'

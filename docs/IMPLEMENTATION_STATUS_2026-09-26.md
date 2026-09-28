@@ -1,5 +1,7 @@
 # Implementation status — 2026-09-26
 
+> **Superseded (2026-09-27):** see [BSV_SHARED_LEDGER.md](BSV_SHARED_LEDGER.md) and [ADR 010](adr/010-bsv-shared-ledger.md) for the current design. Kept for history.
+
 Baseline reviewed: branch `work`, commit `65d020342339fcd1ceda02f8b7f096405424e540`,
 clean working tree. The repository requires Node 24 or newer. The supplied environment used
 Node 20 by default, so checks were run through Node 24 where noted.

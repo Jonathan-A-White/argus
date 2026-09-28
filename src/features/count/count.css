@@ -1,0 +1,153 @@
+/* Shared physical count (src/features/count). Mobile-first; builds on the global count-card / review-card styles. */
+
+.shared-count .count-hero { flex-wrap: wrap; align-items: flex-start; gap: 16px; }
+.shared-count .count-hero > div:first-child { flex: 1 1 320px; min-width: 0; }
+.shared-count .count-meta { margin-top: 8px; font-size: 0.75rem; color: var(--color-text-muted); }
+.count-hero-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.count-hero-actions button { min-height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 14px; font-weight: 700; }
+.count-hero-actions svg { width: 17px; height: 17px; }
+/* The global phone rule collapses .gold-button to an icon; finalizing is too important to hide its label. */
+.shared-count .count-hero-actions .gold-button { font-size: 0.875rem; }
+
+.shared-count .split-actions > .primary-button { border: 0; background: var(--color-action-primary); color: #fff; }
+.shared-count .split-actions > button { font-weight: 700; }
+
+.count-callout { margin-bottom: 16px; }
+.count-callout strong { display: block; margin-bottom: 3px; }
+.count-callout p { margin: 0; }
+
+.count-field { margin: 6px 0; }
+.count-field label { text-transform: uppercase; letter-spacing: 1.2px; }
+.count-field input { min-height: 44px; font-size: 1rem; background: var(--color-bg-input); color: var(--color-text-primary); }
+
+/* ---------- step 1: pick item and size ---------- */
+.count-picker { margin-bottom: 18px; padding: 16px; }
+.count-picker h3 { margin: 3px 0 10px; font: 20px Marcellus, serif; }
+.shared-count .count-search { min-width: 0; min-height: 48px; }
+.count-search input { font-size: 1rem; }
+.count-clear { width: 44px; height: 44px; display: grid; place-items: center; border: 0; background: transparent; color: var(--color-text-muted); }
+.count-picker-results { display: grid; gap: 8px; max-height: 360px; overflow: auto; margin: 12px 0 0; padding: 0; list-style: none; }
+.count-picker-results button { width: 100%; min-height: 56px; display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 12px; text-align: left; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-bg-surface-raised); color: var(--color-text-primary); }
+.count-picker-results button:hover { border-color: var(--color-accent-cyan); background: var(--color-bg-surface-hover); }
+.count-picker-counted { text-align: right; }
+.count-picker-counted b { display: block; font: 20px Marcellus, serif; }
+.count-picker-counted small { font-size: 0.5625rem; color: var(--color-text-muted); }
+.count-picker-head { display: grid; grid-template-columns: 45px minmax(0, 1fr); align-items: center; gap: 12px; }
+.count-picker-head h3 { margin: 2px 0; }
+.count-picker-head p { margin: 0; font-size: 0.75rem; color: var(--color-text-secondary); }
+.count-change { grid-column: 1 / -1; min-height: 44px; padding: 0 14px; font-weight: 700; }
+.count-size-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.count-size-chip { min-width: 64px; min-height: 52px; display: grid; place-items: center; gap: 2px; padding: 6px 12px; border: 1px solid var(--color-border-strong); border-radius: 11px; background: var(--color-bg-surface-raised); color: var(--color-text-primary); }
+.count-size-chip b { font-size: 0.9375rem; }
+.count-size-chip small { font-size: 0.5625rem; color: var(--color-text-muted); }
+.count-size-chip[aria-pressed='true'] { border-color: var(--color-accent-gold); background: var(--color-action-primary); color: #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent-gold) 25%, transparent); }
+.count-size-chip[aria-pressed='true'] small { color: inherit; opacity: .8; }
+.count-no-sizes { margin-top: 14px; }
+.count-no-sizes p { margin: 0 0 10px; }
+.count-no-sizes .secondary-button { padding: 0 14px; font-weight: 700; }
+
+/* ---------- step 2: personal tally ---------- */
+.shared-count .count-layout { margin-bottom: 18px; }
+.count-display output { display: block; margin: 8px 0 5px; font: 76px/.98 Marcellus, serif; color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
+.shared-count .step-label { flex-wrap: wrap; }
+.shared-count .step-label > div { display: flex; flex-wrap: wrap; gap: 2px; }
+.shared-count .step-label button { min-width: 44px; min-height: 44px; font-size: 0.8125rem; }
+.count-custom-step { position: relative; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin: -4px 0 16px; font-size: 0.75rem; font-weight: 700; color: var(--color-text-secondary); }
+.count-custom-step input { width: 96px; min-height: 44px; padding: 8px 10px; border: 1px solid var(--color-border-strong); border-radius: 9px; background: var(--color-bg-input); color: var(--color-text-primary); font-size: 1rem; }
+.count-custom-step .secondary-button { padding: 0 16px; font-weight: 700; }
+.count-field-error { flex-basis: 100%; text-align: center; color: var(--color-danger); }
+.shared-count .stone-button:disabled { box-shadow: none; }
+.shared-count .undo-button { min-height: 44px; font-size: 0.75rem; }
+.count-contribute { position: relative; display: grid; gap: 10px; margin-top: 8px; }
+.count-contribute .primary-button { min-height: 52px; font-size: 0.9375rem; }
+.count-zero { min-height: 44px; font-weight: 700; }
+
+/* ---------- shared total for the selected size ---------- */
+.shared-count .count-shared.review-card { display: block; }
+.count-shared-total { padding: 6px 0 16px; text-align: center; }
+.count-shared-total small { display: block; font-size: 0.5625rem; font-weight: 800; letter-spacing: 2px; color: var(--color-accent-gold); }
+.count-shared-total output { display: block; margin: 6px 0; font: 64px/1 Marcellus, serif; color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
+.count-shared-total span { font-size: 0.6875rem; color: var(--color-text-secondary); }
+.count-not-counted { background: var(--color-bg-surface-hover); color: var(--color-text-secondary); }
+.count-not-counted > span { background: var(--color-bg-surface-raised); }
+.count-subheading { margin: 4px 0 8px; font-size: 0.625rem; letter-spacing: 1.4px; text-transform: uppercase; color: var(--color-text-secondary); }
+.count-contributions { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.count-contribution { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 4px 10px; padding: 10px; border: 1px solid var(--color-border); border-radius: 11px; background: var(--color-bg-surface-raised); }
+.count-contribution.late, .count-contribution.superseded { opacity: .78; }
+.count-avatar { width: 30px; height: 30px; display: inline-grid; place-items: center; flex: none; border-radius: 50%; background: var(--color-bg-sidebar-raised); color: var(--color-accent-gold); font-size: 0.625rem; font-weight: 800; }
+.count-contribution-body { min-width: 0; }
+.count-contribution-body b { display: block; font-size: 0.8125rem; }
+.count-contribution-body small { display: block; margin-top: 2px; font-size: 0.6875rem; color: var(--color-text-muted); overflow-wrap: anywhere; }
+.count-contribution-quantity { font: 22px Marcellus, serif; font-variant-numeric: tabular-nums; }
+.count-contribution-quantity s { margin-right: 4px; font-size: 0.875rem; color: var(--color-text-muted); }
+.count-contribution .status-badge, .count-contribution .count-correct { grid-column: 2 / -1; justify-self: start; }
+.count-correct { min-height: 44px; padding: 0 14px; font-weight: 700; }
+.count-correction { grid-column: 1 / -1; padding-top: 8px; border-top: 1px solid var(--color-border); }
+.count-correction .split-actions { margin-top: 10px; }
+.count-empty-note { margin: 0; padding: 14px; border: 1px dashed var(--color-border); border-radius: 11px; font-size: 0.75rem; text-align: center; color: var(--color-text-secondary); }
+
+/* ---------- session and finalized summaries ---------- */
+.count-summary { margin-bottom: 18px; }
+.count-summary-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 16px; border-bottom: 1px solid var(--color-border); }
+.count-summary-head h3 { margin: 3px 0 0; font: 20px Marcellus, serif; }
+.count-summary-head p { margin: 4px 0 0; font-size: 0.75rem; color: var(--color-text-secondary); }
+.count-summary .count-callout { margin: 14px 16px 0; }
+.count-table-wrap { overflow-x: auto; }
+.count-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+.count-table th, .count-table td { padding: 10px 12px; border-bottom: 1px solid var(--color-border); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.count-table thead th { font-size: 0.5625rem; letter-spacing: 1.2px; text-transform: uppercase; color: var(--color-text-muted); }
+.count-table th[scope='row'], .count-table thead th:first-child { text-align: left; white-space: normal; }
+.count-row-link { min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--color-accent-cyan); font-weight: 700; text-align: left; }
+.count-diff.up { color: var(--color-success); }
+.count-diff.down { color: var(--color-danger); }
+.count-diff.zero { color: var(--color-text-muted); }
+.count-people { padding: 14px 16px 16px; }
+.count-people small { font-size: 0.5625rem; font-weight: 800; letter-spacing: 1.4px; color: var(--color-text-muted); }
+.count-people ul { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; padding: 0; list-style: none; }
+.count-people li { display: flex; align-items: center; gap: 7px; padding: 4px 10px 4px 4px; border: 1px solid var(--color-border); border-radius: 999px; font-size: 0.75rem; }
+.count-people p { margin: 8px 0 0; font-size: 0.75rem; color: var(--color-text-secondary); }
+
+/* ---------- finalize / cancel drawers ---------- */
+.count-review-lines { overflow: hidden; margin: 0; padding: 0; list-style: none; border: 1px solid var(--color-border); border-radius: 11px; background: var(--color-bg-surface-raised); }
+.count-review-lines > li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 13px; border-bottom: 1px solid var(--color-border); }
+.count-review-lines > li:last-child { border-bottom: 0; }
+.count-review-lines > li.changed { background: color-mix(in srgb, var(--color-warning-bg) 55%, transparent); }
+.count-review-lines small { display: block; margin-top: 3px; font-size: 0.6875rem; color: var(--color-text-secondary); }
+.count-review-lines em { display: grid; justify-items: end; gap: 2px; font-style: normal; font-weight: 800; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.count-unchanged { color: var(--color-text-muted); }
+.count-uncounted > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+.count-uncounted > summary h4 { flex: 1; margin: 0; }
+.count-drawer-text { font-size: 0.8125rem; line-height: 1.5; color: var(--color-text-secondary); }
+
+/* ---------- no open session ---------- */
+.count-start { margin-bottom: 18px; padding: 22px 18px; }
+.count-start h3 { margin: 14px 0 6px; font: 24px Marcellus, serif; }
+.count-start > p { margin: 0; font-size: 0.875rem; line-height: 1.5; color: var(--color-text-secondary); }
+.count-steps { display: grid; gap: 6px; margin: 14px 0 6px; padding-left: 20px; font-size: 0.8125rem; line-height: 1.45; color: var(--color-text-secondary); }
+.count-start .primary-button { min-height: 52px; margin-top: 8px; font-size: 0.9375rem; }
+
+@media (min-width: 560px) {
+  .count-picker-head { grid-template-columns: 45px minmax(0, 1fr) auto; }
+  .count-change { grid-column: auto; }
+}
+
+@media (min-width: 681px) {
+  .count-picker { padding: 20px 22px; }
+  .count-start { padding: 28px; }
+}
+
+/* ---------- approval lifecycle (spec §13) ---------- */
+.shared-count .count-meta .count-lifecycle { display: inline-flex; margin-right: 6px; vertical-align: middle; }
+.count-callout p + p { margin-top: 4px; }
+.count-finalized .count-summary-head .status-badge { display: inline-flex; margin-top: 6px; }
+.count-history { margin-bottom: 18px; }
+.count-history > summary { min-height: 48px; display: flex; align-items: center; padding: 0 16px; cursor: pointer; font-size: 0.8125rem; font-weight: 700; color: var(--color-text-secondary); }
+.count-history ul { margin: 0; padding: 0 16px 12px; list-style: none; }
+.count-history li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--color-border); }
+.count-history li > span { min-width: 0; }
+.count-history li b { display: block; font-size: 0.8125rem; }
+.count-history li small { display: block; margin-top: 2px; font-size: 0.6875rem; color: var(--color-text-muted); }
+.count-assign { margin: 8px 0 12px; }
+.count-assign > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font-size: 0.8125rem; font-weight: 700; color: var(--color-text-secondary); }
+.count-assign > p { margin: 4px 0 8px; font-size: 0.75rem; color: var(--color-text-muted); }
+.count-assign select { width: 100%; min-height: 44px; font-size: 1rem; background: var(--color-bg-input); color: var(--color-text-primary); }

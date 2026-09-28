@@ -1,15 +1,15 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
-import { createWalletRuntime } from './blockchain/walletRuntime'
+import { installNotificationRouter } from './notifications/routing'
 import './styles.css'
 
-// The runtime controller is composed inside App, after the identity gate unlocks a real device identity
-// (or immediately, in mock-development); it is never constructed eagerly here.
-const walletRuntime = createWalletRuntime(import.meta.env.VITE_ARGUS_BLOCKCHAIN_MODE)
+// Before the unit gate renders, so a notification click on a locked app is routed after unlock.
+installNotificationRouter()
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App walletStatusProvider={walletRuntime.wallet} />
+    <App />
   </StrictMode>,
 )
 

@@ -1,0 +1,13 @@
+.unit-gate .modal { max-width: 560px; width: min(560px, calc(100vw - 32px)); display: grid; gap: 14px; }
+.unit-gate .modal h2 { margin: 0; }
+.unit-gate .modal p { margin: 0; line-height: 1.5; }
+.unit-gate-choices { display: grid; gap: 12px; }
+.unit-gate-choices button { display: grid; gap: 4px; min-height: 64px; text-align: left; padding: 14px 16px; }
+.unit-gate-choices button small { opacity: 0.75; font-weight: 400; }
+.unit-gate .field small { display: block; opacity: 0.7; font-weight: 400; margin-top: 4px; letter-spacing: 0; text-transform: none; }
+.unit-gate textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; word-break: break-all; }
+.unit-gate code { word-break: break-all; }
+.unit-gate-reset { border-top: 1px solid rgba(255, 255, 255, 0.12); padding-top: 12px; display: grid; gap: 10px; }
+.unit-gate-reset summary { cursor: pointer; opacity: 0.8; }
+.unit-gate { gap: 16px; padding: 16px 0; }
+.unit-gate-banner { width: min(560px, calc(100vw - 32px)); border: 1px solid var(--color-warning); border-radius: 10px; padding: 8px 12px; font-size: 0.75rem; justify-self: center; }

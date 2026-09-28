@@ -1,0 +1,52 @@
+/* Device notification settings (src/notifications). Builds on the global drawer, secondary-button and workflow-warning classes. */
+
+.notification-settings {
+  margin: 12px 0 18px;
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 13px;
+  background: var(--color-bg-surface-raised);
+}
+.notification-intro,
+.notification-message {
+  margin: 0 0 10px;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.notification-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.notification-toggle > svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--color-accent-gold);
+}
+.notification-toggle > span {
+  flex: 1;
+}
+.notification-toggle input {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  accent-color: var(--color-accent-gold);
+}
+.notification-status {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 12px;
+  padding-left: 18px;
+  color: var(--color-text-secondary);
+  font-size: 0.6875rem;
+  line-height: 1.45;
+}
+.notification-test {
+  width: 100%;
+  margin-top: 4px;
+}

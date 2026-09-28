@@ -1,0 +1,53 @@
+/* Record corrections and receipt history (src/features/corrections). Builds on the global drawer and form classes in src/styles.css. */
+
+.record-correction {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-bg-surface-raised);
+}
+.record-correction .field {
+  margin: 8px 0;
+}
+.record-correction .modal-actions {
+  margin-top: 8px;
+}
+.record-correction-intro {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.6875rem;
+  line-height: 1.45;
+}
+.record-correct-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+.record-correct-button svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+/* ---------- receipt history (inventory item drawer) ---------- */
+.receipt-history {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0;
+}
+.receipt-history h3 {
+  margin: 0 0 2px;
+}
+.receipt-row {
+  display: grid;
+  gap: 8px;
+}
+.receipt-row .needed-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}

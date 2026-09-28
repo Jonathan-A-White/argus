@@ -25,7 +25,7 @@ export async function issueRevocation(issuer: ArgusIdentityProvider, credential:
 export class AuthorizationService {
   private credentials = new Map<string, AuthorityCredential>()
   private revocations = new Map<string, AuthorityRevocation>()
-  constructor(readonly rootIdentity: string, private readonly verifier: ArgusIdentityProvider) {}
+  constructor(private readonly rootIdentity: string, private readonly verifier: ArgusIdentityProvider) {}
 
   private credentialActiveAt(credential: AuthorityCredential, at: string) {
     const revocation = this.revocations.get(credential.credentialId)
@@ -43,6 +43,8 @@ export class AuthorizationService {
     if (credential.credentialVersion !== 1 || !credential.credentialId || !credential.subjectPublicIdentity || !credential.issuedBy || !Array.isArray(credential.permissions)) throw new Error('Malformed authority credential.')
     if (!(await this.verifier.verify(unsigned(credential), credential.signature, credential.issuedBy))) throw new Error('Invalid credential signature.')
     if (!this.issuerCanAuthorize(credential.issuedBy, credential.issuedAt)) throw new Error('Credential issuer is not authorized.')
+    // Master authority is delegated only by the unit authority itself, never re-delegated by another Master.
+    if (credential.role === 'MASTER' && credential.issuedBy !== this.rootIdentity) throw new Error('Only the unit authority can make someone a Master.')
     if (credential.expiresAt && credential.expiresAt <= credential.issuedAt) throw new Error('Credential expiration is invalid.')
     if (credential.permissions.some(p => !ROLE_PERMISSIONS[credential.role].includes(p))) throw new Error('Credential contains permissions outside its role.')
     this.credentials.set(credential.credentialId, credential)
@@ -52,13 +54,17 @@ export class AuthorizationService {
     if (revocation.revocationVersion !== 1 || !this.credentials.has(revocation.credentialId)) throw new Error('Malformed or unknown revocation.')
     if (!(await this.verifier.verify(unsigned(revocation), revocation.signature, revocation.issuedBy))) throw new Error('Invalid revocation signature.')
     if (!this.issuerCanAuthorize(revocation.issuedBy, revocation.effectiveAt)) throw new Error('Revocation issuer is not authorized.')
+    if (this.credentials.get(revocation.credentialId)?.role === 'MASTER' && revocation.issuedBy !== this.rootIdentity) throw new Error('Only the unit authority can remove a Master.')
+    if (this.credentials.get(revocation.credentialId)?.subjectPublicIdentity !== revocation.subjectPublicIdentity) throw new Error('Revocation names the wrong person.')
     this.revocations.set(revocation.credentialId, revocation)
   }
 
+  hasCredential(credentialId: string) { return this.credentials.has(credentialId) }
   credentialFor(identity: string, at: string) { return [...this.credentials.values()].find(c => c.subjectPublicIdentity === identity && this.credentialActiveAt(c, at) && this.issuerCanAuthorize(c.issuedBy, c.issuedAt)) }
   require(identity: string, permission: ArgusPermission, at = new Date().toISOString()) {
     if (identity === this.rootIdentity) return
-    const credential = this.credentialFor(identity, at)
-    if (!credential || !credential.permissions.includes(permission)) throw new Error(`Unauthorized: ${permission} is required.`)
+    // Any active credential may grant it: a device must not decide by which credential it happened to learn first.
+    const granted = [...this.credentials.values()].some(c => c.subjectPublicIdentity === identity && c.permissions.includes(permission) && this.credentialActiveAt(c, at) && this.issuerCanAuthorize(c.issuedBy, c.issuedAt))
+    if (!granted) throw new Error(`Unauthorized: ${permission} is required.`)
   }
 }

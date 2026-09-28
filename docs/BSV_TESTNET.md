@@ -1,5 +1,7 @@
 # BSV testnet research and Stage 2.5 result
 
+> **Superseded (2026-09-27):** see [BSV_SHARED_LEDGER.md](BSV_SHARED_LEDGER.md) and [ADR 010](adr/010-bsv-shared-ledger.md) for the current design. Kept for history.
+
 ## Result: NOT COMPLETED
 
 No transaction was broadcast and no TXID was generated. On 2026-09-11 the web documentation tool returned HTTP 401. Live npm registry metadata verified that the official maintained source is `bsv-blockchain/ts-stack` and the versions recorded in `BSV_DEPENDENCY_REVIEW.md`; it did not provide a funded external BRC-100 wallet, verified TESTNET ARC configuration, or independent header/proof source. Guessing or embedding a wallet secret would violate the security boundary.

@@ -72,6 +72,8 @@ export class ChainTransport {
   private running?: Promise<void>
   private rerun = false
   private current: TransportStatus
+  /** Bumped when a tick starts and when it settles, so an early count from an older pass never overwrites a newer one. */
+  private pass = 0
   /** Broadcast transactions not yet seen on the anchor history: consecutive scans that missed them, and when the first miss was. */
   private readonly missing = new Map<string, { scans: number; since: number }>()
   private readonly online = () => this.poke()
@@ -101,17 +103,35 @@ export class ChainTransport {
     return this.running
   }
 
-  async tick() {
+  /**
+   * Waiting and awaiting-confirmation counts come from the local ledger, not the network, so they are
+   * right even while the chain is unreachable (a failed tick must not leave the last good count showing).
+   */
+  private async deliveryCounts(): Promise<Pick<TransportStatus, 'queued' | 'awaitingConfirmation'> | undefined> {
+    try {
+      const records = await this.deps.store.envelopes()
+      return { queued: records.filter(r => r.status === 'QUEUED' || r.status === 'PUBLISHING').length, awaitingConfirmation: records.filter(r => r.status === 'BROADCAST').length }
+    } catch { return undefined }
+  }
+
+  /** One publish+scan cycle. Resolves with whether it reached the network; the status says why not. */
+  async tick(): Promise<boolean> {
+    const pass = ++this.pass
     this.emit({ state: this.current.state === 'starting' ? 'starting' : 'syncing' })
+    // Show what is waiting right away (the network part can take a while), without delaying the publish itself.
+    void this.deliveryCounts().then(counts => { if (counts && pass === this.pass) this.emit(counts) })
     try {
       await this.publishOnce()
       await this.scanOnce()
-      const records = await this.deps.store.envelopes()
-      this.emit({ state: 'synced', lastError: undefined, queued: records.filter(r => r.status === 'QUEUED' || r.status === 'PUBLISHING').length, awaitingConfirmation: records.filter(r => r.status === 'BROADCAST').length, balance: await this.deps.wallet.balance() })
+      this.pass++
+      this.emit({ state: 'synced', lastError: undefined, ...(await this.deliveryCounts()), balance: await this.deps.wallet.balance() })
+      return true
     } catch (error) {
+      this.pass++
       const message = error instanceof Error ? error.message : 'The BSV testnet service could not be reached.'
       const offline = typeof navigator !== 'undefined' && navigator.onLine === false
-      this.emit({ state: offline ? 'offline' : 'error', lastError: message })
+      this.emit({ state: offline ? 'offline' : 'error', lastError: message, ...(await this.deliveryCounts()) })
+      return false
     }
   }
 

@@ -4,6 +4,7 @@ import { calendarDaysUntil } from './calendar'
 import { COUNT_WINDOW_DAYS, countCoverage, countDiscrepancies, lateCountSessions } from './countHealth'
 import type { AlertTarget, SyncSnapshot } from './readinessTypes'
 import { heldByCatalog, recordedSize, requiredItemsFor, standardIssueBundles } from './requirements'
+import { plural } from '../plural'
 
 /**
  * AMI readiness dashboard (master spec §17). Six categories, each a 0–100 score with a plain
@@ -21,7 +22,6 @@ export const AMI_CRITICAL_DAYS = 3
 /** A chain scan older than this counts against synchronization health. */
 export const SCAN_FRESH_MINUTES = 60
 
-const plural = (count: number, word: string, many = `${word}s`) => `${count} ${count === 1 ? word : many}`
 const share = (part: number, whole: number) => (whole ? Math.round((100 * part) / whole) : 100)
 
 type Projection = ArgusAppProjection

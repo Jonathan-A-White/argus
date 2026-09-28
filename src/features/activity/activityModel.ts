@@ -4,6 +4,7 @@ import { isVerified } from '../../distributed/delivery'
 import type { DistributedEventType, LocalSyncStatus, SignedArgusEvent, StoredEvent } from '../../distributed/types'
 import { cadetLabel } from '../../stage3/domain'
 import { roleLabel } from '../../unit/screens/labels'
+import { plural } from '../../plural'
 
 /**
  * Activity / audit view model (master spec §36). Everything here is plain words derived from the
@@ -28,7 +29,6 @@ type Line = { label?: unknown; variant?: unknown; quantity?: unknown; itemId?: u
 /** Payload fields that may hold a person's name or free text: never shown, even when a correction targets them. */
 const PRIVATE_FIELDS = new Set(['fullName', 'displayName', 'note', 'reason', 'resolution'])
 const FIELD_LABELS: Record<string, string> = { fullName: 'name', nsLevel: 'NS level', profileNeedsReview: 'review flag', reorderAt: 'low-stock level', countIncrement: 'count step', niin: 'NIIN', sizeScheme: 'size scheme', startsAt: 'date', bundleIds: 'bundles', cadetIds: 'cadets', quantityNeeded: 'quantity needed', quantityFulfilled: 'quantity issued', displayLabel: 'label', itemId: 'item' }
-const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 const fields = (payload: Record<string, unknown>) => Object.keys(payload).map(key => FIELD_LABELS[key] ?? key.replace(/([A-Z])/g, ' $1').toLowerCase()).join(', ')
 const text = (value: unknown, fallback: string) => typeof value === 'string' && value.trim() ? value.trim() : fallback
 

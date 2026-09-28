@@ -79,6 +79,22 @@ describe('Dashboard command center', () => {
     expect(navigate).toHaveBeenLastCalledWith({ tab: 'cadets' })
   })
 
+  it('shows a brand-new unit as not ready: unmeasured categories read "Not measured yet", never 100%', async () => {
+    const { projection } = await setup()
+    renderDashboard(projection)
+    expect(screen.getByRole('button', { name: 'Readiness: 0% overall' })).toHaveTextContent('0%')
+    expect(screen.getByText('Audit · no records yet')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^Readiness:/ }))
+    const dialog = screen.getByRole('dialog', { name: 'Supply readiness' })
+    const row = (label: string) => within(dialog).getByRole('progressbar', { name: `${label} readiness` }).closest('li') as HTMLElement
+    for (const label of ['Cadets', 'Events', 'Audit']) {
+      expect(within(row(label)).getByText('Not measured yet')).toBeInTheDocument()
+      expect(within(dialog).getByRole('progressbar', { name: `${label} readiness` })).not.toHaveAttribute('aria-valuenow')
+    }
+    expect(within(row('Inventory')).getByText('0%')).toBeInTheDocument()
+    expect(within(dialog).queryByText('100%')).toBeNull()
+  })
+
   it('renders the four readiness-tree nodes from live data and each node navigates', async () => {
     const { projection } = await busyUnit()
     const { navigate } = renderDashboard(projection)

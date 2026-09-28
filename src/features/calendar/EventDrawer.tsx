@@ -114,7 +114,7 @@ export function EventDrawer({ event, projection, controller, canWrite, canReveal
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={progress.percent}
-          aria-valuetext={`${progress.done} of ${progress.total} tasks complete`}
+          aria-valuetext={progress.total ? `${progress.done} of ${progress.total} tasks complete` : 'No tasks yet'}
         >
           <span style={{ width: `${progress.percent}%` }} />
         </div>

@@ -8,6 +8,7 @@ import { readiness } from '../stage3/readiness'
 import { MemoryLedgerStore, type StoredEnvelope } from './ledgerStore'
 import { UnitRuntime } from './runtime'
 import { LOST_AFTER_MS, LOST_AFTER_SCANS } from './transport'
+import { syncLabel, syncOutcome } from './screens/labels'
 import { acceptAdmission, createJoiningDevice, createMasterDevice, encodeJoinRequest, type UnlockedDevice } from './vault'
 
 const storage = () => { const values = new Map<string, string>(); return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) }, removeItem: (key: string) => { values.delete(key) } } }
@@ -185,5 +186,49 @@ describe('records are never lost between the app, the ledger and the chain', { t
 
     const restarted = await open(device, chain, ledger)
     expect((await restarted.controller.project()).inventory.find(entry => entry.entityId === item)?.onHand).toBe(start + 3)
+  })
+})
+
+/** WhatsOnChain unreachable (as in the browser when it is offline or rate-limits without a CORS header). */
+class UnreachableChain extends FakeChain {
+  down = false
+  private check() { if (this.down) throw new Error('Could not reach WhatsOnChain after 3 tries (offline, timed out, or rate-limited; its 429 reply carries no CORS header).') }
+  override async unspent(...args: Parameters<FakeChain['unspent']>) { this.check(); return super.unspent(...args) }
+  override async txHex(...args: Parameters<FakeChain['txHex']>) { this.check(); return super.txHex(...args) }
+  override async confirmedHistory(...args: Parameters<FakeChain['confirmedHistory']>) { this.check(); return super.confirmedHistory(...args) }
+  override async unconfirmedHistory(...args: Parameters<FakeChain['unconfirmedHistory']>) { this.check(); return super.unconfirmedHistory(...args) }
+  override async broadcast(...args: Parameters<FakeChain['broadcast']>) { this.check(); return super.broadcast(...args) }
+  override async tipHeight() { this.check(); return super.tipHeight() }
+}
+
+describe('while BSV testnet is unreachable (M3, M4)', { timeout: 120_000 }, () => {
+  it('counts the changes waiting to publish from the local ledger, and Sync now reports the failure', async () => {
+    const chain = new UnreachableChain(), device = await master()
+    chain.fund(device.record.walletAddress, 100_000, { confirmed: true })
+    const a = await open(device, chain)
+    await a.syncNow(); await a.syncNow()
+    expect(a.status()).toMatchObject({ state: 'synced', queued: 0 })
+    expect(syncOutcome(a.status())).toEqual({ ok: true, message: 'Synchronized with BSV testnet.' })
+
+    chain.down = true
+    const item = await firstItem(a)
+    await a.controller.receiveStock(item, 2)
+    await a.controller.receiveStock(item, 3)
+    await a.syncNow()
+    const status = a.status()
+    // The failed pass still recounted what is waiting (it used to keep showing the last good count, 0).
+    expect(status).toMatchObject({ state: 'error', queued: 2 })
+    expect(syncLabel(status)).toBe('SYNC ISSUE · 2 QUEUED')
+    expect((await a.controller.project()).sync.outbox).toBe(2)
+    const outcome = syncOutcome(status)
+    expect(outcome.ok).toBe(false)
+    expect(outcome.message).toBe('Could not sync with BSV testnet. The BSV testnet service could not be reached (no connection, or it is busy). 2 changes are saved on this device and will publish automatically.')
+    expect(outcome.message).not.toMatch(/CORS|429|WhatsOnChain/)
+    // The technical detail is kept for the diagnostics line.
+    expect(status.lastError).toMatch(/CORS/)
+
+    chain.down = false
+    await a.syncNow(); await a.syncNow()
+    expect(a.status()).toMatchObject({ state: 'synced', queued: 0 })
   })
 })

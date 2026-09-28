@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { fireEvent, render, screen, within } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { SupplyWorkflow } from './SupplyWorkflow'
 import { DistributedAppController, type ArgusAppProjection } from '../distributed/appIntegration'
 import { FACTORY_BUNDLES } from '../stage3/domain'
@@ -129,5 +129,100 @@ describe('return workflow conditions (spec §11)', () => {
     expect(after.inventory.find(item => item.entityId === shorts)).toMatchObject({ onHand: 3, issued: 0 })
     expect(after.cadets[0].currentProperty).toEqual([])
     expect(after.transactions.find(transaction => transaction.transactionType === 'RETURN')!.lines.map(line => [line.label, line.condition, line.note]).sort()).toEqual([['Gold PT Shirt', 'SERVICEABLE', undefined], ['PT Shorts', 'LOST', 'Left at BLT']])
+    // Return lines show what the cadet holds, never the issue-only "Optional item" label.
+    expect(within(workflow).queryByText(/Optional item/)).toBeNull()
+  })
+})
+
+describe('closing the workflow (C1) and moving between steps', () => {
+  it('a brand-new unit with no cadets says what to do next and can be left with Cancel, the X, Escape or the backdrop', async () => {
+    const controller = new DistributedAppController()
+    const projection = await controller.initialize()
+    const onClose = vi.fn()
+    render(<SupplyWorkflow mode="ISSUE" projection={projection} controller={controller} onClose={onClose} onChanged={() => undefined} />)
+    const workflow = screen.getByRole('dialog', { name: 'Issue property' })
+    // Focus moved into the workflow when it opened.
+    expect(workflow).toHaveFocus()
+    expect(within(workflow).getByText('No cadets yet')).toBeInTheDocument()
+    expect(within(workflow).getByText('Add cadets on the Cadets screen, then issue their gear here.')).toBeInTheDocument()
+    fireEvent.click(within(workflow).getByRole('button', { name: 'Cancel' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+    // The same close control as every drawer: .icon-button is hidden on phones, .drawer-close never is.
+    const close = within(workflow).getByRole('button', { name: 'Close workflow' })
+    expect(close).toHaveClass('drawer-close')
+    expect(close).not.toHaveClass('icon-button')
+    fireEvent.click(close)
+    expect(onClose).toHaveBeenCalledTimes(2)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(3)
+    fireEvent.mouseDown(within(workflow).getByText('No cadets yet'))
+    expect(onClose).toHaveBeenCalledTimes(3)
+    fireEvent.mouseDown(workflow.parentElement!)
+    expect(onClose).toHaveBeenCalledTimes(4)
+  })
+
+  it('offers Back and Cancel on the issue-type step and Back on the configure step', async () => {
+    const controller = new DistributedAppController()
+    await controller.initialize()
+    const projection = await controller.createCadet({ gender: 'Male', nsLevel: 'NS1', status: 'ACTIVE', cadetCode: 'C-BK12' })
+    const onClose = vi.fn()
+    render(<SupplyWorkflow mode="ISSUE" projection={projection} controller={controller} onClose={onClose} onChanged={() => undefined} />)
+    const workflow = screen.getByRole('dialog', { name: 'Issue property' })
+    fireEvent.click(within(workflow).getByRole('button', { name: /C-BK12/ }))
+    expect(within(workflow).getByRole('heading', { name: 'Choose issue type' })).toBeInTheDocument()
+    fireEvent.click(within(workflow).getByRole('button', { name: 'Back' }))
+    expect(within(workflow).getByRole('heading', { name: 'Select a cadet' })).toBeInTheDocument()
+    fireEvent.click(within(workflow).getByRole('button', { name: /C-BK12/ }))
+    fireEvent.click(bundleButton(workflow, 'PT'))
+    expect(within(workflow).getByRole('heading', { name: 'Configure issue' })).toBeInTheDocument()
+    fireEvent.click(within(workflow).getByRole('button', { name: 'Back' }))
+    expect(within(workflow).getByRole('heading', { name: 'Choose issue type' })).toBeInTheDocument()
+    fireEvent.click(within(workflow).getByRole('button', { name: 'Cancel' }))
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('required lines above stock (M5)', () => {
+  it('issues what is on hand and records the remainder as Still Needed, shown on the line and the review screen', async () => {
+    const { controller, variant } = await stocked({ 'Black Belt': { one: 5 } })
+    const projection = await controller.createCadet({ gender: 'Male', nsLevel: 'NS1', status: 'ACTIVE', cadetCode: 'C-BB12' })
+    const cadetId = projection.cadets[0].cadetId, belt = variant('Black Belt').entityId
+    render(<Workflow controller={controller} initial={projection} cadetId={cadetId} />)
+    const workflow = screen.getByRole('dialog', { name: 'Issue property' })
+    fireEvent.click(bundleButton(workflow, 'Male NSU'))
+    fireEvent.change(within(workflow).getByLabelText('Black Belt quantity'), { target: { value: '7' } })
+
+    const line = (label: string) => [...workflow.querySelectorAll<HTMLElement>('.line-editor article')].find(article => article.querySelector('b')?.textContent === label)!
+    expect(within(line('Black Belt')).getByText('Partial')).toBeInTheDocument()
+    expect(within(line('Black Belt')).getByText('5 issued now · 2 go to Still Needed')).toBeInTheDocument()
+    // Required lines that go to Still Needed by design get a neutral note, not a red "Only 0 available." error.
+    expect(within(line('Buckle')).getByText('Goes to Still Needed · none on hand')).toBeInTheDocument()
+    expect(within(workflow).queryByText(/^Only \d+ available\.$/)).toBeNull()
+    expect(within(workflow).queryByRole('alert')).toBeNull()
+
+    fireEvent.click(within(workflow).getByRole('button', { name: 'Review Issue' }))
+    const group = (title: string) => within(workflow).getByText(title).closest('.review-group') as HTMLElement
+    expect(within(group('Ready to issue')).getByText(/Quantity 5 · 2 more to Still Needed/)).toBeInTheDocument()
+    expect(within(group('Still needed after issue')).getByText(/Quantity 2 · only 5 on hand/)).toBeInTheDocument()
+    fireEvent.click(within(workflow).getByRole('button', { name: /Confirm Issue/ }))
+    expect(await within(workflow).findByText('5 items issued · 9 added to Still Needed')).toBeInTheDocument()
+
+    const after = await controller.project()
+    expect(after.inventory.find(item => item.entityId === belt)?.onHand).toBe(0)
+    expect(after.cadets[0].currentProperty).toEqual([expect.objectContaining({ itemId: belt, quantity: 5 })])
+    expect(after.stillNeeded.find(need => need.displayLabel === 'Black Belt')).toMatchObject({ itemId: belt, quantityNeeded: 2, quantityFulfilled: 0 })
+  })
+
+  it('still refuses an optional line above stock', async () => {
+    const { controller } = await stocked({ 'Black Belt': { one: 1 } })
+    const projection = await controller.createCadet({ gender: 'Male', nsLevel: 'NS1', status: 'ACTIVE' })
+    render(<Workflow controller={controller} initial={projection} cadetId={projection.cadets[0].cadetId} />)
+    const workflow = screen.getByRole('dialog', { name: 'Issue property' })
+    fireEvent.click(within(workflow).getByRole('button', { name: /Individual Issue/ }))
+    fireEvent.change(within(workflow).getByLabelText('Search inventory'), { target: { value: 'black belt' } })
+    fireEvent.click(within(workflow).getAllByRole('button').find(button => button.querySelector('b')?.textContent === 'Black Belt')!)
+    fireEvent.change(within(workflow).getByLabelText('Black Belt quantity'), { target: { value: '2' } })
+    expect(within(workflow).getByRole('alert')).toHaveTextContent('Only 1 available.')
+    expect(within(workflow).getByRole('button', { name: 'Review Issue' })).toBeDisabled()
   })
 })

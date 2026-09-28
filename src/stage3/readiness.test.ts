@@ -80,13 +80,30 @@ describe('inventory readiness scores the sizes bundles need', () => {
   })
 })
 
+describe('an empty unit is never read as fully ready (minor 5)', () => {
+  it('leaves categories with nothing to measure out of the overall score instead of counting them as 100%', async () => {
+    const { controller, projection } = await demoUnit()
+    const empty = readiness(projection, NOW)
+    // No active cadets, no upcoming event, no recorded changes: only the stock the bundles need can be measured (none on hand).
+    expect(empty.measured).toEqual({ cadets: false, inventory: true, events: false, audit: false })
+    expect(empty).toMatchObject({ inventory: 0, overall: 0, overallMeasured: true })
+    // With only unmeasurable categories weighted there is no score at all.
+    expect(readiness(projection, NOW, { weights: { cadets: 1, inventory: 0, events: 1, audit: 1 } })).toMatchObject({ overall: 0, overallMeasured: false })
+    // An upcoming event with preparation tasks makes Events measurable.
+    const withEvent = await controller.createCalendarEvent({ kind: 'AMI', startsAt: new Date(2026, 9, 20, 12).toISOString() })
+    expect(readiness(withEvent, NOW).measured.events).toBe(true)
+  })
+})
+
 describe('readiness weights (per device)', () => {
   it('weights the overall score and falls back to equal weights when invalid', async () => {
     const { controller } = await demoUnit()
     const projection = await controller.createCadet({ gender: 'Male', nsLevel: 'NS1', status: 'ACTIVE' })
     const equal = readiness(projection, NOW)
     expect(equal.weights).toEqual(READINESS_WEIGHTS)
-    expect(equal.overall).toBe(Math.round((equal.cadets + equal.inventory + equal.events + equal.audit) / 4))
+    // No supply event is scheduled, so Events has nothing to measure and is left out (it used to count as 100%).
+    expect(equal.measured).toEqual({ cadets: true, inventory: true, events: false, audit: true })
+    expect(equal.overall).toBe(Math.round((equal.cadets + equal.inventory + equal.audit) / 3))
 
     const auditOnly = readiness(projection, NOW, { weights: { cadets: 0, inventory: 0, events: 0, audit: 1 } })
     expect(auditOnly.overall).toBe(equal.audit)

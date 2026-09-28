@@ -2,6 +2,7 @@ import type { CatalogItemProjection, InventoryProjection } from '../../distribut
 import { MAX_COUNT_QUANTITY, MAX_RECEIVE_QUANTITY } from '../../distributed/replica'
 import { normalizeSizeLabel } from '../../stage3/sizes'
 import type { InventoryStatus } from '../../stage3/inventoryStatus'
+import { plural } from '../../plural'
 
 export { MAX_COUNT_QUANTITY, MAX_RECEIVE_QUANTITY }
 export const MAX_COUNT_INCREMENT = 1000
@@ -24,7 +25,10 @@ export function catalogStatus(item: CatalogItemProjection, variants: InventoryPr
   if (item.sized && !variants.length) return { label: 'Sizes not set', tone: 'warning' }
   const active = variants.filter(variant => variant.active)
   if (!active.length) return { label: 'No active sizes', tone: 'neutral' }
-  if (active.some(variant => needsAttention(variant) && variant.onHand === 0)) return { label: 'Out of stock', tone: 'danger' }
+  // "Out of stock" only when nothing is left of the item at all; otherwise say how many sizes ran out.
+  const out = active.filter(variant => needsAttention(variant) && variant.onHand === 0).length
+  if (out && sumOf(active, 'onHand') === 0) return { label: 'Out of stock', tone: 'danger' }
+  if (out) return { label: `${plural(out, 'size')} out`, tone: 'warning' }
   if (active.some(needsAttention)) return { label: 'Low stock', tone: 'warning' }
   // Zero with nothing issued and no threshold is simply "not stocked yet", not an alarm.
   if (sumOf(active, 'onHand') === 0) return { label: 'Nothing on hand', tone: 'neutral' }
@@ -95,4 +99,4 @@ export function parseWhole(text: string, min: number, max: number) {
 export const errorMessage = (reason: unknown, fallback = 'That change could not be saved. Please try again.') =>
   reason instanceof Error && reason.message ? reason.message : fallback
 
-export const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`
+export { plural }

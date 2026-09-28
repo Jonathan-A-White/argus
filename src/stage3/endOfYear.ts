@@ -1,6 +1,7 @@
 import type { ArgusAppProjection } from '../distributed/appIntegration'
 import { COUNT_WINDOW_DAYS, countCoverage, countDiscrepancies, openCountSessions, type CountCoverage, type CountDiscrepancy } from './countHealth'
 import { cadetLabel } from './domain'
+import { plural } from '../plural'
 
 /**
  * End-of-Year review (master spec §19): the count and property reconciliation that has to be
@@ -13,7 +14,6 @@ export type RolloverCheck = { key: RolloverCheckKey; label: string; done: boolea
 export type EndOfYearReview = { coverage: CountCoverage; discrepancies: CountDiscrepancy[]; returnPending: ReturnPendingCadet[]; checklist: RolloverCheck[]; ready: boolean; percent: number }
 
 type Projection = Pick<ArgusAppProjection, 'cadets' | 'conflicts' | 'countSessions' | 'inventory'>
-const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
 /** Cadets who must hand gear back: inactive cadets still holding property, and NS4 cadets who graduate at the rollover. */
 export function returnPendingCadets(projection: Pick<Projection, 'cadets'>): ReturnPendingCadet[] {

@@ -6,6 +6,7 @@ import type { ArgusPermission } from '../../distributed/types'
 import { BundleForm } from './BundleForm'
 import { APPLICABILITY, activeSizeCount, currentVersionOf, isDefaultPreset, lineReady, versionChanges } from './bundleModel'
 import './bundles.css'
+import { plural } from '../../plural'
 
 export type BundleEditorPanelProps = {
   projection: ArgusAppProjection
@@ -25,7 +26,6 @@ const formatDate = (iso: string) => {
   return Number.isNaN(date.getTime()) ? 'Unknown date' : date.toLocaleDateString()
 }
 const applicabilityLabel = (value: string) => APPLICABILITY.find(option => option.value === value)?.label ?? value
-const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
 /**
  * Issue bundles (master spec §8–9): the default presets plus the unit's own, each with its full

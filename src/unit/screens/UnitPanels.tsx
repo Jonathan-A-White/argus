@@ -4,8 +4,9 @@ import { Drawer } from '../../components/Drawer'
 import type { ArgusAppProjection } from '../../distributed/appIntegration'
 import type { ArgusRole } from '../../distributed/types'
 import type { WalletBalance } from '../../chain/types'
+import { plural } from '../../plural'
 import { DEFAULT_MEMBER_TOP_UP_SATOSHIS, type UnitRuntime, type UnitStatus } from '../runtime'
-import { roleLabel, syncLabel } from './labels'
+import { plainChainError, roleLabel, syncLabel, syncOutcome } from './labels'
 
 const explorer = (kind: 'address' | 'tx', value: string) => `https://test.whatsonchain.com/${kind}/${value}`
 /** A public BSV testnet faucet; the coins it sends have no value. */
@@ -58,11 +59,13 @@ export function MembersPanel({ runtime, projection, close, onProjection, notify 
     catch (cause) { notify(cause instanceof Error ? cause.message : 'The role could not be changed.') } finally { setWorking('') }
   }
   const members = [...projection.members].sort((a, b) => Number(b.status === 'ACTIVE') - Number(a.status === 'ACTIVE') || a.displayName.localeCompare(b.displayName))
+  const nobodyElse = !members.some(member => member.publicIdentity !== record.signingIdentity)
   return (
     <Drawer title="Members & access" icon={<KeyRound />} close={close}>
       <div className="panel-rows">
-        <p><small>UNIT</small><br /><strong>{record.unit?.unitName}</strong> · <code title={record.unit?.unitId}>{record.unit?.unitId}</code></p>
+        <p><small>UNIT</small><br /><strong>{record.unit?.unitName}</strong></p>
         <p><small>YOU</small><br /><strong>{record.displayName}</strong> · {status.revoked ? 'Access removed' : roleLabel(record.role)}{holdsAuthority ? ' · holds the unit authority' : ''}</p>
+        <details className="technical-details"><summary>Technical details</summary><p><small>Unit ID</small> <code>{record.unit?.unitId}</code></p></details>
       </div>
       <h3>People in this unit</h3>
       <ul className="panel-rows" aria-label="People in this unit">
@@ -97,7 +100,7 @@ export function MembersPanel({ runtime, projection, close, onProjection, notify 
             </li>
           )
         })}
-        {!members.length && <li><p>No one else has been admitted yet.</p></li>}
+        {nobodyElse && <li><p>{status.lastScanAt ? 'No one else has been admitted yet.' : 'The member list appears after this device’s first sync with BSV testnet.'}</p></li>}
       </ul>
       {isMaster && <p className="safe-note">Removing someone also replaces the unit key for everyone else, so they cannot read anything written afterwards. Their earlier work stays in the record.</p>}
       {isMaster ? (
@@ -161,9 +164,9 @@ function RecoveryFileSection({ runtime, registeredAt, notify, onProjection }: { 
 /** This device's testnet wallet and how its sync with the chain is going. */
 export function WalletPanel({ runtime, status, close, notify }: { runtime: UnitRuntime; status: UnitStatus; close: () => void; notify: (message: string) => void }) {
   const [balance, setBalance] = useState<WalletBalance>(), [error, setError] = useState(''), [copied, setCopied] = useState(false), [busy, setBusy] = useState(false)
-  const [to, setTo] = useState(''), [amount, setAmount] = useState(String(DEFAULT_MEMBER_TOP_UP_SATOSHIS))
-  const refresh = async () => { setBusy(true); setError(''); try { setBalance(await runtime.balance()) } catch (cause) { setError(cause instanceof Error ? cause.message : 'The testnet service could not be reached.') } finally { setBusy(false) } }
-  useEffect(() => { let active = true; runtime.balance().then(value => { if (active) setBalance(value) }, cause => { if (active) setError(cause instanceof Error ? cause.message : 'The testnet service could not be reached.') }); return () => { active = false } }, [runtime])
+  const [to, setTo] = useState(''), [amount, setAmount] = useState(String(DEFAULT_MEMBER_TOP_UP_SATOSHIS)), [syncing, setSyncing] = useState(false)
+  const refresh = async () => { setBusy(true); setError(''); try { setBalance(await runtime.balance()) } catch (cause) { setError(plainChainError(cause instanceof Error ? cause.message : undefined)) } finally { setBusy(false) } }
+  useEffect(() => { let active = true; runtime.balance().then(value => { if (active) setBalance(value) }, cause => { if (active) setError(plainChainError(cause instanceof Error ? cause.message : undefined)) }); return () => { active = false } }, [runtime])
   const send = async (event: React.FormEvent) => {
     event.preventDefault()
     const satoshis = Number(amount)
@@ -190,13 +193,14 @@ export function WalletPanel({ runtime, status, close, notify }: { runtime: UnitR
       </div>
       <h3>Sync with BSV testnet</h3>
       <div className="panel-rows" aria-label="Sync status">
-        <p><small>STATUS</small><br /><strong>{syncLabel(status)}</strong>{status.lastError ? ` · ${status.lastError}` : ''}</p>
+        <p><small>STATUS</small><br /><strong>{syncLabel(status)}</strong>{status.lastError && status.state !== 'synced' ? ` · ${plainChainError(status.lastError)}` : ''}</p>
+        {status.lastError && status.state !== 'synced' && <details className="technical-details"><summary>Technical details</summary><p><code>{status.lastError}</code></p></details>}
         <p><small>WAITING TO PUBLISH · AWAITING CONFIRMATION</small><br />{status.queued} · {status.awaitingConfirmation}</p>
         <p><small>LAST CHECKED</small><br />{status.lastScanAt ? new Date(status.lastScanAt).toLocaleString() : 'Not yet'}</p>
         <p><small>UNIT HISTORY ADDRESS</small><br /><a href={explorer('address', status.anchorAddress)} target="_blank" rel="noreferrer">{status.anchorAddress}</a></p>
-        {status.unreadable > 0 && <p role="alert">{status.unreadable} record(s) could not be decrypted on this device yet.</p>}
+        {status.unreadable > 0 && <p role="alert">{plural(status.unreadable, 'record')} could not be decrypted on this device yet.</p>}
       </div>
-      <button className="primary-button" onClick={() => void runtime.syncNow().then(() => notify('Synchronized with BSV testnet.'), cause => notify(cause instanceof Error ? cause.message : 'Sync failed.'))}>Sync now</button>
+      <button className="primary-button" disabled={syncing} onClick={() => { setSyncing(true); void runtime.syncNow().then(() => notify(syncOutcome(runtime.status()).message), () => notify(syncOutcome({ ...runtime.status(), state: 'error' }).message)).finally(() => setSyncing(false)) }}>{syncing ? 'Syncing…' : 'Sync now'}</button>
       {runtime.device.record.role === 'MASTER' && (
         <form className="panel-rows" aria-label="Send testnet satoshis" onSubmit={send}>
           <h3>Top up a member</h3>

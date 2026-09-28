@@ -25,6 +25,8 @@ import {
 } from "./distributed/appIntegration";
 import type { ArgusPermission, ArgusRole } from "./distributed/types";
 import { ROLE_PERMISSIONS } from "./auth/authorization";
+import { IndexedDbRepository, MemoryRepository } from "./storage/repository";
+import { plural } from "./plural";
 import {
   LocalSettingsStorage,
   type SettingsStorage,
@@ -51,7 +53,7 @@ import { ActivityView } from "./features/activity";
 import { cadetLabel } from "./stage3/domain";
 import { UnitGate } from "./unit/screens/UnitGate";
 import { MembersPanel, WalletPanel } from "./unit/screens/UnitPanels";
-import { roleLabel, syncLabel } from "./unit/screens/labels";
+import { roleLabel, syncLabel, syncOutcome } from "./unit/screens/labels";
 import {
   DeviceNotificationSettings,
   useDeviceNotifications,
@@ -148,8 +150,17 @@ export default function App({
   );
 }
 
+/** The mock-development demo keeps its (plaintext, demo-only) records in its own IndexedDB database so a reload keeps them. */
+const DEMO_DATABASE_NAME = "argus-demo";
 function DemoApp(props: Omit<Props, "controller">) {
-  const [controller] = useState(() => new DistributedAppController());
+  const [controller] = useState(
+    () =>
+      new DistributedAppController(
+        globalThis.indexedDB
+          ? new IndexedDbRepository(DEMO_DATABASE_NAME)
+          : new MemoryRepository(),
+      ),
+  );
   return <AuthenticatedApp controller={controller} {...props} />;
 }
 
@@ -175,7 +186,7 @@ function AuthenticatedApp({
     settingsStorage.load(),
   );
   const [projection, setProjection] = useState<ArgusAppProjection>();
-  const [status, setStatus] = useState<UnitStatus | undefined>(() =>
+  const [reportedStatus, setStatus] = useState<UnitStatus | undefined>(() =>
     runtime?.status(),
   );
   const [selectedTab, setTab] = useState<Tab>(preferences.defaultSection);
@@ -239,7 +250,7 @@ function AuthenticatedApp({
   const role: ArgusRole | "PENDING" =
     runtime?.device.record.role ?? "SUPPLY_OFFICER";
   // Permissions come from the person's signed credential (spec §4: configurable, not scattered through the UI); a removed person has none.
-  const revoked = Boolean(status?.revoked);
+  const revoked = Boolean(reportedStatus?.revoked);
   const credential = runtime?.device.record.credential;
   const can = useCallback(
     (permission: ArgusPermission) =>
@@ -270,6 +281,27 @@ function AuthenticatedApp({
     [projection],
   );
   const notify = useCallback((message: string) => setNotice(message), []);
+  // Sync now (Count): says what actually happened, never "synchronized" while the network is unreachable.
+  const syncNow = useCallback(async () => {
+    if (!runtime) {
+      const next = await controller.sync();
+      return {
+        projection: next,
+        message: "Up to date. This demo keeps its records on this device only.",
+      };
+    }
+    const next = await runtime.syncNow();
+    return { projection: next, message: syncOutcome(runtime.status()).message };
+  }, [controller, runtime]);
+  // The local copy knows every change still waiting to publish even while the last network check failed.
+  const waiting = Math.max(
+    reportedStatus?.queued ?? 0,
+    projection?.sync.outbox ?? 0,
+  );
+  const status: UnitStatus | undefined = reportedStatus && {
+    ...reportedStatus,
+    queued: waiting,
+  };
   // Tier 2 device notifications (spec §20); a notification click routes like a dashboard alert click.
   useDeviceNotifications({
     enabled: preferences.deviceNotifications,
@@ -277,7 +309,7 @@ function AuthenticatedApp({
     sync: {
       needsFunding: Boolean(status?.needsFunding),
       state: status?.state,
-      queued: status?.queued ?? projection?.sync.outbox,
+      queued: waiting,
     },
     onOpen: ({ tab: next, panel: nextPanel }) => {
       setSettingsOpen(false);
@@ -332,7 +364,7 @@ function AuthenticatedApp({
   const syncSnapshot: SyncSnapshot = {
     needsFunding: Boolean(status?.needsFunding),
     state: status?.state,
-    queued: status?.queued ?? projection.sync.outbox,
+    queued: waiting,
     unreadable: status?.unreadable,
     lastScanAt: status?.lastScanAt,
     revoked: status?.revoked,
@@ -403,6 +435,7 @@ function AuthenticatedApp({
           <div className="top-actions">
             <button
               className="sync"
+              title={syncText}
               onClick={() =>
                 setPanel(
                   projection.sync.openConflicts
@@ -414,7 +447,7 @@ function AuthenticatedApp({
               }
             >
               <Wifi size={15} />
-              {syncText}
+              <span className="sync-text">{syncText}</span>
             </button>
             <button
               aria-label="Settings"
@@ -427,6 +460,7 @@ function AuthenticatedApp({
               className="top-identity"
               onClick={() => setSettingsOpen(true)}
               aria-label={`Signed in as ${who}, ${roleLabel(role)}`}
+              title={`${who} · ${roleLabel(role)}`}
             >
               <b aria-hidden="true">{initialsOf}</b>
               <span>
@@ -436,11 +470,6 @@ function AuthenticatedApp({
             </button>
           </div>
         </header>
-        {notice && (
-          <div className="app-notice" role="status">
-            {notice}
-          </div>
-        )}
         {tab === "home" && (
           <Dashboard
             projection={projection}
@@ -483,6 +512,7 @@ function AuthenticatedApp({
             memberName={memberName}
             onProjection={setProjection}
             notify={notify}
+            syncNow={syncNow}
             {...(countItemId ? { initialItemId: countItemId } : {})}
           />
         )}
@@ -543,6 +573,12 @@ function AuthenticatedApp({
           />
         )}
       </main>
+      {notice && (
+        // Outside <main> and exempt from the drawers' inert background, so results of a drawer action are still announced.
+        <div className="app-notice" role="status" data-modal-keep>
+          {notice}
+        </div>
+      )}
       {!onDashboard && (
         <nav className="mobile-nav" aria-label="Mobile navigation">
           {mobileNav.map(({ id, label, icon: Icon }) => (
@@ -787,7 +823,10 @@ function CommandCenter({
         )}
       </div>
       <p className="safe-note">
-        <CalendarRange size={14} /> Planned next: SPV inclusion proofs.
+        <ShieldCheck size={14} />{" "}
+        {hasRuntime
+          ? "Limitation: “verified” means the BSV testnet service reports the change in a mined block; this app does not yet check the block’s proof itself."
+          : "Demo: records stay on this device and are never written to a blockchain."}
       </p>
     </div>
   );
@@ -824,8 +863,11 @@ function NeededPanel({
           <small>OPEN REQUIREMENTS</small>
           <strong>{requirements.length}</strong>
           <span>
-            Across {new Set(requirements.map((item) => item.cadetId)).size}{" "}
-            cadets
+            Across{" "}
+            {plural(
+              new Set(requirements.map((item) => item.cadetId)).size,
+              "cadet",
+            )}
           </span>
         </div>
         <div>
@@ -929,7 +971,11 @@ function DiagnosticsPanel({
           <strong>
             {report.healthy ? "Data integrity healthy" : "Attention required"}
           </strong>
-          <p>{report.issues.length} issues detected non-destructively.</p>
+          <p>
+            {report.issues.length
+              ? `${plural(report.issues.length, "problem")} found in the records on this device. Nothing was changed or deleted.`
+              : "No problems found in the records on this device."}
+          </p>
         </div>
       </div>
       <div className="panel-rows">

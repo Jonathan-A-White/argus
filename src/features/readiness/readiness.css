@@ -27,9 +27,9 @@
 .readiness-categories li.tone-attention { border-left-color: var(--color-warning); }
 .readiness-categories li.tone-critical { border-left-color: var(--color-danger); }
 .readiness-category-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.readiness-category-head strong { font-size: 13px; color: var(--color-text-primary); }
+.readiness-category-head strong { font-size: 0.8125rem; color: var(--color-text-primary); }
 .readiness-category-head b { font: 18px Marcellus, serif; color: var(--color-text-primary); }
-.readiness-categories p { margin: 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.readiness-categories p { margin: 0; color: var(--color-text-secondary); font-size: 0.75rem; line-height: 1.45; overflow-wrap: anywhere; }
 .readiness-link {
   justify-self: start;
   display: inline-flex;
@@ -38,7 +38,7 @@
   min-height: 36px;
   padding: 0;
   color: var(--color-accent-gold);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .readiness-link svg { width: 14px; height: 14px; }
 
@@ -55,8 +55,8 @@
 }
 .rollover-checklist li > svg { width: 18px; height: 18px; margin-top: 1px; color: var(--color-warning); }
 .rollover-checklist li.done > svg { color: var(--color-success); }
-.rollover-checklist strong { display: block; font-size: 13px; color: var(--color-text-primary); }
-.rollover-checklist small { display: block; margin-top: 3px; color: var(--color-text-secondary); font-size: 11px; line-height: 1.4; }
+.rollover-checklist strong { display: block; font-size: 0.8125rem; color: var(--color-text-primary); }
+.rollover-checklist small { display: block; margin-top: 3px; color: var(--color-text-secondary); font-size: 0.6875rem; line-height: 1.4; }
 
 /* ---------- event drawer readiness section ---------- */
 .event-readiness { display: grid; gap: 10px; }
@@ -72,8 +72,8 @@
   color: var(--color-text-inverse);
 }
 .event-readiness-headline > strong { font: 30px/1 Marcellus, serif; color: #69dce8; }
-.event-readiness-headline b { display: block; font-size: 13px; }
-.event-readiness-headline small { display: block; margin-top: 2px; color: #c3ceda; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.event-readiness-headline b { display: block; font-size: 0.8125rem; }
+.event-readiness-headline small { display: block; margin-top: 2px; color: #c3ceda; font-size: 0.6875rem; line-height: 1.4; overflow-wrap: anywhere; }
 .event-readiness-headline .readiness-meter { grid-column: 1 / -1; background: rgba(255, 255, 255, 0.12); }
 .event-readiness-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 0; }
 .event-readiness-stats > div {
@@ -86,11 +86,11 @@
   border-radius: 10px;
   background: var(--color-bg-surface-raised);
 }
-.event-readiness-stats dt { color: var(--color-text-secondary); font-size: 11px; font-weight: 700; }
+.event-readiness-stats dt { color: var(--color-text-secondary); font-size: 0.6875rem; font-weight: 700; }
 .event-readiness-stats dd { margin: 0; font: 18px Marcellus, serif; color: var(--color-text-primary); }
 .event-readiness-block { display: grid; gap: 6px; }
-.event-readiness-block > h4 { margin: 4px 0 0; color: var(--color-text-secondary); font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; }
-.event-readiness-block > summary { min-height: 40px; display: flex; align-items: center; color: var(--color-text-primary); font-size: 13px; font-weight: 700; cursor: pointer; }
+.event-readiness-block > h4 { margin: 4px 0 0; color: var(--color-text-secondary); font-size: 0.625rem; letter-spacing: 1.2px; text-transform: uppercase; }
+.event-readiness-block > summary { min-height: 40px; display: flex; align-items: center; color: var(--color-text-primary); font-size: 0.8125rem; font-weight: 700; cursor: pointer; }
 .event-readiness-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .event-readiness-list > li {
   display: flex;
@@ -102,9 +102,9 @@
   background: var(--color-bg-surface-raised);
 }
 .event-readiness-list > li > span { flex: 1; min-width: 0; }
-.event-readiness-list strong { display: block; font-size: 13px; color: var(--color-text-primary); overflow-wrap: anywhere; }
-.event-readiness-list small { display: block; margin-top: 2px; color: var(--color-text-secondary); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
-.event-readiness-list b { flex: none; font: 16px Marcellus, serif; color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
+.event-readiness-list strong { display: block; font-size: 0.8125rem; color: var(--color-text-primary); overflow-wrap: anywhere; }
+.event-readiness-list small { display: block; margin-top: 2px; color: var(--color-text-secondary); font-size: 0.6875rem; line-height: 1.4; overflow-wrap: anywhere; }
+.event-readiness-list b { flex: none; font: 1rem Marcellus, serif; color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
 .event-readiness-list.shortages > li { border-left: 4px solid var(--color-danger); }
 .event-readiness-list.shortages b { color: var(--color-danger); }
 .event-readiness-list > li:has(.event-readiness-cadet) { padding: 0; }
@@ -131,14 +131,14 @@
 
 /* ---------- per-device readiness weights (Settings) ---------- */
 .readiness-weights { margin: 18px 0 0; padding: 12px 14px 6px; border: 1px solid var(--color-border); border-radius: 12px; }
-.readiness-weights legend { padding: 0 6px; color: var(--color-text-primary); font-size: 12px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; }
-.readiness-weights .field-hint { margin: 0 0 8px; color: var(--color-text-secondary); font-size: 12px; line-height: 1.45; }
+.readiness-weights legend { padding: 0 6px; color: var(--color-text-primary); font-size: 0.75rem; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; }
+.readiness-weights .field-hint { margin: 0 0 8px; color: var(--color-text-secondary); font-size: 0.75rem; line-height: 1.45; }
 .readiness-weights-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 10px; }
-.readiness-weights-grid input { min-height: 44px; font-size: 16px; }
+.readiness-weights-grid input { min-height: 44px; font-size: 1rem; }
 .readiness-weights .workflow-error { margin: 4px 0; }
-.readiness-weights .text-button { min-height: 44px; padding: 0; color: var(--color-accent-gold); font-size: 12px; }
+.readiness-weights .text-button { min-height: 44px; padding: 0; color: var(--color-accent-gold); font-size: 0.75rem; }
 
 /* ---------- Still Needed: cadets missing standard issue ---------- */
 .standard-issue-gaps { display: grid; gap: 8px; margin: 16px 0; }
 .standard-issue-gaps > h3 { margin: 0; font: 18px Marcellus, serif; color: var(--color-text-primary); }
-.standard-issue-gaps > p { margin: 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.45; }
+.standard-issue-gaps > p { margin: 0; color: var(--color-text-secondary); font-size: 0.75rem; line-height: 1.45; }

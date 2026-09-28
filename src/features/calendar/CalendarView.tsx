@@ -68,7 +68,7 @@ export function CalendarView({ projection, controller, can, memberName, onProjec
 
   const card = (event: CalendarEventProjection) => (
     <li key={event.calendarEventId}>
-      <EventCard event={event} readiness={combinedEventReadiness(event, projection, current, sync).percent} current={current} open={() => setOpenEventId(event.calendarEventId)} />
+      <EventCard event={event} readiness={eventCardReadiness(combinedEventReadiness(event, projection, current, sync))} current={current} open={() => setOpenEventId(event.calendarEventId)} />
     </li>
   )
 
@@ -177,8 +177,11 @@ export function CalendarView({ projection, controller, can, memberName, onProjec
   )
 }
 
+/** An event with nothing to prepare (no tasks, nothing its kind adds) has no readiness to show: undefined, an empty bar. */
+const eventCardReadiness = ({ percent, parts }: { percent: number; parts: unknown[] }) => (parts.length ? percent : undefined)
+
 /** `readiness` combines the task checklist with what the event's kind adds (cadet preparation, AMI, rollover checklist). */
-function EventCard({ event, readiness, current, open }: { event: CalendarEventProjection; readiness: number; current: Date; open: () => void }) {
+function EventCard({ event, readiness, current, open }: { event: CalendarEventProjection; readiness?: number; current: Date; open: () => void }) {
   const progress = eventProgress(event)
   const days = daysUntil(event.startsAt, current)
   const leaf = dateBlock(event.startsAt)
@@ -203,9 +206,9 @@ function EventCard({ event, readiness, current, open }: { event: CalendarEventPr
       <span className="calendar-card-status">
         <b className={days < 0 ? 'calendar-countdown past' : 'calendar-countdown'}>{countdownLabel(days)}</b>
         <span className="calendar-meter" aria-hidden="true">
-          <span style={{ width: `${readiness}%` }} />
+          <span style={{ width: `${readiness ?? 0}%` }} />
         </span>
-        <small>{progress.total ? `${readiness}% ready · ${progress.done}/${progress.total} tasks` : readiness < 100 ? `${readiness}% ready · no tasks yet` : 'No tasks yet'}</small>
+        <small>{readiness === undefined ? 'No tasks yet' : progress.total ? `${readiness}% ready · ${progress.done}/${progress.total} tasks` : readiness < 100 ? `${readiness}% ready · no tasks yet` : 'No tasks yet'}</small>
       </span>
       <ChevronRight className="calendar-card-chevron" aria-hidden="true" />
     </button>

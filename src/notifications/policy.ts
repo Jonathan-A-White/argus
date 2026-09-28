@@ -2,6 +2,7 @@ import type { ArgusAppProjection } from '../distributed/appIntegration'
 import type { SupplyEventKind } from '../distributed/types'
 import { taskDueDate } from '../stage3/calendar'
 import type { AlertSeverity, AlertTarget, SupplyAlert } from '../stage3/readiness'
+import { plural } from '../plural'
 
 /**
  * Device notification policy (master spec §20, tier 2). Pure: given the in-app alerts, the clock,
@@ -134,7 +135,6 @@ const EVENT_LABEL: Record<SupplyEventKind, string> = {
 }
 /** Generic label for a supply event: its kind, never its (free-text) title. */
 export const eventLabel = (kind: SupplyEventKind) => EVENT_LABEL[kind] ?? EVENT_LABEL.CUSTOM
-const plural = (count: number, word: string, many = `${word}s`) => `${count} ${count === 1 ? word : many}`
 const when = (startsAt: number, now: number) => {
   if (startsAt < now) return ''
   const days = Math.ceil((startsAt - now) / DAY)

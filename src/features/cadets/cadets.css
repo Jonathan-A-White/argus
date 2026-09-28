@@ -34,12 +34,12 @@
   border-radius: 999px;
   background: var(--color-bg-surface);
   color: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
 }
 .cadet-filters button span {
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: 0.625rem;
 }
 .cadet-filters button[aria-pressed='true'] {
   border-color: var(--color-bg-sidebar);
@@ -96,7 +96,7 @@
 .cadet-name-panel small {
   display: block;
   color: var(--color-text-muted);
-  font-size: 9px;
+  font-size: 0.5625rem;
   font-weight: 800;
   letter-spacing: 1px;
   text-transform: uppercase;
@@ -106,7 +106,7 @@
   align-items: center;
   gap: 6px;
   margin-top: 4px;
-  font-size: 15px;
+  font-size: 0.9375rem;
   overflow-wrap: anywhere;
 }
 .cadet-name-panel .cadet-name-missing {
@@ -130,7 +130,7 @@
 .cadet-action-note {
   margin: 10px 0 0;
   color: var(--color-text-muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 /* ---------- size correction ---------- */
@@ -148,7 +148,7 @@
   gap: 6px;
   min-height: 40px;
   padding: 0 12px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
   white-space: nowrap;
 }
@@ -170,13 +170,13 @@
 .cadet-correction .field input,
 .cadet-correction .field textarea {
   min-height: 44px;
-  font-size: 16px;
+  font-size: 1rem;
   background: var(--color-bg-input);
   color: var(--color-text-primary);
 }
 .cadet-correction .field-hint {
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 500;
   line-height: 1.4;
 }
@@ -189,7 +189,7 @@
 .cadet-correction-intro {
   margin: 10px 0 0;
   color: var(--color-text-secondary);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.45;
 }
 .cadet-record-rows .cadet-correction-reason {
@@ -200,7 +200,7 @@
 /* ---------- add / edit form ---------- */
 .cadet-form .field-hint {
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 500;
   line-height: 1.4;
 }
@@ -216,7 +216,7 @@
 .cadet-form-id small {
   display: block;
   color: var(--color-text-muted);
-  font-size: 9px;
+  font-size: 0.5625rem;
   font-weight: 800;
   letter-spacing: 1px;
   text-transform: uppercase;
@@ -258,13 +258,13 @@
 .cadet-sizes legend {
   padding: 0 6px;
   color: var(--color-text-primary);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 800;
 }
 .cadet-sizes > p {
   margin: 2px 0 8px;
   color: var(--color-text-muted);
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 /* ---------- phone ---------- */

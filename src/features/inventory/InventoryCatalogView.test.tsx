@@ -106,7 +106,8 @@ describe('InventoryCatalogView', () => {
     expect(onCount).toHaveBeenCalledWith(mediumId)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 
-    expect(screen.getByRole('button', { name: /^PT Shorts:/ })).toHaveAccessibleName('PT Shorts: 5 on hand, 3 sizes, Out of stock')
+    // Only S ran out (M still has 5), so the item says how many sizes are out rather than "Out of stock".
+    expect(screen.getByRole('button', { name: /^PT Shorts:/ })).toHaveAccessibleName('PT Shorts: 5 on hand, 3 sizes, 1 size out')
     expect(summaryCard('On hand')).toHaveTextContent('5')
     expect(summaryCard('Low / out of stock')).toHaveTextContent('1')
     expect(summaryCard('Items without sizes')).toHaveTextContent('18')

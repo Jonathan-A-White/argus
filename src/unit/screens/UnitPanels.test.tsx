@@ -32,6 +32,12 @@ describe('Members & access', () => {
     expect(within(people).getByText('Chief')).toBeInTheDocument()
     expect(screen.queryByText(/No one else|first sync/)).toBeNull()
   })
+
+  it('shows an invitation as waiting rather than fully admitted', () => {
+    render(<MembersPanel runtime={fakeRuntime({ lastScanAt: '2026-09-28T01:00:00.000Z' }, { device: { record: { ...record, role: 'MASTER' } } })} projection={projection([{ ...member('invitee', 'Taylor'), status: 'INVITED' }])} close={() => undefined} onProjection={() => undefined} notify={() => undefined} />)
+    expect(screen.getByText((_, element) => element?.tagName === 'P' && element.textContent?.includes('Invitation sent — waiting for their device') === true)).toBeInTheDocument()
+    expect(screen.queryByText(/Taylor.*since/)).toBeNull()
+  })
 })
 
 describe('Wallet & sync', () => {

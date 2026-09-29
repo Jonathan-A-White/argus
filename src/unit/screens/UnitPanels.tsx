@@ -37,6 +37,12 @@ export function MembersPanel({ runtime, projection, close, onProjection, notify 
   const [joinCode, setJoinCode] = useState(''), [role, setRole] = useState<ArgusRole>('SUPPLY_ASSISTANT'), [name, setName] = useState(''), [expires, setExpires] = useState(''), [topUp, setTopUp] = useState(true), [topUpAmount, setTopUpAmount] = useState(String(DEFAULT_MEMBER_TOP_UP_SATOSHIS))
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [result, setResult] = useState<{ code: string; name: string; qr?: string; qrError?: string; funding?: boolean; topUpTxid?: string; topUpError?: string }>(), [shared, setShared] = useState(''), [qrVisible, setQrVisible] = useState(true)
   const [revoking, setRevoking] = useState(''), [confirmRevoke, setConfirmRevoke] = useState(''), [changing, setChanging] = useState(''), [newRole, setNewRole] = useState<ArgusRole>('SUPPLY_OFFICER'), [working, setWorking] = useState('')
+  const shareAdmissionQr = async (qr: string | undefined, displayName: string) => {
+    if (!qr) return
+    const file = await qrFile(qr)
+    if (navigator.share && navigator.canShare?.({ files: [file] })) { await navigator.share({ title: 'A.R.G.U.S. admission', text: `One-time admission for ${displayName}`, files: [file] }); setShared('shared') }
+    else { const url = URL.createObjectURL(file), link = document.createElement('a'); link.href = url; link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1_000); setShared('saved') }
+  }
   const admit = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true); setError(''); setResult(undefined); setShared('')
     try {
@@ -133,11 +139,7 @@ export function MembersPanel({ runtime, projection, close, onProjection, notify 
                 <p>{result.name} becomes an active member after their device scans this one-time, device-bound QR. Show it in person or share the image directly with them.</p>
                 {result.qr && qrVisible ? <img className="admission-qr" src={result.qr} alt={`One-time admission QR code for ${result.name}`} /> : result.qr && !qrVisible ? <p className="safe-note">QR hidden on this device.</p> : result.qrError ? <p role="alert">{result.qrError}</p> : <p>Preparing the QR image…</p>}
                 {result.qr && <div className="modal-actions">
-                  <button type="button" onClick={() => void (async () => {
-                    const file = await qrFile(result.qr!)
-                    if (navigator.share && navigator.canShare?.({ files: [file] })) { await navigator.share({ title: 'A.R.G.U.S. admission', text: `One-time admission for ${result.name}`, files: [file] }); setShared('shared') }
-                    else { const url = URL.createObjectURL(file), link = document.createElement('a'); link.href = url; link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1_000); setShared('saved') }
-                  })().catch(() => setShared(''))}>{shared === 'shared' ? 'QR image shared ✓' : shared === 'saved' ? 'QR image saved ✓' : 'Share QR image'}</button>
+                  <button type="button" onClick={() => void shareAdmissionQr(result.qr, result.name).catch(() => setShared(''))}>{shared === 'shared' ? 'QR image shared ✓' : shared === 'saved' ? 'QR image saved ✓' : 'Share QR image'}</button>
                   {qrVisible && <button type="button" onClick={() => setQrVisible(false)}>Hide QR now</button>}
                 </div>}
                 <details><summary>Copy-and-paste fallback</summary><p>Use this only if their phone cannot read the image.</p><label className="field">ADMISSION CODE<textarea readOnly aria-label="Admission code" rows={4} value={result.code} /></label><button type="button" onClick={() => void shareOrCopy(result.code, 'A.R.G.U.S. admission code').then(setShared)}>Copy admission code</button></details>

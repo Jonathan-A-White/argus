@@ -40,6 +40,45 @@ describe('Members & access', () => {
     expect((screen.getByLabelText('Admission code') as HTMLTextAreaElement).value).toBe(admitted.admissionCode)
   })
 
+  it('reports a completed optional top-up without changing the admission code', async () => {
+    let resolveTopUp!: (txid: string) => void
+    const topUp = new Promise<string>(resolve => { resolveTopUp = resolve })
+    const admitted = { admissionCode: 'ARGUS-ADMIT-1:funded', displayName: 'Taylor', walletAddress: 'mTaylorWallet' }
+    const runtime = fakeRuntime({ holdsAuthority: true }, {
+      device: { record: { ...record, role: 'MASTER' } },
+      admit: vi.fn(async () => admitted),
+      sendSatoshis: vi.fn(() => topUp),
+      controller: { project: vi.fn(async () => projection([])) },
+    })
+    render(<MembersPanel runtime={runtime} projection={projection([])} close={() => undefined} onProjection={() => undefined} notify={() => undefined} />)
+    fireEvent.change(screen.getByLabelText('Join code'), { target: { value: 'ARGUS-JOIN-1:joiner' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Admit' }))
+    await screen.findByLabelText('Admission code')
+
+    resolveTopUp('funding-txid')
+    expect(await screen.findByRole('link', { name: 'view transaction' })).toHaveAttribute('href', expect.stringContaining('funding-txid'))
+    expect(screen.queryByText(/Sending the optional wallet top-up/)).toBeNull()
+    expect((screen.getByLabelText('Admission code') as HTMLTextAreaElement).value).toBe(admitted.admissionCode)
+  })
+
+  it('does not contact the wallet when the optional top-up is unchecked', async () => {
+    const admitted = { admissionCode: 'ARGUS-ADMIT-1:no-funding', displayName: 'Taylor', walletAddress: 'mTaylorWallet' }
+    const runtime = fakeRuntime({ holdsAuthority: true }, {
+      device: { record: { ...record, role: 'MASTER' } },
+      admit: vi.fn(async () => admitted),
+      sendSatoshis: vi.fn(),
+      controller: { project: vi.fn(async () => projection([])) },
+    })
+    render(<MembersPanel runtime={runtime} projection={projection([])} close={() => undefined} onProjection={() => undefined} notify={() => undefined} />)
+    fireEvent.change(screen.getByLabelText('Join code'), { target: { value: 'ARGUS-JOIN-1:joiner' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: /Send them testnet satoshis/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Admit' }))
+
+    expect((await screen.findByLabelText('Admission code') as HTMLTextAreaElement).value).toBe(admitted.admissionCode)
+    expect(runtime.sendSatoshis).not.toHaveBeenCalled()
+    expect(screen.queryByText(/wallet top-up/)).toBeNull()
+  })
+
   it('before the first sync explains that the member list is coming, instead of "no one else"', () => {
     const view = render(<MembersPanel runtime={fakeRuntime({ lastScanAt: undefined })} projection={projection([])} close={() => undefined} onProjection={() => undefined} notify={() => undefined} />)
     expect(screen.getByText('The member list appears after this device’s first sync with BSV testnet.')).toBeInTheDocument()

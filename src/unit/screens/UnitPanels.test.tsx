@@ -13,6 +13,33 @@ const member = (publicIdentity: string, displayName: string): MemberProjection =
 const projection = (members: MemberProjection[]) => ({ members }) as unknown as ArgusAppProjection
 
 describe('Members & access', () => {
+  it('shows the admission code without waiting for an optional wallet top-up', async () => {
+    let rejectTopUp!: (reason: Error) => void
+    const topUp = new Promise<string>((_, reject) => { rejectTopUp = reject })
+    const admitted = { admissionCode: 'ARGUS-ADMIT-1:ready-now', displayName: 'Taylor', walletAddress: 'mTaylorWallet' }
+    const nextProjection = projection([{ ...member('invitee', 'Taylor'), status: 'INVITED' }])
+    const runtime = fakeRuntime({ holdsAuthority: true }, {
+      device: { record: { ...record, role: 'MASTER' } },
+      admit: vi.fn(async () => admitted),
+      sendSatoshis: vi.fn(() => topUp),
+      controller: { project: vi.fn(async () => nextProjection) },
+    })
+    render(<MembersPanel runtime={runtime} projection={projection([])} close={() => undefined} onProjection={() => undefined} notify={() => undefined} />)
+
+    fireEvent.change(screen.getByLabelText('Join code'), { target: { value: 'ARGUS-JOIN-1:joiner' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Admit' }))
+
+    expect((await screen.findByLabelText('Admission code') as HTMLTextAreaElement).value).toBe(admitted.admissionCode)
+    expect(screen.getByText('Invitation ready. Sending the optional wallet top-up…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Admit' })).toBeEnabled()
+    expect(runtime.admit).toHaveBeenCalledWith('ARGUS-JOIN-1:joiner', 'SUPPLY_ASSISTANT', {})
+    expect(runtime.sendSatoshis).toHaveBeenCalledWith(admitted.walletAddress, 2_000)
+
+    rejectTopUp(new Error('Testnet service is unavailable.'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Top-up not sent: Testnet service is unavailable.')
+    expect((screen.getByLabelText('Admission code') as HTMLTextAreaElement).value).toBe(admitted.admissionCode)
+  })
+
   it('before the first sync explains that the member list is coming, instead of "no one else"', () => {
     const view = render(<MembersPanel runtime={fakeRuntime({ lastScanAt: undefined })} projection={projection([])} close={() => undefined} onProjection={() => undefined} notify={() => undefined} />)
     expect(screen.getByText('The member list appears after this device’s first sync with BSV testnet.')).toBeInTheDocument()

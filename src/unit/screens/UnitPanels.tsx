@@ -35,16 +35,25 @@ export function MembersPanel({ runtime, projection, close, onProjection, notify 
   const record = runtime.device.record, status = runtime.status(), isMaster = record.role === 'MASTER' && !status.revoked, holdsAuthority = status.holdsAuthority
   const roleChoices = ROLE_CHOICES.filter(choice => choice.role !== 'MASTER' || holdsAuthority)
   const [joinCode, setJoinCode] = useState(''), [role, setRole] = useState<ArgusRole>('SUPPLY_ASSISTANT'), [name, setName] = useState(''), [expires, setExpires] = useState(''), [topUp, setTopUp] = useState(true), [topUpAmount, setTopUpAmount] = useState(String(DEFAULT_MEMBER_TOP_UP_SATOSHIS))
-  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [result, setResult] = useState<{ code: string; name: string; qr: string; topUpTxid?: string; topUpError?: string }>(), [shared, setShared] = useState(''), [qrVisible, setQrVisible] = useState(true)
+  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [result, setResult] = useState<{ code: string; name: string; qr?: string; qrError?: string; funding?: boolean; topUpTxid?: string; topUpError?: string }>(), [shared, setShared] = useState(''), [qrVisible, setQrVisible] = useState(true)
   const [revoking, setRevoking] = useState(''), [confirmRevoke, setConfirmRevoke] = useState(''), [changing, setChanging] = useState(''), [newRole, setNewRole] = useState<ArgusRole>('SUPPLY_OFFICER'), [working, setWorking] = useState('')
   const admit = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true); setError(''); setResult(undefined); setShared('')
     try {
-      const admitted = await runtime.admit(joinCode, role, { ...(name.trim() ? { displayName: name.trim() } : {}), ...(expires ? { expiresAt: new Date(expires).toISOString() } : {}), ...(topUp && Number(topUpAmount) > 0 ? { topUpSatoshis: Math.floor(Number(topUpAmount)) } : {}) })
-      const qr = await admissionQrDataUrl(admitted.admissionCode)
-      setResult({ code: admitted.admissionCode, qr, name: admitted.displayName, ...(admitted.topUpTxid ? { topUpTxid: admitted.topUpTxid } : {}), ...(admitted.topUpError ? { topUpError: admitted.topUpError } : {}) }); setQrVisible(true)
+      // Creating the invitation is the admission. Optional testnet funding and QR rendering must
+      // never keep its one-time code hidden behind a slow network/browser operation.
+      const admitted = await runtime.admit(joinCode, role, { ...(name.trim() ? { displayName: name.trim() } : {}), ...(expires ? { expiresAt: new Date(expires).toISOString() } : {}) })
+      const satoshis = topUp ? Math.floor(Number(topUpAmount)) : 0
+      setResult({ code: admitted.admissionCode, name: admitted.displayName, ...(satoshis > 0 ? { funding: true } : {}) }); setQrVisible(true)
       setJoinCode(''); setName(''); setExpires('')
-      onProjection(await runtime.controller.project())
+      void admissionQrDataUrl(admitted.admissionCode).then(qr => setResult(current => current?.code === admitted.admissionCode ? { ...current, qr } : current), () => setResult(current => current?.code === admitted.admissionCode ? { ...current, qrError: 'The QR image could not be prepared. Use the copy-and-paste code below.' } : current))
+      void runtime.controller.project().then(onProjection, () => undefined)
+      if (satoshis > 0) {
+        void runtime.sendSatoshis(admitted.walletAddress, satoshis).then(
+          topUpTxid => setResult(current => current?.code === admitted.admissionCode ? { ...current, funding: false, topUpTxid } : current),
+          cause => setResult(current => current?.code === admitted.admissionCode ? { ...current, funding: false, topUpError: cause instanceof Error ? cause.message : 'Top-up failed.' } : current),
+        )
+      }
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'This person could not be admitted.') } finally { setBusy(false) }
   }
   const revoke = async (publicIdentity: string) => {
@@ -122,16 +131,17 @@ export function MembersPanel({ runtime, projection, close, onProjection, notify 
               <div>
                 <strong>Invitation sent — waiting for their device.</strong>
                 <p>{result.name} becomes an active member after their device scans this one-time, device-bound QR. Show it in person or share the image directly with them.</p>
-                {qrVisible ? <img className="admission-qr" src={result.qr} alt={`One-time admission QR code for ${result.name}`} /> : <p className="safe-note">QR hidden on this device.</p>}
-                <div className="modal-actions">
+                {result.qr && qrVisible ? <img className="admission-qr" src={result.qr} alt={`One-time admission QR code for ${result.name}`} /> : result.qr && !qrVisible ? <p className="safe-note">QR hidden on this device.</p> : result.qrError ? <p role="alert">{result.qrError}</p> : <p>Preparing the QR image…</p>}
+                {result.qr && <div className="modal-actions">
                   <button type="button" onClick={() => void (async () => {
-                    const file = await qrFile(result.qr)
+                    const file = await qrFile(result.qr!)
                     if (navigator.share && navigator.canShare?.({ files: [file] })) { await navigator.share({ title: 'A.R.G.U.S. admission', text: `One-time admission for ${result.name}`, files: [file] }); setShared('shared') }
                     else { const url = URL.createObjectURL(file), link = document.createElement('a'); link.href = url; link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1_000); setShared('saved') }
                   })().catch(() => setShared(''))}>{shared === 'shared' ? 'QR image shared ✓' : shared === 'saved' ? 'QR image saved ✓' : 'Share QR image'}</button>
                   {qrVisible && <button type="button" onClick={() => setQrVisible(false)}>Hide QR now</button>}
-                </div>
+                </div>}
                 <details><summary>Copy-and-paste fallback</summary><p>Use this only if their phone cannot read the image.</p><label className="field">ADMISSION CODE<textarea readOnly aria-label="Admission code" rows={4} value={result.code} /></label><button type="button" onClick={() => void shareOrCopy(result.code, 'A.R.G.U.S. admission code').then(setShared)}>Copy admission code</button></details>
+                {result.funding && <p>Invitation ready. Sending the optional wallet top-up…</p>}
                 {result.topUpTxid && <p>Wallet top-up sent · <a href={explorer('tx', result.topUpTxid)} target="_blank" rel="noreferrer">view transaction</a></p>}
                 {result.topUpError && <p role="alert">Top-up not sent: {result.topUpError}</p>}
               </div>

@@ -4,6 +4,9 @@ import { CADET_CODE_PATTERN, cadetLabel } from '../../stage3/domain'
 
 type CadetIdentity = Pick<CadetProjection, 'cadetCode' | 'cadetId'>
 
+/** Names are the everyday staff-facing identity; the opaque code remains a fallback for unnamed records. */
+export const cadetDisplayName = (cadet: CadetIdentity & Pick<CadetProjection, 'fullName'>) => cadet.fullName.trim() || cadetLabel(cadet)
+
 /**
  * Two characters of the opaque cadet ID, shown where other apps would show initials.
  * Never derived from the (encrypted, optional) name.
@@ -12,7 +15,7 @@ export const cadetMonogram = (cadet: CadetIdentity) => cadetLabel(cadet).replace
 
 /**
  * Staff may find a cadet by typing the name, the cadet ID, the NS level or the status.
- * Callers must still display only cadetLabel(): a name match never puts the name on screen.
+ * Names are encrypted at rest and are shown to staff after the unit is unlocked.
  */
 export function cadetMatches(cadet: CadetIdentity & Pick<CadetProjection, 'fullName' | 'nsLevel' | 'status'>, query: string) {
   const reversedName = cadet.fullName.split(/\s+/).reverse().join(' ')

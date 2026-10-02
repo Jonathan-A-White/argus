@@ -7,7 +7,7 @@ import { cadetLabel } from '../../stage3/domain'
 import { cadetFullyIssued, standardIssueGaps } from '../../stage3/readiness'
 import { CadetDrawer } from './CadetDrawer'
 import { CadetForm } from './CadetForm'
-import { cadetMatches, cadetMonogram } from './cadetDisplay'
+import { cadetDisplayName, cadetMatches, cadetMonogram } from './cadetDisplay'
 import './cadets.css'
 
 type Cadet = ArgusAppProjection['cadets'][number]
@@ -35,12 +35,12 @@ const FILTERS: Array<{ value: StatusFilter; label: string }> = [
   { value: 'ALL', label: 'All' },
 ]
 
-const byCode = (a: Cadet, b: Cadet) => cadetLabel(a).localeCompare(cadetLabel(b))
+const byName = (a: Cadet, b: Cadet) => cadetDisplayName(a).localeCompare(cadetDisplayName(b)) || cadetLabel(a).localeCompare(cadetLabel(b))
 
 /**
  * Cadet property records. Cadets are minors, so every row, avatar, title and message identifies a
- * cadet only by the opaque cadet ID. Names can be searched but are shown only in the record drawer
- * after an explicit per-cadet "Show name".
+ * cadet primarily by the encrypted name after the unit has been unlocked. The opaque ID remains a
+ * fallback for older records that do not yet have a name.
  */
 export function CadetsView({ projection, controller, can, onProjection, notify, onIssue, onReturn, initialCadetId, initialFilter = 'ACTIVE' }: CadetsViewProps) {
   const [query, setQuery] = useState('')
@@ -55,7 +55,7 @@ export function CadetsView({ projection, controller, can, onProjection, notify, 
   }
   const visible = projection.cadets
     .filter(cadet => (filter === 'ALL' || cadet.status === filter) && cadetMatches(cadet, query))
-    .sort(byCode)
+    .sort(byName)
   const openCadet = projection.cadets.find(cadet => cadet.cadetId === openCadetId)
 
   const handOff = (open: (cadetId: string) => void, cadetId: string) => {
@@ -70,7 +70,7 @@ export function CadetsView({ projection, controller, can, onProjection, notify, 
         <div>
           <p className="eyebrow">PERSONNEL ACCOUNTABILITY</p>
           <h2>Cadet property records.</h2>
-          <p>Cadets are shown by cadet ID. Names are encrypted and only shown when you choose to reveal them.</p>
+          <p>Cadets are shown by name. Names and property records stay encrypted while the unit is locked.</p>
         </div>
         {canManage && (
           <button className="gold-button" onClick={() => setAdding(true)}>
@@ -123,7 +123,8 @@ export function CadetsView({ projection, controller, can, onProjection, notify, 
                 <button className="cadet-card" key={cadet.cadetId} onClick={() => setOpenCadetId(cadet.cadetId)}>
                   <span className="large-avatar" aria-hidden="true">{cadetMonogram(cadet)}</span>
                   <span>
-                    <strong>{cadetLabel(cadet)}</strong>
+                    <strong>{cadetDisplayName(cadet)}</strong>
+                    {cadet.fullName && <small>{cadetLabel(cadet)}</small>}
                     <small>{cadet.nsLevel} · {cadet.gender} · {cadet.status}</small>
                     <small className="cadet-card-compact" aria-hidden="true">{cadet.propertyCount} item{cadet.propertyCount === 1 ? '' : 's'} held</small>
                   </span>

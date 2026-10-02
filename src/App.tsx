@@ -13,6 +13,7 @@ import {
   Settings,
   ShieldCheck,
   GraduationCap,
+  FileSpreadsheet,
   Shirt,
   UserPlus,
   Users,
@@ -48,7 +49,7 @@ import { StandardIssueGaps } from "./features/readiness/StandardIssueGaps";
 import type { SyncSnapshot } from "./stage3/readinessTypes";
 import { CalendarView } from "./features/calendar";
 import { BundleEditorPanel } from "./features/bundles";
-import { RolloverPanel, RosterImportPanel } from "./features/admin";
+import { ExportPanel, RolloverPanel, RosterImportPanel } from "./features/admin";
 import { ActivityView } from "./features/activity";
 import { cadetLabel } from "./stage3/domain";
 import { UnitGate } from "./unit/screens/UnitGate";
@@ -83,6 +84,7 @@ type Panel =
   | "diagnostics"
   | "import"
   | "rollover"
+  | "export"
   | null;
 const nav: Array<{ id: Tab; label: string; icon: typeof Activity }> = [
   { id: "home", label: "Home", icon: Home },
@@ -634,6 +636,9 @@ function AuthenticatedApp({
           close={() => setPanel(null)}
         />
       )}
+      {panel === "export" && (
+        <ExportPanel projection={projection} notify={notify} close={() => setPanel(null)} />
+      )}
       {panel === "needed" && (
         <NeededPanel
           projection={projection}
@@ -767,6 +772,12 @@ function CommandCenter({
           ],
         ] as CommandAction[])
       : []),
+    [
+      "export",
+      "Export unit spreadsheet",
+      "Download cadets, current property, inventory, and outstanding needs",
+      FileSpreadsheet,
+    ],
     [
       "needed",
       "Still needed",

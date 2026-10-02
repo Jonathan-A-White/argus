@@ -343,3 +343,19 @@ waits for a Master device.
   JOIN code, ADMIT code and admission QR (D7). Until story 4 lands, ADR 011 still describes the shipped admission.
 * Code in this story: `src/identity/ticketCode.ts` (secret, code, decode with named faults) and the ticket types and
   validators in `src/private-sync/types.ts` and `schema.ts`.
+
+## Amendments
+
+* **2026-10-02, story mw-3evcnk.2 (issuing).** Three clarifications, none of which changes a protocol shape:
+  * The issuer's vault seals the ticket **code** (the 35-character text) as `ticket:<ticketId>`, not the derived ticket key. The key
+    is derived from it on demand, and the issuer can show the code again until the ticket is closed. It is dropped once the funding
+    output is spent.
+  * A ticket cannot be made by a wallet that cannot pay for it. The invitation names the funding outpoint, so transaction F must exist
+    before the invitation can be signed, and F needs coins. `issueTicket` therefore refuses with the wallet's own "needs funding" error
+    (the starter satoshis plus a 50-satoshi fee reserve) and leaves nothing behind. Once F and T are built they sit in the wallet's
+    durable queue together with the TICKET_ISSUED fact in the unit's outbox, and an unreachable network or a wallet that runs dry
+    afterwards only delays them (the existing sync banner shows it); nothing is lost.
+  * Until story 3 adds the verifier, the unit fold applies a TICKET_REDEEMED fact only to close the ticket in the list (it must agree
+    with the ticket as issued and be written by the device it names). It creates no member and checks no signature.
+  * Cancelling is `cancelTicket(ticketId, reason)`: the fact TICKET_CANCELLED is written only after the network accepted transaction C,
+    as above. With no network the signed C waits in the wallet queue and a second call finishes it; it is never built twice.

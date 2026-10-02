@@ -42,6 +42,7 @@ async function unitWithOfficer(chain: FakeChain) {
   const pending = await createJoiningDevice({ passphrase: 'another pass 77', displayName: 'Officer B' }, storage())
   const admitted = await a.admit(await encodeJoinRequest(pending), 'SUPPLY_OFFICER', { topUpSatoshis: 20_000 })
   const b = await open(await acceptAdmission(pending, admitted.admissionCode, storage()), chain)
+  await b.confirmAdmission()
   await a.syncNow(); chain.mine(); await b.syncNow()
   return { a, b, masterDevice }
 }

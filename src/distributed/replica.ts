@@ -532,6 +532,13 @@ export class ArgusReplica {
     await this.actor('users.authorize', options.timestamp)
     return this.commit({ eventType: 'AUTHORITY_GRANTED', entityId: input.credential.subjectPublicIdentity, payload: { credential: input.credential, displayName, ...(input.walletAddress ? { walletAddress: input.walletAddress } : {}), ...(input.ecdhPublicKey ? { ecdhPublicKey: input.ecdhPublicKey } : {}) }, ...options })
   }
+  /** Written by the invited device after it has opened the admission package with its own keys. */
+  async confirmAdmission(credentialId: string, options: CommandOptions = {}) {
+    const actor = await this.identity.getPublicIdentity()
+    if (!credentialId.trim()) throw new Error('The admission credential is missing.')
+    this.authorization.require(actor, 'inventory.read', options.timestamp)
+    return this.commit({ eventType: 'ADMISSION_CONFIRMED', entityId: actor, payload: { credentialId }, ...options })
+  }
   async recordRevocation(revocation: AuthorityRevocation, options: CommandOptions = {}) {
     await this.actor('users.revoke', options.timestamp)
     return this.commit({ eventType: 'AUTHORITY_REVOKED', entityId: revocation.subjectPublicIdentity, payload: { revocation }, ...options })
@@ -673,8 +680,19 @@ export class ArgusReplica {
         if (!this.authorization.credentialFor(credential.subjectPublicIdentity, credential.issuedAt) && credential.subjectPublicIdentity !== event.actorPublicIdentity) throw new Error('Admission credential has not been verified.')
         const previous = state.members.find(existing => existing.publicIdentity === credential.subjectPublicIdentity)
         const ecdhPublicKey = typeof event.payload.ecdhPublicKey === 'string' ? event.payload.ecdhPublicKey : previous?.ecdhPublicKey
-        const member = { publicIdentity: credential.subjectPublicIdentity, displayName: displayName.trim().slice(0, 60), role: credential.role, credentialId: credential.credentialId, credentialEventId: event.eventId, issuedAt: credential.issuedAt, ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}), ...(typeof event.payload.walletAddress === 'string' ? { walletAddress: event.payload.walletAddress } : {}), ...(ecdhPublicKey ? { ecdhPublicKey } : {}), admittedBy: event.actorPublicIdentity, admittedEventId: event.eventId, status: 'ACTIVE' as const }
+        const confirmation = state.admissionConfirmations.find(candidate => candidate.publicIdentity === credential.subjectPublicIdentity && candidate.credentialId === credential.credentialId)
+        const activated = credential.subjectPublicIdentity === event.actorPublicIdentity || Boolean(confirmation)
+        const member = { publicIdentity: credential.subjectPublicIdentity, displayName: displayName.trim().slice(0, 60), role: credential.role, credentialId: credential.credentialId, credentialEventId: event.eventId, issuedAt: credential.issuedAt, ...(credential.expiresAt ? { expiresAt: credential.expiresAt } : {}), ...(typeof event.payload.walletAddress === 'string' ? { walletAddress: event.payload.walletAddress } : {}), ...(ecdhPublicKey ? { ecdhPublicKey } : {}), admittedBy: event.actorPublicIdentity, admittedEventId: event.eventId, status: activated ? 'ACTIVE' as const : 'INVITED' as const, ...(confirmation ? { activatedAt: confirmation.confirmedAt, activationEventId: confirmation.eventId } : {}) }
         state.members = [...state.members.filter(existing => existing.publicIdentity !== member.publicIdentity), member]; return
+      }
+      case 'ADMISSION_CONFIRMED': {
+        const credentialId = event.payload.credentialId
+        if (event.entityId !== event.actorPublicIdentity || typeof credentialId !== 'string' || !credentialId) throw new Error('Corrupted admission confirmation event.')
+        this.authorization.require(event.actorPublicIdentity, 'inventory.read', event.timestamp)
+        if (!state.admissionConfirmations.some(candidate => candidate.eventId === event.eventId)) state.admissionConfirmations.push({ publicIdentity: event.actorPublicIdentity, credentialId, confirmedAt: event.timestamp, eventId: event.eventId })
+        const member = state.members.find(candidate => candidate.publicIdentity === event.actorPublicIdentity && candidate.credentialId === credentialId)
+        if (member && member.status === 'INVITED') Object.assign(member, { status: 'ACTIVE' as const, activatedAt: event.timestamp, activationEventId: event.eventId })
+        return
       }
       case 'AUTHORITY_REVOKED': {
         const revocation = event.payload.revocation as AuthorityRevocation | undefined; if (!revocation || revocation.subjectPublicIdentity !== event.entityId) throw new Error('Corrupted revocation event.')
@@ -1093,7 +1111,7 @@ export class ArgusReplica {
     const genesis = state.genesis ?? { inventory: [], catalog: [] }
     state.clock = 0
     state.inventory = structuredClone(genesis.inventory); state.catalog = structuredClone(genesis.catalog)
-    state.countSessions = []; state.cadets = []; state.stillNeeded = []; state.transactions = []; state.conflicts = []; state.members = []; state.rejected = []; state.calendar = []; state.corrections = []; state.rollovers = []; state.keyEpochs = []; delete state.recoveryKey
+    state.countSessions = []; state.cadets = []; state.stillNeeded = []; state.transactions = []; state.conflicts = []; state.members = []; state.admissionConfirmations = []; state.rejected = []; state.calendar = []; state.corrections = []; state.rollovers = []; state.keyEpochs = []; delete state.recoveryKey
     state.bundles = FACTORY_BUNDLES.map(source => factoryBundle(source, state.inventory))
     const ordered = [...state.events].sort((a, b) => eventSortKey(a.event) < eventSortKey(b.event) ? -1 : 1)
     for (const record of ordered) this.tryApply(state, record.event)
@@ -1339,4 +1357,3 @@ function losingIssue(state: RepositoryState, conflict: ConflictRecord) {
   const lines = [...(event.payload.lines as SupplyTransactionLine[]).map(line => ({ lineId: line.lineId, itemId: line.itemId as string | undefined, catalogId: undefined as string | undefined, label: line.label, variant: line.variant as string | undefined, quantity: line.quantity })), ...missing.map(line => ({ lineId: line.lineId, itemId: line.itemId, catalogId: line.catalogId, label: line.label, variant: line.variant, quantity: line.quantity }))]
   return { cadetId: conflict.cadetId, at: event.timestamp, lines }
 }
-

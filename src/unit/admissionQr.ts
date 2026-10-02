@@ -17,10 +17,13 @@ function fromBase64url(value: string) {
 
 async function transform(bytes: Uint8Array, format: 'gzip', decompress = false) {
   const stream = decompress ? new DecompressionStream(format) : new CompressionStream(format)
+  // Consume the readable side while writing. Awaiting writer.write() before a reader exists can
+  // deadlock in browsers that apply Web Streams backpressure, leaving the UI on “Preparing…”.
+  const output = new Response(stream.readable).arrayBuffer()
   const writer = stream.writable.getWriter()
   await writer.write(bytes as Uint8Array<ArrayBuffer>)
   await writer.close()
-  return new Uint8Array(await new Response(stream.readable).arrayBuffer())
+  return new Uint8Array(await output)
 }
 
 /** Compresses the large, signed admission package so it fits into one scannable QR image. */

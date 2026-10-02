@@ -68,3 +68,16 @@ export class AuthorizationService {
     if (!granted) throw new Error(`Unauthorized: ${permission} is required.`)
   }
 }
+
+/** The roles an Instructor may make tickets for (ADR 012, D4). MASTER and INSTRUCTOR tickets only a Master makes. */
+export const CADET_TICKET_ROLES: readonly ArgusRole[] = ['SUPPLY_OFFICER', 'SUPPLY_ASSISTANT']
+/**
+ * D4, as a rule of the domain and not only of the screen: a Master may make a ticket for any role; an Instructor only for a
+ * cadet role (Supply Officer or Supply Assistant); nobody else makes tickets. Returns the refusal in plain words, or undefined when allowed.
+ * It needs no permission of its own (adding one would change existing credentials): the ticket verifier and the unit fold apply this rule.
+ */
+export function ticketRuleViolation(issuerRole: ArgusRole, ticketRole: ArgusRole): string | undefined {
+  if (issuerRole === 'MASTER') return undefined
+  if (issuerRole === 'INSTRUCTOR') return CADET_TICKET_ROLES.includes(ticketRole) ? undefined : 'An Instructor can make tickets only for Supply Officers and Supply Assistants. Only a Master can make a Master or Instructor ticket.'
+  return 'Only a Master or an Instructor can make tickets.'
+}

@@ -256,6 +256,39 @@ export async function updateDeviceCredential(device: UnlockedDevice, credential:
   for (const epoch of record.unit?.epochs ?? []) { const sealed = record.secrets[epochSecretName(epoch)]; if (sealed) device.unitKeys.set(epoch, await importUnitKey(await unseal(device.vaultKey, epochSecretName(epoch), sealed), credential.role === 'MASTER')) }
 }
 
+/**
+ * Every unit key generation this device holds, raw (32 bytes, base64url), read back from the sealed vault secrets. A ticket carries
+ * them for the new member (ADR 012). Read from the secrets and not from the CryptoKeys because an Instructor's copies are
+ * imported non-extractable; the vault key is in memory while the device is unlocked.
+ */
+export async function rawUnitKeys(device: UnlockedDevice): Promise<{ epochId: string; key: string }[]> {
+  const unit = device.record.unit; if (!unit) throw new Error('This device has not joined a unit.')
+  const keys: { epochId: string; key: string }[] = []
+  for (const epochId of unit.epochs) {
+    const sealed = device.record.secrets[epochSecretName(epochId)]; if (!sealed) throw new Error(`This device is missing unit key ${epochId}.`)
+    keys.push({ epochId, key: await unseal(device.vaultKey, epochSecretName(epochId), sealed) })
+  }
+  return keys
+}
+
+/**
+ * The issuer's device keeps each open ticket's code sealed under its passphrase key as `ticket:<ticketId>` (ADR 012): the ticket
+ * key is derived from it, and only this device can cancel the ticket. It is dropped once the ticket's funding output is spent.
+ */
+export const ticketSecretName = (ticketId: string) => `ticket:${ticketId}`
+export async function sealTicketSecret(device: UnlockedDevice, ticketId: string, code: string, storage: Storage2) {
+  const name = ticketSecretName(ticketId)
+  device.record = saveDeviceVault({ ...device.record, secrets: { ...device.record.secrets, [name]: await seal(device.vaultKey, name, code) } }, storage)
+}
+export async function readTicketSecret(device: UnlockedDevice, ticketId: string): Promise<string | undefined> {
+  const sealed = device.record.secrets[ticketSecretName(ticketId)]
+  return sealed ? unseal(device.vaultKey, ticketSecretName(ticketId), sealed) : undefined
+}
+export function forgetTicketSecret(device: UnlockedDevice, ticketId: string, storage: Storage2) {
+  const secrets = { ...device.record.secrets }; delete secrets[ticketSecretName(ticketId)]
+  device.record = saveDeviceVault({ ...device.record, secrets }, storage)
+}
+
 /** SHA-256 fingerprint (16 hex) of the recovery public key, used to name its key grants. */
 export async function recoveryFingerprint(publicKey: string) {
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', buffer(encoder.encode(publicKey))))

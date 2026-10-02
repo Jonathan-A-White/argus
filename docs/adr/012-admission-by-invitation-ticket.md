@@ -346,7 +346,7 @@ waits for a Master device.
 
 ## Amendments
 
-* **2026-10-02, story mw-3evcnk.2 (issuing).** Three clarifications, none of which changes a protocol shape:
+* **2026-10-02, story mw-3evcnk.2 (issuing).** Four clarifications, none of which changes a protocol shape:
   * The issuer's vault seals the ticket **code** (the 35-character text) as `ticket:<ticketId>`, not the derived ticket key. The key
     is derived from it on demand, and the issuer can show the code again until the ticket is closed. It is dropped once the funding
     output is spent.

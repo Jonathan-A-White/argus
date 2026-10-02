@@ -67,11 +67,11 @@ const codeFromToast = (toasts: string[]) => /^Cadet (\S+) added\.$/.exec(toasts.
 const cadetCard = (code: string) => screen.getByRole('button', { name: new RegExp(code) })
 
 describe('CadetsView privacy and records', () => {
-  it('adds a named cadet through the UI but lists, titles and announces it only by cadet ID until "Show name"', async () => {
+  it('shows a named cadet by name in the list while keeping the cadet ID as secondary text', async () => {
     const { controller, projection } = await setup()
     const toasts: string[] = []
     render(<Harness controller={controller} initial={projection} toasts={toasts} />)
-    expect(screen.getByText('Cadets are shown by cadet ID. Names are encrypted and only shown when you choose to reveal them.')).toBeInTheDocument()
+    expect(screen.getByText('Cadets are shown by name. Names and property records stay encrypted while the unit is locked.')).toBeInTheDocument()
     expect(screen.getByText('No cadets yet.')).toBeInTheDocument()
 
     await addCadetThroughUi({ gender: 'Female', name: NAME, nsLevel: 'NS2' })
@@ -83,28 +83,27 @@ describe('CadetsView privacy and records', () => {
     const card = cadetCard(code)
     expect(card).toHaveTextContent('NS2 · Female · ACTIVE')
     expect(card).toHaveTextContent('INCOMPLETE · 8 needed')
-    expect(screen.queryByText(NAME)).toBeNull()
-    expect(document.body.innerHTML).not.toContain(NAME)
+    expect(screen.getByText(NAME)).toBeInTheDocument()
 
     fireEvent.click(card)
     const drawer = screen.getByRole('dialog', { name: code })
     expect(within(drawer).queryByText(NAME)).toBeNull()
-    expect(document.body.innerHTML).not.toContain(NAME)
+    expect(screen.getByText(NAME)).toBeInTheDocument()
     fireEvent.click(within(drawer).getByRole('button', { name: 'Show name' }))
     expect(within(drawer).getByText(NAME)).toBeInTheDocument()
     fireEvent.click(within(drawer).getByRole('button', { name: 'Hide name' }))
-    expect(screen.queryByText(NAME)).toBeNull()
+    expect(screen.getByText(NAME)).toBeInTheDocument()
 
     // The reveal is per drawer session: closing re-hides it.
     fireEvent.click(within(drawer).getByRole('button', { name: 'Show name' }))
     fireEvent.click(within(drawer).getByLabelText('Close panel'))
-    expect(screen.queryByText(NAME)).toBeNull()
+    expect(screen.getByText(NAME)).toBeInTheDocument()
     fireEvent.click(cadetCard(code))
     expect(screen.getByRole('dialog', { name: code })).toBeInTheDocument()
-    expect(document.body.innerHTML).not.toContain(NAME)
+    expect(screen.getByText(NAME)).toBeInTheDocument()
   })
 
-  it('finds a cadet by name, code or NS level but shows only the cadet ID', async () => {
+  it('finds a cadet by name, code or NS level and shows the cadet name', async () => {
     const { controller } = await setup()
     await controller.createCadet({ fullName: NAME, gender: 'Male', nsLevel: 'NS3', status: 'ACTIVE' })
     const projection = await controller.createCadet({ fullName: 'Casey Bennett', gender: 'Female', nsLevel: 'NS1', status: 'ACTIVE' })
@@ -116,8 +115,7 @@ describe('CadetsView privacy and records', () => {
     fireEvent.change(search, { target: { value: 'rivera' } })
     expect(cadetCard(jordan.cadetCode!)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: new RegExp(casey.cadetCode!) })).toBeNull()
-    expect(screen.queryByText(/Jordan|Rivera/)).toBeNull()
-    expect(document.body.innerHTML).not.toContain(NAME)
+    expect(screen.getByText(NAME)).toBeInTheDocument()
 
     fireEvent.change(search, { target: { value: casey.cadetCode!.toLowerCase() } })
     expect(cadetCard(casey.cadetCode!)).toBeInTheDocument()
@@ -211,7 +209,7 @@ describe('CadetsView privacy and records', () => {
     expect(within(form).getByLabelText('Gender')).toHaveValue('Female')
     // An existing name stays hidden in the edit form until revealed.
     expect(within(form).queryByLabelText(NAME_LABEL)).toBeNull()
-    expect(document.body.innerHTML).not.toContain(NAME)
+    expect(screen.getByText(NAME)).toBeInTheDocument()
     expect(within(form).getByRole('button', { name: 'Save changes' })).toBeDisabled()
 
     fireEvent.change(within(form).getByLabelText('NS level'), { target: { value: 'NS3' } })
@@ -240,11 +238,11 @@ describe('CadetsView privacy and records', () => {
     fireEvent.change(within(form).getByLabelText(NAME_LABEL), { target: { value: 'Jordan R. Rivera' } })
     fireEvent.click(within(form).getByRole('button', { name: 'Save changes' }))
     // Back on the record, the reveal carried over from the edit form within the same drawer session.
-    expect(await screen.findByText('Jordan R. Rivera')).toBeInTheDocument()
+    expect((await screen.findAllByText('Jordan R. Rivera')).length).toBeGreaterThan(0)
     const update = (await controller.technicalState()).events.find(record => record.event.eventType === 'CADET_UPDATED')
     expect(update?.event.payload).toEqual({ fullName: 'Jordan R. Rivera' })
     fireEvent.click(screen.getByLabelText('Close panel'))
-    expect(screen.queryByText(/Jordan/)).toBeNull()
+    expect(screen.getByText('Jordan R. Rivera')).toBeInTheDocument()
   })
 
   it('issues the PT bundle in the saved PT Shorts size and confirms by cadet ID only', async () => {
@@ -282,7 +280,7 @@ describe('CadetsView privacy and records', () => {
     expect(after.cadets[0].currentProperty).toEqual([expect.objectContaining({ itemId: medium.entityId, variant: 'M', quantity: 1 })])
     expect(after.stillNeeded.map(need => need.displayLabel).sort()).toEqual(['Gold PT Shirt', 'Khaki Ball Cap'])
     expect(within(workflow).getByRole('status')).toHaveTextContent(code)
-    expect(document.body.innerHTML).not.toContain(NAME)
+    expect(screen.getByText(NAME)).toBeInTheDocument()
 
     // The record now shows the property, the Still Needed items and the history entry.
     fireEvent.click(within(workflow).getByRole('button', { name: 'Done' }))

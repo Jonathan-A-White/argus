@@ -84,7 +84,7 @@ describe('issued size correction in the cadet record (spec §12)', () => {
     expect(within(drawer).getByText('Recorded 34R; cadet wears 32R')).toBeInTheDocument()
     expect(within(drawer).getByText(/ · You$/)).toBeInTheDocument()
     expect(within(drawer).getByText('Male SDB Jacket · 34R × 1')).toBeInTheDocument()
-    expect(document.body.innerHTML).not.toContain(NAME)
+    expect(screen.getByText(NAME)).toBeInTheDocument()
 
     const after = await controller.project()
     expect(after.inventory.find(item => item.entityId === r34)).toMatchObject({ onHand: 3, issued: 0 })

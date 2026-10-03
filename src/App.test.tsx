@@ -157,6 +157,21 @@ describe('unit onboarding over a (fake) BSV testnet chain', { timeout: 120_000 }
     expect(loadDeviceVault(joinerStorage)?.unit?.unitId).toBe(loadDeviceVault(masterStorage)?.unit?.unitId)
   })
 
+  it('the Master sends a notice to all cadets from More, Notices: it is listed under Sent notices with the sender, and a toast says Notice sent', async () => {
+    const chain = new FakeChain()
+    const storage = await createUnitThroughUi(chain)
+    chain.fund(loadDeviceVault(storage)!.walletAddress, 100_000, { confirmed: true })
+    await goTo('More')
+    fireEvent.click(await screen.findByRole('button', { name: /Notices/ }))
+    const panel = await screen.findByRole('dialog', { name: 'Notices' })
+    fireEvent.change(within(panel).getByLabelText('Notice to all cadets'), { target: { value: 'Military ball: bring your SDBs' } })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Send' }))
+    expect(await screen.findByText('Notice sent', {}, { timeout: 20_000 })).toBeInTheDocument()
+    const sent = within(panel).getByRole('list', { name: 'Sent notices' })
+    expect(sent).toHaveTextContent('Military ball: bring your SDBs')
+    expect(sent).toHaveTextContent('You')
+  })
+
   it('locks back to the unlock screen and rejects a wrong passphrase', async () => {
     const chain = new FakeChain()
     await createUnitThroughUi(chain)

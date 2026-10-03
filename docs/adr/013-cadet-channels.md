@@ -187,3 +187,22 @@ notices; Replace phone rotates the channel (new key, new address), and the old p
   * **Reading.** `readCadetRecord(device, api)` reads the phone's own channel and returns the `view` record with the highest
     `version` (of equal versions the one the chain lists last). Two staff devices publishing for one cadet leave two records; the older
     view can come later on chain, and the reader still keeps the higher version.
+* **2026-10-03, story mw-kmgi38.5 (staff send notices).** Staff with `notices.send` (Master, Instructor, Supply Officer) send a notice to every
+  cadet or to one cadet (no screens for the cadet's side yet):
+  * **NOTICE_SENT** `{noticeId, audience: 'all' | {cadetId}, text, sentBy, sentAt}` (permission `notices.send`) is recorded in the unit log, which
+    cadets never read. The command is `sendNotice(audience, text)` on `ArgusReplica` and `DistributedAppController`: text is trimmed, 1-500
+    characters (`MAX_NOTICE_LENGTH`); a notice to one cadet needs a cadet who has a channel ("This cadet has no phone yet"). The fold checks
+    every payload again (author's permission, `sentBy` is the author, `noticeId` is the entity, the text, the audience, a cadet the unit has, a
+    notice ID used once, a valid time) and keeps `notices` (`NoticeProjection`), shown newest first in the app projection. The Activity list
+    says "Sent a notice to all cadets" and never shows the text.
+  * **The sealed record** is a `'notice'` channel record `{noticeId, text, sentAt, from}` (`from` is the sender's display name), sealed to the
+    notices channel (audience all) or to the cadet's channel (one cadet), in one transaction paid to that channel's address by the sending
+    device's wallet. A key opens only its own channel's records: the notices key opens no cadet's record and a cadet's key not the notices.
+  * **Through the publisher's queue.** `UnitRuntime.sendNotice` makes the notices key when the unit has none (for audience all), records
+    NOTICE_SENT, queues the notice ID in the publisher (`argus.cadet-publish.v1.<unitId>.notices`; IDs only, the text is read from the unit
+    log when it is published) and drains at once. A record the network does not take stays queued, is finished from the wallet and never
+    built twice (correlation `notice:<noticeId>`), and is tried again after 30 s, on the next change and when the runtime opens. The command
+    answers `{noticeId, published}`; `published: false` makes the app say the notice is saved and goes out when the network is reachable.
+  * **Screens.** More, Notices (labels "Notices", "Notice to all cadets", "Send", "Sent notices"; a role without `notices.send` sees the list and
+    no box) and, in the cadet drawer, "Message this cadet" (same text box; "This cadet has no phone yet" when the cadet has no channel).
+    Toasts: "Notice sent", "Message sent to <cadet>".

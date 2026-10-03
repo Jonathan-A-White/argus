@@ -197,6 +197,15 @@ describe('unit onboarding over a (fake) BSV testnet chain', { timeout: 120_000 }
     fireEvent.change(await within(drawer).findByLabelText('Message to this cadet'), { target: { value: 'Come to supply Thursday' } })
     fireEvent.click(within(drawer).getByRole('button', { name: 'Send' }))
     expect(await screen.findByText('Message sent to C-PT34', {}, { timeout: 30_000 })).toBeInTheDocument()
+    // Replace phone: no phone has joined yet; asked once, it makes a different ticket on a new channel.
+    const firstCode = within(drawer).getByLabelText('Ticket code').textContent
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Hide' }))
+    expect(await within(drawer).findByText('No phone yet', {}, { timeout: 30_000 })).toBeInTheDocument()
+    fireEvent.click(await within(drawer).findByRole('button', { name: 'Replace phone' }))
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Yes, replace phone' }))
+    expect(await within(drawer).findByText('Phone ticket ready for C-PT34', {}, { timeout: 30_000 })).toBeInTheDocument()
+    expect(within(drawer).getByLabelText('Ticket code').textContent).toMatch(/^([0-9A-Z]{5}-){5}[0-9A-Z]{5}$/)
+    expect(within(drawer).getByLabelText('Ticket code').textContent).not.toBe(firstCode)
   })
 
   it('locks back to the unlock screen and rejects a wrong passphrase', async () => {

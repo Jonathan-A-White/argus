@@ -47,7 +47,10 @@ import { SharedCountView } from "./features/count/SharedCountView";
 import { InventoryCatalogView } from "./features/inventory/InventoryCatalogView";
 import { COUNT_INTERVAL_CHOICES } from "./stage3/inventoryStatus";
 import { CadetsView } from "./features/cadets/CadetsView";
-import type { PhoneTicketMaker } from "./features/cadets/PhoneTicketPanel";
+import type {
+  PhoneLineReader,
+  PhoneTicketMaker,
+} from "./features/cadets/PhoneTicketPanel";
 import { ticketWaiting } from "./features/cadets/phoneTicket";
 import { ConflictsPanel } from "./features/conflicts/ConflictsPanel";
 import { StillNeededActions } from "./features/needs/StillNeededActions";
@@ -73,10 +76,11 @@ import {
   DeviceNotificationSettings,
   useDeviceNotifications,
 } from "./notifications";
-import type {
-  UnitRuntime,
-  UnitRuntimeOptions,
-  UnitStatus,
+import {
+  cadetPhoneLine,
+  type UnitRuntime,
+  type UnitRuntimeOptions,
+  type UnitStatus,
 } from "./unit/runtime";
 
 export type Tab =
@@ -307,6 +311,26 @@ function AuthenticatedApp({
             const ticket = await runtime.issueCadetTicket(cadetId);
             return { ticket, waiting: ticketWaiting(runtime.status()) };
           }
+        : undefined,
+    [runtime],
+  );
+  // Replace phone: a new key and address for the cadet's channel (the old phone reads nothing new) and a new ticket for the new phone.
+  const replacePhone = useMemo<PhoneTicketMaker | undefined>(
+    () =>
+      runtime
+        ? async (cadetId: string) => {
+            const ticket = await runtime.reissueCadetTicket(cadetId);
+            return { ticket, waiting: ticketWaiting(runtime.status()) };
+          }
+        : undefined,
+    [runtime],
+  );
+  // The cadet drawer's Phone line: whether a phone has joined the cadet's current channel (one address read on demand).
+  const phoneLine = useMemo<PhoneLineReader | undefined>(
+    () =>
+      runtime
+        ? async (cadetId: string) =>
+            cadetPhoneLine(await runtime.readCadetChannel(cadetId))
         : undefined,
     [runtime],
   );
@@ -587,6 +611,8 @@ function AuthenticatedApp({
             onReturn={(cadetId) => openCadetWorkflow("cadet-return", cadetId)}
             sendNotice={sendNotice}
             makePhoneTicket={makePhoneTicket}
+            replacePhone={replacePhone}
+            phoneLine={phoneLine}
           />
         )}
         {tab === "activity" && (

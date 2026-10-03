@@ -9,7 +9,7 @@ import { RecordCorrectionForm } from '../corrections/RecordCorrectionForm'
 import { KIND_LABELS, describeLine, recordCorrections, transactionTargets } from '../corrections/correctionModel'
 import { StillNeededActions } from '../needs/StillNeededActions'
 import { CadetForm } from './CadetForm'
-import { PhoneTicketPanel, type PhoneTicketMaker } from './PhoneTicketPanel'
+import { PhoneTicketPanel, type PhoneLineReader, type PhoneTicketMaker } from './PhoneTicketPanel'
 import { TICKET_WAITING } from './phoneTicket'
 import { SizeCorrectionForm } from './SizeCorrectionForm'
 import { cadetMonogram, memberLabel } from './cadetDisplay'
@@ -30,6 +30,10 @@ export type CadetDrawerProps = {
   sendNotice?: NoticeSender
   /** Makes this cadet's phone ticket; without it (or without cadets.admit) the drawer offers none. */
   makePhoneTicket?: PhoneTicketMaker
+  /** Replaces this cadet's phone (a new ticket, the old phone goes dark); without it (or without cadets.admit) the drawer offers none. */
+  replacePhone?: PhoneTicketMaker
+  /** Reads the Phone line for this cadet; without it the drawer shows none. */
+  phoneLine?: PhoneLineReader
   close: () => void
 }
 
@@ -55,7 +59,7 @@ const describeCorrection = (projection: ArgusAppProjection, correction: Property
  * after the operator taps "Show name". That reveal lives in this component's state, so it resets
  * whenever the drawer closes and is never persisted.
  */
-export function CadetDrawer({ cadet, projection, controller, can, onProjection, notify, onIssue, onReturn, sendNotice, makePhoneTicket, close }: CadetDrawerProps) {
+export function CadetDrawer({ cadet, projection, controller, can, onProjection, notify, onIssue, onReturn, sendNotice, makePhoneTicket, replacePhone, phoneLine, close }: CadetDrawerProps) {
   const [nameRevealed, setNameRevealed] = useState(false)
   const [editing, setEditing] = useState(false)
   const [correctingId, setCorrectingId] = useState<string>()
@@ -176,7 +180,9 @@ export function CadetDrawer({ cadet, projection, controller, can, onProjection, 
         {...(phoneTicket ? { ticket: phoneTicket } : {})}
         canMake={canMakeTicket}
         {...(makePhoneTicket ? { make: makePhoneTicket } : {})}
-        onMade={waiting => { setPhoneChecks(value => value + 1); notify(waiting ? `Phone ticket for ${code} ${TICKET_WAITING}.` : `Phone ticket made for ${code}.`) }}
+        {...(replacePhone ? { replace: replacePhone } : {})}
+        {...(phoneLine ? { phoneLine } : {})}
+        onMade={(waiting, replaced) => { setPhoneChecks(value => value + 1); notify(waiting ? `Phone ticket for ${code} ${TICKET_WAITING}.` : replaced ? `Phone replaced for ${code}. The old phone stops getting updates.` : `Phone ticket made for ${code}.`) }}
       />
 
       {canMessage && sendNotice && (

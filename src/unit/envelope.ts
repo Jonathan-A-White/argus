@@ -83,11 +83,11 @@ export const PUBLIC_ENVELOPE_FIELDS = ['v', 'unit', 'epoch', 'eventId', 'z', 'no
  * Public: format version, channel ID (the channel's address), what the record is ('view': the cadet's record; 'notice': a
  * notice), whether it was compressed, nonce and ciphertext. Names, codes, sizes, gear and notice text are inside AES-256-GCM
  * ciphertext under the channel key. The public header is the GCM additional data, so a record cannot be moved to another
- * channel or relabelled. Same 60 KB cap as a unit record.
+ * channel or relabelled. Same 60 KB cap as a unit record. 'joined': the cadet's phone says it joined (CADET_JOINED, mw-kmgi38.2).
  */
-export type ChannelRecordKind = 'view' | 'notice'
+export type ChannelRecordKind = 'view' | 'notice' | 'joined'
 export type ChannelEnvelope = { v: 3; ch: string; kind: ChannelRecordKind; z: 0 | 1; nonce: string; ct: string }
-export const CHANNEL_RECORD_KINDS: readonly ChannelRecordKind[] = ['view', 'notice']
+export const CHANNEL_RECORD_KINDS: readonly ChannelRecordKind[] = ['view', 'notice', 'joined']
 /** The complete set of fields of a channel record that appear in plaintext on chain. */
 export const PUBLIC_CHANNEL_ENVELOPE_FIELDS = ['v', 'ch', 'kind', 'z', 'nonce', 'ct'] as const
 const MAX_CHANNEL_ID_LENGTH = 100

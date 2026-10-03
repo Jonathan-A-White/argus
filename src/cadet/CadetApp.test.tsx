@@ -3,14 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChainApi } from '../chain/types'
 import type { NotificationEnvironment } from '../notifications/environment'
 import type { CadetView } from '../distributed/types'
-import { readCadetNotices, readCadetRecord } from '../unit/cadetPublisher'
+import { readCadetChannel } from '../unit/cadetPublisher'
 import type { CadetDevice, UnlockedCadetDevice } from '../unit/vault'
 import { CadetApp } from './CadetApp'
 import { CADET_POLL_MS } from './CadetPoller'
 import { formatWhen } from './format'
 
-vi.mock('../unit/cadetPublisher', () => ({ readCadetRecord: vi.fn(), readCadetNotices: vi.fn() }))
-const read = vi.mocked(readCadetRecord), readNotices = vi.mocked(readCadetNotices)
+vi.mock('../unit/cadetPublisher', () => ({ readCadetChannel: vi.fn() }))
+const read = vi.mocked(readCadetChannel)
+/** What one scan of the cadet's own channel finds: the newest record, if any, and the notices. */
+const found = (view?: CadetView, notices: Awaited<ReturnType<typeof readCadetChannel>>['notices'] = []) => ({ ...(view ? { view } : {}), notices })
 
 const cadet: CadetDevice = { cadetId: 'cad-1', displayName: 'Avery Private', unit: { unitId: 'u-1', unitName: 'Bethel NJROTC' }, channelKey: 'k', channelAddress: 'a', noticesKey: 'n', noticesAddress: 'na', joinedAt: '2026-10-03T00:00:00.000Z' }
 const device = { cadet } as UnlockedCadetDevice
@@ -20,12 +22,12 @@ const gear = view({ have: [{ itemId: 'i1', label: 'Gold PT Shirt', size: 'M', qu
 const open = (onLeave = vi.fn()) => { render(<CadetApp device={device} api={api} onLeave={onLeave} />); return onLeave }
 const settle = () => act(async () => { await vi.advanceTimersByTimeAsync(0) })
 
-beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] }); read.mockReset(); readNotices.mockReset(); readNotices.mockResolvedValue([]) })
+beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] }); read.mockReset() })
 afterEach(() => { cleanup(); vi.useRealTimers() })
 
 describe('cadet mode: My gear', () => {
   it('shows the unit, the cadet, the code, what they have with size and quantity, and what is still needed', async () => {
-    read.mockResolvedValue(gear)
+    read.mockResolvedValue(found(gear))
     open(); await settle()
     expect(screen.getByText('Bethel NJROTC')).toBeInTheDocument()
     expect(screen.getAllByText('Cadet').length).toBeGreaterThan(0)
@@ -42,14 +44,14 @@ describe('cadet mode: My gear', () => {
   })
 
   it('says so when nothing is issued and nothing is needed', async () => {
-    read.mockResolvedValue(view())
+    read.mockResolvedValue(found(view()))
     open(); await settle()
     expect(screen.getByText('Nothing issued yet')).toBeInTheDocument()
     expect(screen.getByText('Nothing still needed')).toBeInTheDocument()
   })
 
   it('says the counter has published nothing yet, rather than "nothing issued", before the first record', async () => {
-    read.mockResolvedValue(undefined)
+    read.mockResolvedValue(found())
     open(); await settle()
     expect(screen.getByText('Avery Private')).toBeInTheDocument()
     expect(screen.getByText(/has not published your gear yet/)).toBeInTheDocument()
@@ -57,10 +59,10 @@ describe('cadet mode: My gear', () => {
   })
 
   it('a newer record after Refresh replaces the old lines', async () => {
-    read.mockResolvedValueOnce(gear)
+    read.mockResolvedValueOnce(found(gear))
     open(); await settle()
     expect(screen.getByText(/Gold PT Shirt/)).toBeInTheDocument()
-    read.mockResolvedValueOnce(view({ version: 2, updatedAt: '2026-10-03T16:30:00.000Z', have: [{ itemId: 'i3', label: 'Utility Cover', size: '7', quantity: 1, issuedAt: '2026-10-03T00:00:00.000Z' }], stillNeeded: [] }))
+    read.mockResolvedValueOnce(found(view({ version: 2, updatedAt: '2026-10-03T16:30:00.000Z', have: [{ itemId: 'i3', label: 'Utility Cover', size: '7', quantity: 1, issuedAt: '2026-10-03T00:00:00.000Z' }], stillNeeded: [] })))
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await settle()
     expect(screen.queryByText(/Gold PT Shirt/)).toBeNull()
     expect(screen.getByText(/Utility Cover/)).toBeInTheDocument()
@@ -70,7 +72,7 @@ describe('cadet mode: My gear', () => {
   })
 
   it('offline: keeps the last record on screen and says "Last updated <time>"', async () => {
-    read.mockResolvedValueOnce(gear)
+    read.mockResolvedValueOnce(found(gear))
     open(); await settle()
     read.mockRejectedValueOnce(new Error('Failed to fetch'))
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await settle()
@@ -83,14 +85,14 @@ describe('cadet mode: My gear', () => {
     read.mockRejectedValueOnce(new Error('Failed to fetch'))
     open(); await settle()
     expect(screen.getByRole('status')).toHaveTextContent(/could not reach the network/i)
-    read.mockResolvedValueOnce(gear)
+    read.mockResolvedValueOnce(found(gear))
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await settle()
     expect(screen.getByText(/Gold PT Shirt/)).toBeInTheDocument()
     expect(screen.queryByText(/could not reach the network/i)).toBeNull()
   })
 
   it('has no staff tabs and no unit screen', async () => {
-    read.mockResolvedValue(gear)
+    read.mockResolvedValue(found(gear))
     open(); await settle()
     for (const word of ['Count', 'Inventory', 'Cadets', 'Activity', 'More']) expect(screen.queryByText(word)).toBeNull()
     expect(screen.queryByRole('navigation')).toBeNull()
@@ -99,42 +101,43 @@ describe('cadet mode: My gear', () => {
 })
 
 describe('the poller', () => {
-  it('reads once on mount and once per 5 minutes, and not at 15 seconds', async () => {
-    read.mockResolvedValue(gear)
+  it('reads once on mount and once per 25 minutes, and not at 15 seconds or at 5 minutes', async () => {
+    read.mockResolvedValue(found(gear))
     open(); await settle()
     expect(read).toHaveBeenCalledTimes(1)
     expect(read).toHaveBeenCalledWith({ cadet }, api)
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
     expect(read).toHaveBeenCalledTimes(1)
-    await act(async () => { await vi.advanceTimersByTimeAsync(CADET_POLL_MS - 15_000 - 1) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60_000) })
+    expect(read).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(CADET_POLL_MS - 15_000 - 5 * 60_000 - 1) })
     expect(read).toHaveBeenCalledTimes(1)
     await act(async () => { await vi.advanceTimersByTimeAsync(1) })
     expect(read).toHaveBeenCalledTimes(2)
     await act(async () => { await vi.advanceTimersByTimeAsync(CADET_POLL_MS) })
     expect(read).toHaveBeenCalledTimes(3)
-    expect(CADET_POLL_MS).toBe(5 * 60_000)
+    expect(CADET_POLL_MS).toBe(25 * 60_000)
   })
 
-  it('reads the notices in the same poll: on mount, every 5 minutes and when the tab is visible, never on its own cadence', async () => {
-    read.mockResolvedValue(gear)
+  it('a poll is one scan: the record and the notices come from the same read of the cadet’s own channel', async () => {
+    read.mockResolvedValue(found(gear, [{ noticeId: 'n1', text: 'Military ball', sentAt: '2026-10-03T00:00:00.000Z', from: 'Chief' }]))
     open(); await settle()
-    expect(readNotices).toHaveBeenCalledTimes(1)
-    expect(readNotices).toHaveBeenCalledWith({ cadet }, api)
-    await act(async () => { await vi.advanceTimersByTimeAsync(CADET_POLL_MS - 1) })
-    expect(readNotices).toHaveBeenCalledTimes(1)
-    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
-    expect(readNotices).toHaveBeenCalledTimes(2); expect(read).toHaveBeenCalledTimes(2)
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(screen.getByText(/Gold PT Shirt/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Notices/ })).toHaveTextContent('1')
   })
 
-  it('a notices read that cannot reach the network marks the poll offline and keeps the gear', async () => {
-    read.mockResolvedValue(gear); readNotices.mockRejectedValue(new Error('Failed to fetch'))
+  it('a scan that cannot reach the network marks the poll offline and keeps the gear', async () => {
+    read.mockResolvedValueOnce(found(gear))
     open(); await settle()
+    read.mockRejectedValueOnce(new Error('Failed to fetch'))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' })); await settle()
     expect(screen.getByText(/Gold PT Shirt/)).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent(/could not reach the network/i)
   })
 
   it('reads again when the tab becomes visible, and not when it is hidden', async () => {
-    read.mockResolvedValue(gear)
+    read.mockResolvedValue(found(gear))
     open(); await settle()
     const visibility = vi.spyOn(document, 'visibilityState', 'get')
     visibility.mockReturnValue('hidden'); await act(async () => { document.dispatchEvent(new Event('visibilitychange')) }); await settle()
@@ -145,7 +148,7 @@ describe('the poller', () => {
   })
 
   it('stops reading when the screen is gone', async () => {
-    read.mockResolvedValue(gear)
+    read.mockResolvedValue(found(gear))
     open(); await settle()
     cleanup()
     await act(async () => { await vi.advanceTimersByTimeAsync(CADET_POLL_MS * 2) })
@@ -155,7 +158,7 @@ describe('the poller', () => {
 
   it('does not start a second read while one is still out', async () => {
     let finish: (value: CadetView) => void = () => undefined
-    read.mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    read.mockReturnValueOnce(new Promise(resolve => { finish = view => resolve(found(view)) }))
     open(); await settle()
     document.dispatchEvent(new Event('visibilitychange')); await settle()
     expect(read).toHaveBeenCalledTimes(1)
@@ -170,7 +173,7 @@ describe('Settings: notifications', () => {
     return { permission: () => permission, requestPermission, visible: () => true } as unknown as NotificationEnvironment
   }
   it('offers to allow notifications when the phone has not been asked, and says so once allowed', async () => {
-    read.mockResolvedValue(gear)
+    read.mockResolvedValue(found(gear))
     const env = environment('default')
     render(<CadetApp device={device} api={api} notificationEnvironment={env} onLeave={vi.fn()} />); await settle()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
@@ -181,7 +184,7 @@ describe('Settings: notifications', () => {
   })
 
   it('when notifications are blocked it says the badge still shows and offers nothing to press', async () => {
-    read.mockResolvedValue(gear)
+    read.mockResolvedValue(found(gear))
     render(<CadetApp device={device} api={api} notificationEnvironment={environment('denied')} onLeave={vi.fn()} />); await settle()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(screen.getByRole('dialog', { name: 'Settings' })).toHaveTextContent('blocked')
@@ -191,7 +194,7 @@ describe('Settings: notifications', () => {
 
 describe('Settings: Leave this unit', () => {
   it('opens a Settings sheet, asks before leaving, and only then wipes', async () => {
-    read.mockResolvedValue(gear)
+    read.mockResolvedValue(found(gear))
     const onLeave = open(); await settle()
     expect(screen.queryByRole('dialog')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
@@ -208,7 +211,7 @@ describe('Settings: Leave this unit', () => {
   })
 
   it('closes without leaving', async () => {
-    read.mockResolvedValue(gear)
+    read.mockResolvedValue(found(gear))
     const onLeave = open(); await settle()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))

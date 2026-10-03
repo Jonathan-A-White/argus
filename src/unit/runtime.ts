@@ -17,6 +17,7 @@ import { listTickets } from '../private-sync/tickets'
 import type { CadetJoinedRecord, CadetTicketPackage, KeyGrantRecord, TicketCancellation, TicketFundingOutpoint, TicketInvitation, TicketPackage } from '../private-sync/types'
 import { MemoryRepository } from '../storage/repository'
 import { cadetLabel } from '../stage3/domain'
+import { CadetPublisher, type CadetPublishProgress } from './cadetPublisher'
 import { readChannelRecords, type ChannelRecordRead } from './channelReader'
 import { IndexedDbLedgerStore, type LedgerStore } from './ledgerStore'
 import { UnitEventSyncProvider } from './syncProvider'
@@ -51,6 +52,13 @@ export type CadetChannelReading = { cadetId: string; channelAddress?: string; re
 /** The cadet drawer's Phone line: "Phone: joined <date>" once a phone joined the cadet's current channel, else "No phone yet". */
 export const cadetPhoneLine = (reading: Pick<CadetChannelReading, 'joined'>) => reading.joined ? `Phone: joined ${reading.joined.joinedAt.slice(0, 10)}` : 'No phone yet'
 
+/** The cadet whose record an event changes: named in its payload, or the cadet or Still Needed line it is about. Channel and ticket events are not changes to the record. */
+const cadetIdOf = (event: SignedArgusEvent, state: Awaited<ReturnType<DistributedAppController['technicalState']>>) => {
+  if (/^CADET_(CHANNEL|NOTICES|TICKET)/.test(event.eventType)) return undefined
+  if (typeof event.payload.cadetId === 'string') return event.payload.cadetId
+  return state.cadets.find(cadet => cadet.cadetId === event.entityId)?.cadetId ?? state.stillNeeded.find(need => need.requirementId === event.entityId)?.cadetId
+}
+
 const importEcdhPublic = (spki: string) => { const normalized = spki.replaceAll('-', '+').replaceAll('_', '/'); const bytes = Uint8Array.from(atob(normalized + '='.repeat((4 - normalized.length % 4) % 4)), c => c.charCodeAt(0)); return crypto.subtle.importKey('spki', bytes, { name: 'ECDH', namedCurve: 'P-256' }, false, []) }
 
 /**
@@ -63,6 +71,8 @@ export class UnitRuntime {
   private statusListeners = new Set<(status: UnitStatus) => void>()
   private revoked = false
   private reconciling?: Promise<ArgusAppProjection>
+  /** Keeps each cadet's channel up to date with what this device commits (ADR 013, mw-kmgi38.3). */
+  readonly cadetPublisher: CadetPublisher
   private constructor(
     readonly device: UnlockedDevice,
     readonly controller: DistributedAppController,
@@ -72,7 +82,14 @@ export class UnitRuntime {
     private readonly provider: UnitEventSyncProvider,
     private readonly options: UnitRuntimeOptions,
     private readonly api: ChainApi,
-  ) {}
+  ) {
+    this.cadetPublisher = new CadetPublisher({
+      channelFor: async cadetId => { const channel = (await controller.technicalState()).cadetChannels.find(entry => entry.cadetId === cadetId); return channel && { key: channel.channelKey, address: channel.channelAddress } },
+      viewFor: cadetId => controller.cadetViewFor(cadetId),
+      cadetIdFor: async event => this.revoked ? undefined : cadetIdOf(event, await controller.technicalState()),
+      wallet, storage: options.storage ?? localStorage, storageKey: `argus.cadet-publish.v1.${device.record.unit!.unitId}`,
+    })
+  }
 
   private get storage() { return this.options.storage ?? localStorage }
 
@@ -91,7 +108,7 @@ export class UnitRuntime {
     // the unit key can publish under someone else's event ID and so suppress their record on other devices.
     const genuine = async (event: SignedArgusEvent) => await isAuthorBoundEventId(event.eventId, event.actorPublicIdentity) && device.identity.verify(unsignedEventJson(event), event.signature, event.actorPublicIdentity)
     // Epoch and credential are read live: a key rotation or role change takes effect for the very next record.
-    const provider = new UnitEventSyncProvider({ unitId: unit.unitId, store: ledger, currentEpoch: () => device.record.unit!.currentEpoch, keyFor: async epoch => device.unitKeys.get(epoch), credential: () => device.record.credential!, authorization, validate: genuine, onQueued: () => { void late.transport?.poke() } })
+    const provider = new UnitEventSyncProvider({ unitId: unit.unitId, store: ledger, currentEpoch: () => device.record.unit!.currentEpoch, keyFor: async epoch => device.unitKeys.get(epoch), credential: () => device.record.credential!, authorization, validate: genuine, onQueued: () => { void late.transport?.poke() }, onLocalEvent: event => late.runtime?.cadetPublisher.noteEvent(event) })
     // A device admitted by a delegated Master needs that Master's credential before its own can be verified.
     if (record.issuerCredential) await provider.offerCredential(record.issuerCredential)
     await provider.offerCredential(record.credential)
@@ -108,11 +125,12 @@ export class UnitRuntime {
     await provider.prime()
     const runtime = late.runtime = new UnitRuntime(device, controller, transport, wallet, authorization, provider, options, api)
     await runtime.reconcile(await controller.initialize())
+    runtime.cadetPublisher.resume()
     return runtime
   }
 
-  start(intervalMs?: number) { this.transport.start(intervalMs) }
-  stop() { this.transport.stop() }
+  start(intervalMs?: number) { this.transport.start(intervalMs); this.cadetPublisher.resume() }
+  stop() { this.transport.stop(); this.cadetPublisher.stop() }
   /** Publish anything queued and pull everything new right now. */
   async syncNow() { await this.transport.poke(); return this.settle(await this.controller.sync()) }
   onProjection(listener: (projection: ArgusAppProjection) => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
@@ -446,6 +464,17 @@ export class UnitRuntime {
     let joined: CadetJoinedRecord | undefined
     for (const entry of records) if (entry.kind === 'joined') { try { joined = parseCadetJoinedRecord(entry.plaintext) } catch { /* damaged: not a phone */ } }
     return { cadetId, channelAddress: channel.channelAddress, records, ...(joined ? { joined } : {}) }
+  }
+
+  /**
+   * Master only: seals every cadet's current record to their channel (every cadet who has one), one transaction at a time, from this
+   * device's wallet. Resumable: what did not go out stays queued, and the next call (or the publisher's own retry) carries on. Reports
+   * how far it is after each cadet. A cadet whose record is over the cap, or whose record the network refused, counts as failed.
+   */
+  async publishAllCadetRecords(onProgress?: (progress: CadetPublishProgress) => void): Promise<CadetPublishProgress> {
+    this.requireMaster()
+    this.cadetPublisher.enqueue((await this.controller.technicalState()).cadetChannels.map(channel => channel.cadetId))
+    return this.cadetPublisher.run(onProgress)
   }
 
   /** Sends testnet satoshis from this device's wallet (e.g. the Master topping up a member). */

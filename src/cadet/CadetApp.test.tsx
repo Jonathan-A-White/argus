@@ -1,15 +1,16 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChainApi } from '../chain/types'
+import type { NotificationEnvironment } from '../notifications/environment'
 import type { CadetView } from '../distributed/types'
-import { readCadetRecord } from '../unit/cadetPublisher'
+import { readCadetNotices, readCadetRecord } from '../unit/cadetPublisher'
 import type { CadetDevice, UnlockedCadetDevice } from '../unit/vault'
 import { CadetApp } from './CadetApp'
 import { CADET_POLL_MS } from './CadetPoller'
 import { formatWhen } from './format'
 
-vi.mock('../unit/cadetPublisher', () => ({ readCadetRecord: vi.fn() }))
-const read = vi.mocked(readCadetRecord)
+vi.mock('../unit/cadetPublisher', () => ({ readCadetRecord: vi.fn(), readCadetNotices: vi.fn() }))
+const read = vi.mocked(readCadetRecord), readNotices = vi.mocked(readCadetNotices)
 
 const cadet: CadetDevice = { cadetId: 'cad-1', displayName: 'Avery Private', unit: { unitId: 'u-1', unitName: 'Bethel NJROTC' }, channelKey: 'k', channelAddress: 'a', noticesKey: 'n', noticesAddress: 'na', joinedAt: '2026-10-03T00:00:00.000Z' }
 const device = { cadet } as UnlockedCadetDevice
@@ -19,7 +20,7 @@ const gear = view({ have: [{ itemId: 'i1', label: 'Gold PT Shirt', size: 'M', qu
 const open = (onLeave = vi.fn()) => { render(<CadetApp device={device} api={api} onLeave={onLeave} />); return onLeave }
 const settle = () => act(async () => { await vi.advanceTimersByTimeAsync(0) })
 
-beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] }); read.mockReset() })
+beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] }); read.mockReset(); readNotices.mockReset(); readNotices.mockResolvedValue([]) })
 afterEach(() => { cleanup(); vi.useRealTimers() })
 
 describe('cadet mode: My gear', () => {
@@ -114,6 +115,24 @@ describe('the poller', () => {
     expect(CADET_POLL_MS).toBe(5 * 60_000)
   })
 
+  it('reads the notices in the same poll: on mount, every 5 minutes and when the tab is visible, never on its own cadence', async () => {
+    read.mockResolvedValue(gear)
+    open(); await settle()
+    expect(readNotices).toHaveBeenCalledTimes(1)
+    expect(readNotices).toHaveBeenCalledWith({ cadet }, api)
+    await act(async () => { await vi.advanceTimersByTimeAsync(CADET_POLL_MS - 1) })
+    expect(readNotices).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(readNotices).toHaveBeenCalledTimes(2); expect(read).toHaveBeenCalledTimes(2)
+  })
+
+  it('a notices read that cannot reach the network marks the poll offline and keeps the gear', async () => {
+    read.mockResolvedValue(gear); readNotices.mockRejectedValue(new Error('Failed to fetch'))
+    open(); await settle()
+    expect(screen.getByText(/Gold PT Shirt/)).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(/could not reach the network/i)
+  })
+
   it('reads again when the tab becomes visible, and not when it is hidden', async () => {
     read.mockResolvedValue(gear)
     open(); await settle()
@@ -142,6 +161,31 @@ describe('the poller', () => {
     expect(read).toHaveBeenCalledTimes(1)
     await act(async () => { finish(gear); await vi.advanceTimersByTimeAsync(0) })
     expect(screen.getByText(/Gold PT Shirt/)).toBeInTheDocument()
+  })
+})
+
+describe('Settings: notifications', () => {
+  const environment = (permission: NotificationEnvironment['permission'] extends () => infer P ? P : never) => {
+    const requestPermission = vi.fn(async () => 'granted' as const)
+    return { permission: () => permission, requestPermission, visible: () => true } as unknown as NotificationEnvironment
+  }
+  it('offers to allow notifications when the phone has not been asked, and says so once allowed', async () => {
+    read.mockResolvedValue(gear)
+    const env = environment('default')
+    render(<CadetApp device={device} api={api} notificationEnvironment={env} onLeave={vi.fn()} />); await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Allow notifications' })) })
+    expect(env.requestPermission).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toHaveTextContent('Device notifications are on')
+    expect(screen.queryByRole('button', { name: 'Allow notifications' })).toBeNull()
+  })
+
+  it('when notifications are blocked it says the badge still shows and offers nothing to press', async () => {
+    read.mockResolvedValue(gear)
+    render(<CadetApp device={device} api={api} notificationEnvironment={environment('denied')} onLeave={vi.fn()} />); await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toHaveTextContent('blocked')
+    expect(screen.queryByRole('button', { name: 'Allow notifications' })).toBeNull()
   })
 })
 

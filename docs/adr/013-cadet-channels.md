@@ -206,3 +206,15 @@ notices; Replace phone rotates the channel (new key, new address), and the old p
   * **Screens.** More, Notices (labels "Notices", "Notice to all cadets", "Send", "Sent notices"; a role without `notices.send` sees the list and
     no box) and, in the cadet drawer, "Message this cadet" (same text box; "This cadet has no phone yet" when the cadet has no channel).
     Toasts: "Notice sent", "Message sent to <cadet>".
+* **2026-10-03, story mw-kmgi38.6 (cadets receive notices).** The cadet's poll (on open, when the tab is visible, every 5 minutes) also reads
+  the notices: `readCadetNotices(device, api)` opens the `'notice'` records at the unit's notices address (key `noticesKey`) and at the cadet's
+  own channel address (key `channelKey`), newest first, each notice ID once. A note to another cadet is at another address under another key and
+  is never read.
+  * **On the phone.** The notices it has read, `{noticeId, text, from, sentAt, readAt?}`, are sealed in the cadet vault record under the secret
+    name `notices` (same passphrase protection as the rest; `loadCadetNotices`, `saveCadetNotices`), so the read state survives a reload and
+    nothing of the text is readable in storage. A notice the phone keeps is never added again, so it is never announced again.
+  * **Screens.** A Notices button in the cadet header with an unread badge; a banner at the top of My gear ("1 new notice" / "N new notices",
+    tap opens Notices) while any are unread; the Notices screen ("Notices", "New", "No notices yet") newest first. Opening it marks all read.
+  * **Device notification.** Each new notice goes once to `DeviceNotifier.notify` (title the unit name, body the text) while the app is open and
+    notifications are allowed; Settings says where the permission stands and offers "Allow notifications" when the phone has not been asked.
+    No Web Push: nothing is shown while the app is closed.

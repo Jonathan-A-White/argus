@@ -767,15 +767,21 @@ export class ArgusReplica {
         Object.assign(ticket, { status: 'CANCELLED' as const, cancelReason: fact.reason, cancelledAt: fact.cancelledAt, spendTxid: fact.spendTxid }); return
       }
       case 'TICKET_REDEEMED': {
-        // Story 3 adds the signature chain (authority -> ticket -> device) and makes the redeeming device a member; here the fact only closes the ticket in the list, and must agree with what was issued.
-        const fact = parseTicketRedeemedFact(event.payload)
-        if (fact.ticketId !== event.entityId) throw new Error('Corrupted ticket event.')
-        if (fact.redemption.subjectPublicIdentity !== event.actorPublicIdentity) throw new Error('A ticket is redeemed by the new member’s own device.')
+        // ADR 012, "How a verifier accepts the authority -> ticket -> device chain". The signatures (link 1, link 2) were checked before
+        // the fold, which only holds the ticket credential if the record came in the spend of the ticket's funding; here, deterministically:
+        const fact = parseTicketRedeemedFact(event.payload), { invitation, redemption } = fact
+        if (fact.ticketId !== event.entityId || invitation.unitId !== this.organizationId) throw new Error('Corrupted ticket event.')
+        if (redemption.subjectPublicIdentity !== event.actorPublicIdentity) throw new Error('A ticket is redeemed by the new member’s own device.')
         const ticket = state.tickets.find(candidate => candidate.ticketId === fact.ticketId); if (!ticket) throw new Error('Ticket projection is missing.')
-        const { invitation } = fact
         if (invitation.role !== ticket.role || invitation.displayName !== ticket.displayName || invitation.issuedAt !== ticket.issuedAt || invitation.expiresAt !== ticket.expiresAt || canonicalize(invitation.funding) !== canonicalize(ticket.funding)) throw new Error('This redemption does not match the ticket that was issued.')
+        // Once: the first of a redemption and a cancellation in the unit's order closes the ticket.
         if (ticket.status !== 'OPEN') throw new Error('This ticket is already closed.')
-        Object.assign(ticket, { status: 'REDEEMED' as const, redeemedAt: fact.redemption.redeemedAt, redeemedBy: event.actorPublicIdentity }); return
+        if (Date.parse(redemption.redeemedAt) < Date.parse(invitation.issuedAt) || Date.parse(redemption.redeemedAt) >= Date.parse(invitation.expiresAt)) throw new Error('This ticket was redeemed outside its week.')
+        if (!this.authorization.verifiedTicketCredential(fact.ticketId, redemption.subjectPublicIdentity)) throw new Error('This ticket’s signatures have not been verified.')
+        Object.assign(ticket, { status: 'REDEEMED' as const, redeemedAt: redemption.redeemedAt, redeemedBy: event.actorPublicIdentity })
+        // One fact does what AUTHORITY_GRANTED and ADMISSION_CONFIRMED do for a direct admission: the device is ACTIVE at once.
+        const member = { publicIdentity: redemption.subjectPublicIdentity, displayName: invitation.displayName, role: invitation.role, credentialId: fact.ticketId, credentialEventId: event.eventId, issuedAt: redemption.redeemedAt, walletAddress: redemption.walletAddress, ecdhPublicKey: redemption.ecdhPublicKey, admittedBy: ticket.issuedBy, admittedEventId: event.eventId, status: 'ACTIVE' as const, activatedAt: redemption.redeemedAt, activationEventId: event.eventId }
+        state.members = [...state.members.filter(existing => existing.publicIdentity !== member.publicIdentity), member]; return
       }
       case 'RECOVERY_KEY_REGISTERED': {
         const { publicKey, fingerprint } = event.payload as { publicKey?: unknown; fingerprint?: unknown }

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { AuthorizationService, ROLE_PERMISSIONS, issueCredential } from '../auth/authorization'
+import { AuthorizationService, ROLE_PERMISSIONS, issueCredential, ticketCredential } from '../auth/authorization'
 import { MockIdentityProvider } from '../identity/identity'
+import { makeTicketSecret } from '../identity/ticketCode'
+import { deriveTicketKeys, signWithTicketKey } from '../identity/ticketKeys'
 import { TICKET_LIFETIME_MS } from '../private-sync/schema'
 import type { TicketCancelledFact, TicketIssuedFact, TicketRedeemedFact } from '../private-sync/types'
 import { listTickets } from '../private-sync/tickets'
@@ -14,8 +16,9 @@ const ISSUED_AT = '2026-10-02T12:00:00.000Z'
 const expires = (issuedAt = ISSUED_AT) => new Date(Date.parse(issuedAt) + TICKET_LIFETIME_MS).toISOString()
 const TXID = 'ab'.repeat(32), WALLET = 'mrcNu71ztWjAQA6ww9kHiW3zBWSQidHXTQ'
 
+const root = new MockIdentityProvider('unit-root')
 async function unit(roles: Record<string, ArgusRole>) {
-  const root = new MockIdentityProvider('unit-root'), verifier = new MockIdentityProvider('verifier')
+  const verifier = new MockIdentityProvider('verifier')
   const authorization = new AuthorizationService(await root.getPublicIdentity(), verifier)
   const provider = new MockSyncProvider(), replicas: Record<string, ArgusReplica> = {}, identities: Record<string, MockIdentityProvider> = {}
   for (const [name, role] of Object.entries(roles)) {
@@ -28,12 +31,15 @@ async function unit(roles: Record<string, ArgusRole>) {
 }
 const issued = (ticketId: string, role: ArgusRole, overrides: Partial<TicketIssuedFact> = {}): TicketIssuedFact => ({ ticketId, ticketAddress: WALLET, ticketEcdhPublicKey: 'spki', displayName: 'Chris Cadet', role, issuedAt: ISSUED_AT, expiresAt: expires(), funding: { txid: TXID, vout: 0, satoshis: 2000 }, ...overrides })
 const cancelled = (ticketId: string, reason: TicketCancelledFact['reason'] = 'CANCELLED'): TicketCancelledFact => ({ ticketId, reason, cancelledAt: '2026-10-03T12:00:00.000Z', spendTxid: 'cd'.repeat(32) })
-const redeemed = (fact: TicketIssuedFact, subject: string): TicketRedeemedFact => ({
-  ticketId: fact.ticketId,
-  invitation: { invitationVersion: 1, ticketId: fact.ticketId, unitId: 'unit-a', displayName: fact.displayName, role: fact.role, issuedAt: fact.issuedAt, expiresAt: fact.expiresAt, ticketPublicKey: `k1:02${'11'.repeat(32)}`, funding: fact.funding, issuedBy: 'mock:master', signature: 'sig' },
-  issuerCredentials: [],
-  redemption: { kind: 'TICKET_REDEEMED', redemptionVersion: 1, ticketId: fact.ticketId, unitId: 'unit-a', subjectPublicIdentity: subject, ecdhPublicKey: 'spki', walletAddress: WALLET, redeemedAt: '2026-10-04T12:00:00.000Z', signature: 'sig' },
-})
+/** A genuine redemption: the invitation signed by the unit authority, the redemption by the ticket key, binding `subject`. */
+async function redeemed(fact: TicketIssuedFact, subject: string): Promise<TicketRedeemedFact> {
+  const keys = await deriveTicketKeys(makeTicketSecret())
+  const invitation = { invitationVersion: 1 as const, ticketId: fact.ticketId, unitId: 'unit-a', displayName: fact.displayName, role: fact.role, issuedAt: fact.issuedAt, expiresAt: fact.expiresAt, ticketPublicKey: keys.publicIdentity, funding: fact.funding, issuedBy: await root.getPublicIdentity() }
+  const redemption = { kind: 'TICKET_REDEEMED' as const, redemptionVersion: 1 as const, ticketId: fact.ticketId, unitId: 'unit-a', subjectPublicIdentity: subject, ecdhPublicKey: 'spki', walletAddress: WALLET, redeemedAt: '2026-10-04T12:00:00.000Z' }
+  return { ticketId: fact.ticketId, invitation: { ...invitation, signature: await root.sign(canonicalize(invitation)) }, issuerCredentials: [], redemption: { ...redemption, signature: signWithTicketKey(keys.privateKey, canonicalize(redemption)) } }
+}
+/** What the sync provider does for a redemption that came in the spend of its ticket: the verifier checks and holds its credential. */
+async function proven(authorization: AuthorizationService, fact: TicketRedeemedFact) { await authorization.acceptCredential(ticketCredential(fact)); return fact }
 const id = (n: number) => `t-${String(n).padStart(20, '0')}`
 const events = async (replica: ArgusReplica) => (await replica.snapshot()).events.map(record => record.event)
 
@@ -92,40 +98,43 @@ describe('tickets in the unit stream: who may make one, and what the unit then l
   })
 
   it('marks a ticket redeemed from the new member’s own fact, and closes it for good: no cancelling after, no redeeming twice', async () => {
-    const { replicas: { master, newcomer } } = await unit({ master: 'MASTER', newcomer: 'SUPPLY_ASSISTANT' })
+    const { replicas: { master, newcomer }, authorization } = await unit({ master: 'MASTER', newcomer: 'SUPPLY_ASSISTANT' })
     const fact = issued(id(1), 'SUPPLY_ASSISTANT')
     await master.recordTicketIssued(fact)
     await newcomer.receiveMany(await events(master))
-    await expect(newcomer.recordTicketRedeemed(redeemed(fact, 'mock:somebody-else'))).rejects.toThrow(/own device/)
-    await expect(newcomer.recordTicketRedeemed(redeemed({ ...fact, role: 'MASTER' }, 'mock:newcomer'))).rejects.toThrow(/does not match/)
-    await newcomer.recordTicketRedeemed(redeemed(fact, 'mock:newcomer'))
+    await expect(newcomer.recordTicketRedeemed(await redeemed(fact, 'mock:somebody-else'))).rejects.toThrow(/own device/)
+    await expect(newcomer.recordTicketRedeemed(await redeemed({ ...fact, role: 'MASTER' }, 'mock:newcomer'))).rejects.toThrow(/does not match/)
+    // signed correctly, but its credential was never proven by the ticket's spend: refused
+    await expect(newcomer.recordTicketRedeemed(await redeemed(fact, 'mock:newcomer'))).rejects.toThrow(/signatures have not been verified/)
+    await newcomer.recordTicketRedeemed(await proven(authorization, await redeemed(fact, 'mock:newcomer')))
     expect((await newcomer.snapshot()).tickets[0]).toMatchObject({ status: 'REDEEMED', redeemedAt: '2026-10-04T12:00:00.000Z', redeemedBy: 'mock:newcomer' })
-    await expect(newcomer.recordTicketRedeemed(redeemed(fact, 'mock:newcomer'))).rejects.toThrow(/already closed/)
+    expect((await newcomer.snapshot()).members.find(member => member.publicIdentity === 'mock:newcomer')).toMatchObject({ status: 'ACTIVE', role: 'SUPPLY_ASSISTANT', credentialId: id(1), admittedBy: 'mock:master', activatedAt: '2026-10-04T12:00:00.000Z', ecdhPublicKey: 'spki', walletAddress: WALLET })
+    await expect(newcomer.recordTicketRedeemed(await redeemed(fact, 'mock:newcomer'))).rejects.toThrow(/already closed/)
     await master.receiveMany(await events(newcomer))
     await expect(master.recordTicketCancelled(cancelled(id(1)))).rejects.toThrow(/already closed/)
   })
 
   it('ends byte-identical on two devices that receive the same ticket events in different orders, whoever won', async () => {
-    const { replicas: { master, a, b, newcomer } } = await unit({ master: 'MASTER', a: 'SUPPLY_OFFICER', b: 'SUPPLY_OFFICER', newcomer: 'SUPPLY_ASSISTANT' })
+    const { replicas: { master, a, b, newcomer }, authorization } = await unit({ master: 'MASTER', a: 'SUPPLY_OFFICER', b: 'SUPPLY_OFFICER', newcomer: 'SUPPLY_ASSISTANT' })
     const one = issued(id(1), 'SUPPLY_ASSISTANT'), two = issued(id(2), 'SUPPLY_OFFICER')
     await master.recordTicketIssued(one); await master.recordTicketIssued(two)
     await newcomer.receiveMany(await events(master))
-    await newcomer.recordTicketRedeemed(redeemed(one, 'mock:newcomer'))
+    await newcomer.recordTicketRedeemed(await proven(authorization, await redeemed(one, 'mock:newcomer')))
     await master.recordTicketCancelled(cancelled(id(2)))
     const all = [...await events(master), ...(await events(newcomer))]
     await a.receiveMany(all); await b.receiveMany([...all].reverse())
-    const view = async (replica: ArgusReplica) => canonicalize((await replica.snapshot()).tickets)
+    const view = async (replica: ArgusReplica) => canonicalize([(await replica.snapshot()).tickets, (await replica.snapshot()).members])
     expect(await view(a)).toBe(await view(b))
     expect((await a.snapshot()).tickets.map(ticket => [ticket.ticketId, ticket.status])).toEqual([[id(1), 'REDEEMED'], [id(2), 'CANCELLED']])
   })
 
   it('keeps the first of a redemption and a cancellation in the unit’s own order, the same on every device', async () => {
-    const { replicas: { master, newcomer, reader } } = await unit({ master: 'MASTER', newcomer: 'SUPPLY_ASSISTANT', reader: 'SUPPLY_OFFICER' })
+    const { replicas: { master, newcomer, reader }, authorization } = await unit({ master: 'MASTER', newcomer: 'SUPPLY_ASSISTANT', reader: 'SUPPLY_OFFICER' })
     const fact = issued(id(1), 'SUPPLY_ASSISTANT')
     await master.recordTicketIssued(fact)
     await newcomer.receiveMany(await events(master))
     // Both act on the open ticket without seeing the other (as when two devices race): the order of the unit's history decides.
-    await newcomer.recordTicketRedeemed(redeemed(fact, 'mock:newcomer')); await master.recordTicketCancelled(cancelled(id(1)))
+    await newcomer.recordTicketRedeemed(await proven(authorization, await redeemed(fact, 'mock:newcomer'))); await master.recordTicketCancelled(cancelled(id(1)))
     const both = [...await events(master), ...await events(newcomer)]
     await reader.receiveMany(both)
     await master.receiveMany(await events(newcomer)); await newcomer.receiveMany(await events(master))
@@ -162,11 +171,11 @@ describe('the list of tickets with days left and expiry (D3, D6)', () => {
   })
 
   it('lists redeemed and cancelled tickets as such, however long ago they were due, and sorts open ones first', async () => {
-    const { replicas: { master, newcomer } } = await unit({ master: 'MASTER', newcomer: 'SUPPLY_ASSISTANT' })
+    const { replicas: { master, newcomer }, authorization } = await unit({ master: 'MASTER', newcomer: 'SUPPLY_ASSISTANT' })
     const one = issued(id(1), 'SUPPLY_ASSISTANT'), two = issued(id(2), 'SUPPLY_OFFICER'), three = issued(id(3), 'SUPPLY_OFFICER')
     for (const fact of [one, two, three]) await master.recordTicketIssued(fact)
     await master.recordTicketCancelled(cancelled(id(2)))
-    await newcomer.receiveMany(await events(master)); await newcomer.recordTicketRedeemed(redeemed(one, 'mock:newcomer')); await master.receiveMany(await events(newcomer))
+    await newcomer.receiveMany(await events(master)); await newcomer.recordTicketRedeemed(await proven(authorization, await redeemed(one, 'mock:newcomer'))); await master.receiveMany(await events(newcomer))
     const later = new Date(Date.parse(expires()) + 30 * 24 * 60 * 60 * 1000)
     expect(listTickets((await master.snapshot()).tickets, later).map(entry => [entry.ticketId, entry.status, entry.daysLeft])).toEqual([[id(3), 'expired', 0], [id(1), 'redeemed', 0], [id(2), 'cancelled', 0]])
     expect(listTickets((await master.snapshot()).tickets, NOW).map(entry => entry.status)).toEqual(['open', 'redeemed', 'cancelled'])

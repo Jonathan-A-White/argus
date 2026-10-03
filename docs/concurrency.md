@@ -31,7 +31,11 @@ A single phone is never the problem: the client spaces its own requests 350 ms a
 
 * **Staff devices** scan every **15 s** (`ChainTransport.start`, default `intervalMs`), and again at once when the app comes to
   the front or the phone comes back online, or when a command is queued.
-* **Cadet devices** are planned to scan every **5 minutes**. There is no cadet-side build yet; this is the budget it is held to.
+* **Cadet devices** read **one address, their own channel**, and nothing else: once when the cadet opens the app, again when the
+  tab becomes visible, on **Refresh**, and then every **25 minutes** (`CADET_POLL_MS`, `src/cadet/CadetPoller.ts`). One poll is one
+  scan of that address (`readCadetChannel`): the newest gear record and the notices both come out of it. A notice to all cadets is
+  not read from a shared address; staff seal one copy into each cadet's own channel (below), so a phone never reads the unit's
+  shared notices address. (A notice sent to all cadets before this change sits at that shared address and is not shown.)
 
 ## The shared-wifi math (one IP, about 3 requests per second)
 
@@ -40,15 +44,18 @@ A single phone is never the problem: the client spaces its own requests 350 ms a
 | Group | Calculation | Requests per second |
 |---|---|---|
 | 20 staff at 15 s | 20 × 2 ÷ 15 | 2.67 |
-| 250 cadets at 5 min | 250 × 2 ÷ 300 | 1.67 |
-| **Total, idle** | | **4.33** (about 144 % of the limit) |
+| 250 cadets at 25 min | 250 × 2 ÷ 1500 | 0.33 |
+| **Total, idle** | | **3.0** (at the limit, about 100 %) |
 
-So on one shared address the planned cadences are **over the limit before anyone issues anything**. Ways to fit, each by itself:
+So on one shared address the cadences **just fit, and no more**: there is no room left, and an issue day (every staff phone fetching
+every new transaction, below) still goes over it, so it still needs the 429 backoff described further down. The 0.33 counts the two
+requests of a scan. A phone does not remember the transactions it has already read, so each poll also fetches every transaction
+already at the cadet's address (1 each): a cadet with a gear record and one notice costs 4 requests a poll (measured in
+`src/unit/notices.test.ts`), not 2, and the figure grows with the cadet's records. Other ways to make room, each by itself:
 
-* Keep staff at 15 s (2.67 per second) and let cadets scan only every 2 × 250 ÷ (3 − 2.67) ≈ **25 minutes**.
-* Keep cadets at 5 minutes (1.67 per second) and let staff scan only every 20 × 2 ÷ (3 − 1.67) ≈ **30 seconds**.
 * Put the 20 staff phones on mobile data: each phone then has its own address and its own 3 per second. Only the 250 cadets
-  share the wifi (1.67 per second, inside the limit).
+  share the wifi (0.33 per second, far inside the limit).
+* Let staff scan only every 30 seconds (20 × 2 ÷ 30 = 1.33 per second).
 * Use a WoC API key (the client already accepts extra headers) for a higher limit.
 
 Activity makes it worse, not better. Every transaction costs every reading device one fetch. With all 270 devices reading
@@ -57,9 +64,31 @@ second (**about 40 transactions an hour**) even with no polling at all. With the
 19 fetches per transaction: after the 2.67 per second of polling, the 0.33 per second left allows about one transaction a minute.
 During a busy issue day a shared address will be rate-limited, so the client has to cope with it (below).
 
-Levers outside this page's scope: publish several records per transaction (the wallet already allows many records in one
-transaction; today each synced command goes out alone), scan less often when a scan was limited, give cadets read-only views that
-do not need every transaction, mobile data or a key for staff.
+Levers outside this page's scope: scan less often when a scan was limited, let a cadet phone remember the transactions it has read,
+mobile data or a key for staff.
+
+## Several records in one transaction
+
+A transaction carries up to **25 records** (`MAX_RECORDS_PER_TX`) and up to 90 KB of them. Staff devices already batch:
+
+* Issue and return events (and every other synced command) queued together go out up to 25 to a transaction
+  (`ChainTransport.publishOnce`, `src/unit/transport.ts`).
+* **Cadet records** published by a staff device (`CadetPublisher`, `src/unit/cadetPublisher.ts`) batch the same way, one anchor
+  output in the transaction for each cadet's address so each cadet's address lists it: `publishAllCadetRecords` and any drain of the
+  queue (a rollover, an import), and **a notice to all cadets**, which is one sealed record per cadet in that cadet's own channel.
+* Still one record to a transaction: a note to **one** cadet, and a single cadet's record published on its own.
+
+What a notice to all or a publish-all of 250 cadets costs:
+
+| What | Cost |
+|---|---|
+| The staff device publishes 250 records | **10 transactions** of 25 records (250 anchor satoshis and the network fee: measured **354 satoshis** for one notice to 250 cadets on `FakeChain`) |
+| The 250 cadet phones read it | **250 fetches of one transaction each**, one more request in each phone's next poll (it fetches only what is at its own address), spread over the 25 minutes, so about 0.17 per second |
+| Staff devices reading the 10 transactions | 10 fetches per staff device, once: the same as any other new transactions |
+
+A failed batch does not send the records already delivered again: the notice stays queued with the addresses it has reached, and
+a retry sends only the rest.
+
 
 ## When WoC answers 429
 

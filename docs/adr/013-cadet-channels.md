@@ -218,3 +218,15 @@ notices; Replace phone rotates the channel (new key, new address), and the old p
   * **Device notification.** Each new notice goes once to `DeviceNotifier.notify` (title the unit name, body the text) while the app is open and
     notifications are allowed; Settings says where the permission stands and offers "Allow notifications" when the phone has not been asked.
     No Web Push: nothing is shown while the app is closed.
+* **2026-10-03, story mw-kmgi38.15 (the shared-wifi fit; supersedes the shared notices address for reading and writing).** A cadet phone
+  reads **one address, its own channel**: `readCadetChannel(device, api)` is one scan that returns the newest record and the notices; the poll
+  is on open, when the tab is visible, on Refresh and every **25 minutes** (was 5). A notice to all cadets is **one sealed `'notice'` record
+  per cadet in that cadet's own channel** (the shape of a note to one cadet), sent to every cadet who has a channel when it goes out; the
+  unit's shared notices address is no longer written (`sendNotice` no longer makes the notices key; the ticket still carries the notices key
+  and address, unused) and no longer read. A notice to all published before this change sits at the shared address and is not shown.
+  Staff publishes of many records go **up to 25 records (and 90 KB) to a transaction**, with one 1-satoshi anchor output for each channel
+  address in the transaction (`DeviceWallet.prepareRecords` takes `alsoAnchorAddresses`): `publishAllCadetRecords`, any drain of the cadet
+  queue and a notice to all (250 records: 10 transactions). A note to one cadet and a single record stay one transaction. A notice that
+  did not reach everyone stays queued with the addresses it has reached (`argus.cadet-publish.v1.<unitId>.notices.delivered`, addresses
+  only) and a retry sends only the rest. Correlation of a notice's record is `notice:<noticeId>:<channelAddress>`.
+

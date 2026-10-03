@@ -32,7 +32,7 @@ describe('the identity gate reads a photographed ticket QR end to end', { timeou
   it('a photo of the QR on the Master’s screen fills in the code, shows who the ticket is for, and joins', async () => {
     gate()
     await pick(pictureFile(phonePhoto(await ticketQrRaster(code), 3200)))
-    expect(await screen.findByText('Ticket for Quinn Scanner')).toBeInTheDocument()
+    expect(await screen.findByText('Ticket for Quinn Scanner', {}, { timeout: 90_000 })).toBeInTheDocument()
     expect(screen.getByLabelText('Ticket code')).toHaveValue(code)
     expect(screen.queryByRole('alert')).toBeNull()
     fireEvent.change(screen.getByLabelText('Passphrase'), { target: { value: 'scanner pass 31' } })

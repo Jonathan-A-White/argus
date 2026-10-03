@@ -7,7 +7,7 @@ import { WhatsOnChainApi } from '../chain/woc'
 import { canonicalize } from '../distributed/canonical'
 import { DistributedAppController, type ArgusAppProjection } from '../distributed/appIntegration'
 import { isAuthorBoundEventId, unsignedEventJson } from '../distributed/replica'
-import type { ArgusRole, AuthorityCredential, SignedArgusEvent } from '../distributed/types'
+import type { ArgusRole, AuthorityCredential, NoticeAudience, SignedArgusEvent } from '../distributed/types'
 import { decodeTicketCode, encodeTicketCode, makeTicketSecret } from '../identity/ticketCode'
 import { deriveTicketKeys, newTicketEcdhKeyPair, newTicketId } from '../identity/ticketKeys'
 import { unsignedKeyGrantFields, unwrapEpochKeyFromGrant, wrapEpochKeyForGrant } from '../private-sync/keyGrant'
@@ -62,7 +62,7 @@ const cadetIdsOf = (event: SignedArgusEvent, state: Awaited<ReturnType<Distribut
   const ids = new Set<string>()
   if (event.eventType === 'CADET_CHANNEL_CREATED' || event.eventType === 'CADET_CHANNEL_ROTATED') ids.add(event.entityId)
   else if (event.eventType === 'CADET_TICKET_ISSUED') { if (typeof event.payload.cadetId === 'string') ids.add(event.payload.cadetId) }
-  else if (!/^CADET_(CHANNEL|NOTICES|TICKET)/.test(event.eventType)) {
+  else if (!/^CADET_(CHANNEL|NOTICES|TICKET)/.test(event.eventType) && event.eventType !== 'NOTICE_SENT') {
     if (typeof event.payload.cadetId === 'string') ids.add(event.payload.cadetId)
     for (const cadet of state.cadets) if (cadet.cadetId === event.entityId || cadet.appliedEventIds.includes(event.eventId)) ids.add(cadet.cadetId)
     for (const need of state.stillNeeded) if (need.requirementId === event.entityId || need.appliedEventIds.includes(event.eventId)) ids.add(need.cadetId)
@@ -99,6 +99,13 @@ export class UnitRuntime {
     this.cadetPublisher = new CadetPublisher({
       channelFor: async cadetId => { const channel = (await controller.technicalState()).cadetChannels.find(entry => entry.cadetId === cadetId); return channel && { key: channel.channelKey, address: channel.channelAddress } },
       viewFor: cadetId => controller.cadetViewFor(cadetId),
+      noticeFor: async noticeId => {
+        const state = await controller.technicalState(), notice = state.notices.find(entry => entry.noticeId === noticeId)
+        if (!notice) return undefined
+        const channel = notice.audience === 'all' ? state.noticesChannel && { key: state.noticesChannel.key, address: state.noticesChannel.address } : state.cadetChannels.filter(entry => entry.cadetId === (notice.audience as { cadetId: string }).cadetId).map(entry => ({ key: entry.channelKey, address: entry.channelAddress }))[0]
+        const sender = state.members.find(member => member.publicIdentity === notice.sentBy)
+        return channel && { channel, record: { noticeId, text: notice.text, sentAt: notice.sentAt, from: sender?.displayName ?? 'Staff' } }
+      },
       cadetIdsFor: async event => this.revoked ? [] : cadetIdsOf(event, await controller.technicalState()),
       wallet, storage: options.storage ?? localStorage, storageKey: `argus.cadet-publish.v1.${device.record.unit!.unitId}`,
     })
@@ -477,6 +484,26 @@ export class UnitRuntime {
     let joined: CadetJoinedRecord | undefined
     for (const entry of records) if (entry.kind === 'joined') { try { joined = parseCadetJoinedRecord(entry.plaintext) } catch { /* damaged: not a phone */ } }
     return { cadetId, channelAddress: channel.channelAddress, records, ...(joined ? { joined } : {}) }
+  }
+
+  /**
+   * Master, Instructor or Supply Officer (notices.send): a notice to every cadet (sealed to the unit's notices channel) or to one cadet
+   * (sealed to their channel), ADR 013 / mw-kmgi38.5. Records NOTICE_SENT in the unit log (which cadets never read), then publishes the
+   * sealed text from this device's wallet through the publisher's queue, one record in one transaction. A cadet with no channel is refused
+   * with nothing recorded. When the network does not take the record now, the notice stays queued and goes out later (`published` false).
+   */
+  async sendNotice(audience: NoticeAudience, text: string): Promise<{ noticeId: string; published: boolean }> {
+    if (this.revoked) throw new Error('Your access to this unit was removed.')
+    this.authorization.require(this.device.record.signingIdentity, 'notices.send')
+    if (audience === 'all' && !(await this.controller.technicalState()).noticesChannel) await this.controller.createNoticesKey()
+    const known = new Set((await this.controller.technicalState()).notices.map(notice => notice.noticeId))
+    const projection = await this.controller.sendNotice(audience, text), noticeId = projection.notices.find(notice => !known.has(notice.noticeId))!.noticeId
+    this.emit(projection)
+    this.cadetPublisher.enqueueNotice(noticeId)
+    await this.cadetPublisher.run().catch(() => undefined)
+    const published = !this.cadetPublisher.queuedNotices().includes(noticeId)
+    void this.transport.poke()
+    return { noticeId, published }
   }
 
   /**

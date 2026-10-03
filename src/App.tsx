@@ -49,7 +49,11 @@ import { StandardIssueGaps } from "./features/readiness/StandardIssueGaps";
 import type { SyncSnapshot } from "./stage3/readinessTypes";
 import { CalendarView } from "./features/calendar";
 import { BundleEditorPanel } from "./features/bundles";
-import { ExportPanel, RolloverPanel, RosterImportPanel } from "./features/admin";
+import {
+  ExportPanel,
+  RolloverPanel,
+  RosterImportPanel,
+} from "./features/admin";
 import { ActivityView } from "./features/activity";
 import { cadetLabel } from "./stage3/domain";
 import { UnitGate } from "./unit/screens/UnitGate";
@@ -66,13 +70,7 @@ import type {
 } from "./unit/runtime";
 
 export type Tab =
-  | "home"
-  | "count"
-  | "inventory"
-  | "cadets"
-  | "calendar"
-  | "activity"
-  | "more";
+  "home" | "count" | "inventory" | "cadets" | "calendar" | "activity" | "more";
 type Panel =
   | "cadet-issue"
   | "cadet-return"
@@ -136,10 +134,7 @@ export default function App({
   )
     return <DemoApp {...rest} />;
   return (
-    <UnitGate
-      runtimeOptions={runtimeOptions}
-      {...(storage ? { storage } : {})}
-    >
+    <UnitGate runtimeOptions={runtimeOptions} {...(storage ? { storage } : {})}>
       {(runtime, lock) => (
         <AuthenticatedApp
           controller={runtime.controller}
@@ -351,7 +346,10 @@ function AuthenticatedApp({
     setTab(target.tab);
     setPanel(target.panel ?? null);
     const exact = Boolean(
-      target.calendarEventId || target.cadetId || target.itemId || target.filter,
+      target.calendarEventId ||
+      target.cadetId ||
+      target.itemId ||
+      target.filter,
     );
     setFocus((previous) =>
       exact ? { target, nonce: (previous?.nonce ?? 0) + 1 } : undefined,
@@ -414,15 +412,16 @@ function AuthenticatedApp({
       )}
       <main className="main-stage">
         <div className={`environment-banner ${mode}`} role="note">
-          <strong>{mode === "testnet" ? "BSV TESTNET" : "MOCK BLOCKCHAIN"}</strong>
+          <strong>
+            {mode === "testnet" ? "BSV TESTNET" : "MOCK BLOCKCHAIN"}
+          </strong>
           <span>Development Environment · No Production Transactions</span>
         </div>
         {revoked && (
           <div className="workflow-error" role="alert">
             A Master removed your access to {status?.unitName}. This device
-            still shows what it already had, but nothing new you record will
-            be accepted, and it cannot read anything written after your
-            removal.
+            still shows what it already had, but nothing new you record will be
+            accepted, and it cannot read anything written after your removal.
           </div>
         )}
         <header className="topbar">
@@ -637,7 +636,11 @@ function AuthenticatedApp({
         />
       )}
       {panel === "export" && (
-        <ExportPanel projection={projection} notify={notify} close={() => setPanel(null)} />
+        <ExportPanel
+          projection={projection}
+          notify={notify}
+          close={() => setPanel(null)}
+        />
       )}
       {panel === "needed" && (
         <NeededPanel
@@ -891,9 +894,16 @@ function NeededPanel({
         {requirements.length ? (
           requirements.map((n) => {
             const count = Math.max(0, n.quantityNeeded - n.quantityFulfilled);
-            const catalogId = n.catalogId ?? projection.inventory.find(item => item.entityId === n.itemId)?.catalogId ?? projection.catalog.find(item => item.name === n.displayLabel)?.catalogId;
+            const catalogId =
+              n.catalogId ??
+              projection.inventory.find((item) => item.entityId === n.itemId)
+                ?.catalogId ??
+              projection.catalog.find((item) => item.name === n.displayLabel)
+                ?.catalogId;
             const availableSizes = catalogId
-              ? projection.inventory.filter(item => item.catalogId === catalogId && item.active).map(item => item.variant)
+              ? projection.inventory
+                  .filter((item) => item.catalogId === catalogId && item.active)
+                  .map((item) => item.variant)
               : [];
             const cadet = projection.cadets.find(
               (c) => c.cadetId === n.cadetId,

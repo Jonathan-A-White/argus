@@ -130,3 +130,41 @@ notices; Replace phone rotates the channel (new key, new address), and the old p
   unit's Master needs a fresh credential before it can make channels: left to a later story (see mw-kmgi38.1's closing comment).
 * Channel addresses are new addresses on WhatsOnChain: a cadet phone reads two, never the unit anchor, so 250 cadets add
   250 small readers, not 250 readers of the unit's history.
+
+## Amendments
+
+* **2026-10-03, story mw-kmgi38.2 (the cadet ticket).** A cadet's phone joins by a ticket, as staff do (ADR 012), but the ticket opens
+  only the cadet's channel and the notices channel:
+  * **The CADET package** (`CadetTicketPackage`, `src/private-sync/types.ts`, validated by `parseCadetTicketPackage`) is the TICKET
+    record's variant `kind: 'CADET'` at the ticket address, sealed under the ticket's wrapping key exactly as ADR 012 says:
+    `invitation {invitationVersion, ticketId, unitId, role: 'CADET', cadetId, displayName, issuedAt, expiresAt, ticketPublicKey, funding,
+    returnAddress}`, `unit {unitId, unitName}`, `channelKey`, `channelAddress`, `noticesKey`, `noticesAddress`. No epoch key, no ticket
+    ECDH key, no credential chain, no authority. The invitation is **not signed**: the wrapping key, which only the code gives, is its
+    authenticity, the phone has no authority to check a signature against, and nothing the phone writes ever enters the unit's history.
+    The phone does check that the ticket key is the code's and that each address is the one its key gives.
+  * **Issuing** is `UnitRuntime.issueCadetTicket(cadetId)` (`cadets.admit`; a Supply Assistant is refused before anything is written or
+    paid). It makes the cadet's channel and the unit's notices key when there are none, pays F (default `CADET_TICKET_SATOSHIS` = 500)
+    and T as for a staff ticket, seals the code in the issuer's vault as `ticket:<ticketId>`, and records **CADET_TICKET_ISSUED**
+    `{ticketId, cadetId, ticketAddress, channelAddress, issuedAt, expiresAt, funding}` (permission `cadets.admit`). The fold keeps it in
+    `cadetTickets`, apart from staff `tickets`, so no unit key rotation ever wraps a key to a cadet ticket; it requires the cadet and a
+    channel, a lifetime of at most a week, and a new ticket ID. `reissueCadetTicket(cadetId)` (Replace phone) rotates the channel with
+    reason `Replace phone` and then issues.
+  * **Redeeming** is `redeemCadetTicket(code, {passphrase, deviceLabel})` (`src/unit/cadetTicket.ts`). Transaction R spends F with the
+    ticket key and carries one `'C'` record, a **CADET_JOINED** `{kind, joinedAt, deviceLabel}` sealed to the cadet's channel under
+    the new channel record kind **'joined'**, with 1-satoshi markers to the ticket address and the channel address; the rest of the
+    starter satoshis go back to the issuer's wallet (`returnAddress`). The phone needs no coins and gets no wallet. The network decides
+    single use as in ADR 012; refusals use the same words (`TICKET_REFUSALS`). R is sealed in the phone's record before it is sent, so an
+    unanswered broadcast is PENDING and `resumeCadetRedemption` resends the same bytes.
+  * **The phone's record** is a separate vault entry, `argus.cadet.v1` (`src/unit/vault.ts`): PBKDF2 + AES-GCM like the device vault,
+    holding a `check` text, the redemption in progress, and then the `CadetDevice` {cadetId, displayName, unit, channelKey,
+    channelAddress, noticesKey, noticesAddress, joinedAt}. It has no signing key: nothing the phone writes is signed. Erasing the device
+    removes it.
+  * **Staff read a cadet's channel on demand**: `UnitRuntime.readCadetChannel(cadetId)` fetches that one address
+    (`readChannelRecords`, `src/unit/channelReader.ts`) and returns the records that open and the latest CADET_JOINED;
+    `cadetPhoneLine` gives the drawer's line, "Phone: joined <date>" or "No phone yet". After Replace phone the new channel is empty,
+    so it reads "No phone yet" until the new phone joins.
+  * Consequence: F, T and R are paid from or back to the issuer's wallet, which also pays unit records, so the chain links a ticket's
+    address and, through R, the cadet's channel address to that wallet and so to the unit (publishing records to a channel from staff
+    wallets, mw-kmgi38.3, would link it anyway). Only addresses are linked: names, codes and gear stay inside ciphertext.
+  * Not in this story: cancelling or sweeping an unused cadet ticket (its code stays sealed on the issuer's device for that), and the
+    gate telling a staff code from a cadet code (`readTicket` and `readCadetTicket` each refuse the other's code as damaged).

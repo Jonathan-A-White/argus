@@ -10,7 +10,8 @@ import { DEFAULT_SETTINGS, LocalSettingsStorage, SETTINGS_KEY } from '../../sett
 import { GENESIS_CATALOG } from '../../stage3/domain'
 import { MemoryLedgerStore } from '../../unit/ledgerStore'
 import { UnitRuntime } from '../../unit/runtime'
-import { acceptAdmission, createJoiningDevice, createMasterDevice, encodeJoinRequest } from '../../unit/vault'
+import { joinByTicket } from '../../test/joinByTicket'
+import { createMasterDevice } from '../../unit/vault'
 import { ActivityView } from './ActivityView'
 import { describeActivity } from './activityModel'
 
@@ -134,10 +135,11 @@ describe('Activity access (spec §4 audit.read)', { timeout: 120_000 }, () => {
   it('is hidden from a Supply Assistant — no tab, no dashboard tile, and a saved default of Activity lands on Home', async () => {
     const chain = new FakeChain()
     const options = () => ({ api: chain, ledger: new MemoryLedgerStore(), walletStore: new MemoryWalletStateStore(), storage: memoryStorage() })
-    const master = await UnitRuntime.open(await createMasterDevice({ passphrase: 'supply closet 42', displayName: 'Chief', unitName: 'Bethel NJROTC' }, memoryStorage()), options())
+    const masterDevice = await createMasterDevice({ passphrase: 'supply closet 42', displayName: 'Chief', unitName: 'Bethel NJROTC' }, memoryStorage())
+    chain.fund(masterDevice.record.walletAddress, 100_000, { confirmed: true })
+    const master = await UnitRuntime.open(masterDevice, options())
     const assistantStorage = memoryStorage()
-    const pending = await createJoiningDevice({ passphrase: 'another pass 77', displayName: 'Casey' }, assistantStorage)
-    await acceptAdmission(pending, (await master.admit(await encodeJoinRequest(pending), 'SUPPLY_ASSISTANT')).admissionCode, assistantStorage)
+    await joinByTicket(master, chain, 'Casey', 'SUPPLY_ASSISTANT', { store: assistantStorage })
     const preferences = memoryStorage()
     preferences.setItem(SETTINGS_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, defaultSection: 'activity' }))
 

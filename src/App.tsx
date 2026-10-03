@@ -17,6 +17,7 @@ import {
   Shirt,
   UserPlus,
   Users,
+  Ticket,
   Wallet,
   Wifi,
 } from "lucide-react";
@@ -57,6 +58,7 @@ import {
 import { ActivityView } from "./features/activity";
 import { cadetLabel } from "./stage3/domain";
 import { UnitGate } from "./unit/screens/UnitGate";
+import { TicketsPanel } from "./unit/screens/TicketsPanel";
 import { MembersPanel, WalletPanel } from "./unit/screens/UnitPanels";
 import { roleLabel, syncLabel, syncOutcome } from "./unit/screens/labels";
 import {
@@ -77,6 +79,7 @@ type Panel =
   | "bundles"
   | "needed"
   | "members"
+  | "tickets"
   | "wallet"
   | "conflicts"
   | "diagnostics"
@@ -567,6 +570,11 @@ function AuthenticatedApp({
           <CommandCenter
             projection={projection}
             hasRuntime={Boolean(runtime)}
+            canMakeTickets={Boolean(
+              runtime &&
+              !revoked &&
+              (role === "MASTER" || role === "INSTRUCTOR"),
+            )}
             can={can}
             open={setPanel}
             settings={() => setSettingsOpen(true)}
@@ -673,6 +681,14 @@ function AuthenticatedApp({
           notify={notify}
         />
       )}
+      {panel === "tickets" && runtime && (
+        <TicketsPanel
+          runtime={runtime}
+          projection={projection}
+          close={() => setPanel(null)}
+          notify={notify}
+        />
+      )}
       {panel === "wallet" && runtime && status && (
         <WalletPanel
           runtime={runtime}
@@ -715,6 +731,7 @@ type CommandAction = [Exclude<Panel, null>, string, string, typeof Activity];
 function CommandCenter({
   projection,
   hasRuntime,
+  canMakeTickets,
   can,
   open,
   settings,
@@ -722,6 +739,7 @@ function CommandCenter({
 }: {
   projection: ArgusAppProjection;
   hasRuntime: boolean;
+  canMakeTickets: boolean;
   can: (permission: ArgusPermission) => boolean;
   open: (p: Panel) => void;
   settings: () => void;
@@ -732,9 +750,19 @@ function CommandCenter({
         [
           "members",
           "Members & access",
-          "Admit people with a join code, see who is in the unit",
+          "See who is in the unit, change roles, remove people",
           KeyRound,
         ],
+        ...(canMakeTickets
+          ? ([
+              [
+                "tickets",
+                "Tickets",
+                "Make a ticket for a new person, see tickets out, cancel one",
+                Ticket,
+              ],
+            ] as CommandAction[])
+          : []),
         [
           "wallet",
           "Wallet & sync",

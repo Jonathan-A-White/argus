@@ -1,13 +1,9 @@
 import { PrivateKey } from '@bsv/sdk'
 import { ROLE_PERMISSIONS, issueCredential, type TicketCredential } from '../auth/authorization'
 import { DEFAULT_WALLET_DB_NAME } from '../chain/walletStore'
-import { canonicalize } from '../distributed/canonical'
 import type { ArgusRole, AuthorityCredential } from '../distributed/types'
-import { decodeCode, encodeCode } from '../identity/codes'
 import { WebCryptoIdentityProvider, type ArgusIdentityProvider } from '../identity/identity'
-import { unsignedKeyGrantFields, unwrapEpochKeyFromGrant, wrapEpochKeyForGrant } from '../private-sync/keyGrant'
-import { parseKeyGrantRecord } from '../private-sync/schema'
-import type { KeyGrantRecord, TicketPackage } from '../private-sync/types'
+import type { TicketPackage } from '../private-sync/types'
 import { IndexedDbLedgerStore } from './ledgerStore'
 
 /**
@@ -22,8 +18,8 @@ import { IndexedDbLedgerStore } from './ledgerStore'
  *   ticketEcdh:* — a device admitted by ticket: the ticket's own ECDH key, which opens unit keys granted to the ticket while it was open
  * Each secret is AES-256-GCM ciphertext under a key derived from the passphrase
  * (PBKDF2-SHA-256, 600k iterations) with the secret's name as additional data. Nothing here is
- * usable without the passphrase, and nothing secret ever leaves the device: members are admitted
- * by exchanging public codes, never by copying a key.
+ * usable without the passphrase, and nothing secret ever leaves the device: people join by a ticket
+ * (docs/adr/012), never by copying a key.
  */
 export const DEVICE_VAULT_STORAGE_KEY = 'argus.device.v2'
 const KDF_ITERATIONS = 600_000
@@ -64,8 +60,6 @@ export type UnlockedDevice = {
   /** Kept only in memory while unlocked so an admission can be stored without re-entering the passphrase. */
   vaultKey: CryptoKey
 }
-export type JoinRequest = { identity: string; ecdh: string; wallet: string; name: string }
-export type AdmissionPackage = { unit: Pick<UnitInfo, 'unitId' | 'unitName' | 'authorityIdentity'>; credential: AuthorityCredential; grantor: { identity: string; ecdh: string; credential: AuthorityCredential }; grants: KeyGrantRecord[]; currentEpoch: string }
 /** Everything a unit needs to get its authority back after the Master device is lost. Only ever stored encrypted under a recovery passphrase. */
 type RecoveryPayload = { format: 1; unit: Pick<UnitInfo, 'unitId' | 'unitName' | 'authorityIdentity'>; authorityJwk: string; recoveryEcdhJwk: string; recoveryPublicKey: string; unitKeys: Record<string, string>; currentEpoch: string; createdAt: string }
 export const RECOVERY_FILE_PREFIX = 'ARGUS-RECOVERY-1:'
@@ -109,7 +103,6 @@ async function newEcdhKey() {
   const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']) as CryptoKeyPair
   return { publicKey: b64url(new Uint8Array(await crypto.subtle.exportKey('spki', pair.publicKey))), jwk: JSON.stringify(await crypto.subtle.exportKey('jwk', pair.privateKey)) }
 }
-const importEcdhPublic = (spki: string) => crypto.subtle.importKey('spki', buffer(fromB64url(spki)), { name: 'ECDH', namedCurve: 'P-256' }, false, [])
 const importEcdhPrivate = (jwk: string) => crypto.subtle.importKey('jwk', JSON.parse(jwk) as JsonWebKey, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits'])
 /** The Master keeps its unit key extractable only so it can wrap it for new members; members import it non-extractable. */
 const importUnitKey = (raw: string, extractable: boolean) => crypto.subtle.importKey('raw', buffer(fromB64url(raw)), { name: 'AES-GCM' }, extractable, ['encrypt', 'decrypt'])
@@ -149,7 +142,7 @@ async function createDevice(input: { passphrase: string; displayName: string; ma
 }
 /** First device of a unit: creates the unit, its authority key, the first unit data key, and self-issues a MASTER credential. */
 export const createMasterDevice = (input: { passphrase: string; displayName: string; unitName: string; walletWif?: string }, storage: Storage2 = localStorage) => createDevice({ passphrase: input.passphrase, displayName: input.displayName, master: { unitName: input.unitName }, ...(input.walletWif ? { walletWif: input.walletWif } : {}) }, storage)
-/** Any other device: creates its own keys and waits for the Master's admission code. */
+/** Any other device: creates its own keys, then redeems an admission ticket (ticketRedemption.ts) to join the unit. */
 export const createJoiningDevice = (input: { passphrase: string; displayName: string; walletWif?: string }, storage: Storage2 = localStorage) => createDevice(input, storage)
 
 const failures = { count: 0, blockedUntil: 0 }
@@ -170,70 +163,6 @@ export async function unlockDevice(record: DeviceVaultRecord, passphrase: string
   const ticketEcdhName = Object.keys(record.secrets).find(name => name.startsWith(TICKET_ECDH_PREFIX))
   const ticketEcdh = ticketEcdhName ? { ticketId: ticketEcdhName.slice(TICKET_ECDH_PREFIX.length), privateKey: await importEcdhPrivate(await unseal(vaultKey, ticketEcdhName, record.secrets[ticketEcdhName])) } : undefined
   return { record, identity, ...(authoritySigner ? { authoritySigner } : {}), ecdhPrivateKey, walletWif, unitKeys, ...(recoveryEcdhPrivateKey ? { recoveryEcdhPrivateKey } : {}), ...(ticketEcdh ? { ticketEcdh } : {}), vaultKey }
-}
-
-/** Public, non-secret code a joining device shows so the Master can admit it. Safe to text, email or read aloud. */
-export const encodeJoinRequest = (device: UnlockedDevice) => encodeCode('JOIN', { identity: device.record.signingIdentity, ecdh: device.record.ecdhPublicKey, wallet: device.record.walletAddress, name: device.record.displayName } satisfies JoinRequest)
-export async function decodeJoinRequest(code: string): Promise<JoinRequest> {
-  const value = await decodeCode<JoinRequest>('JOIN', code)
-  if (typeof value?.identity !== 'string' || !value.identity.startsWith('p256:') || typeof value.ecdh !== 'string' || typeof value.wallet !== 'string' || typeof value.name !== 'string') throw new Error('This is not a valid join code.')
-  await importEcdhPublic(value.ecdh).catch(() => { throw new Error('This join code is damaged.') })
-  return { ...value, name: validateDisplayName(value.name) }
-}
-
-/**
- * The Master admits a person: signs a credential for their public identity and wraps every unit
- * data key to their ECDH public key. The returned admission code contains no usable secret — only
- * the device that generated the join code can unwrap it — so it can travel over any channel.
- */
-export async function admitMember(master: UnlockedDevice, joinCode: string, role: ArgusRole, options: { expiresAt?: string; displayName?: string; storage?: Storage2 } = {}) {
-  const { record } = master
-  if (record.role !== 'MASTER' || !record.unit || !record.credential) throw new Error('Only a unit Master can admit people.')
-  if (role === 'MASTER' && !master.authoritySigner) throw new Error('Only the unit authority can make someone a Master.')
-  const request = await decodeJoinRequest(joinCode)
-  if (request.identity === record.signingIdentity) throw new Error('That is this device’s own join code.')
-  const displayName = validateDisplayName(options.displayName ?? request.name)
-  // The original Master signs with the unit authority key; a delegated Master signs with its own key, backed by its authority-signed Master credential.
-  const credential = await issueCredential(master.authoritySigner ?? master.identity, { subjectPublicIdentity: request.identity, role, permissions: [...ROLE_PERMISSIONS[role]], issuedAt: new Date().toISOString(), ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}) })
-  const granteeEcdh = await importEcdhPublic(request.ecdh), grants: KeyGrantRecord[] = []
-  for (const epochId of record.unit.epochs) {
-    const epochKey = master.unitKeys.get(epochId); if (!epochKey) throw new Error(`This device is missing unit key ${epochId}.`)
-    grants.push(await wrapEpochKeyForGrant({ epochKey, organizationId: record.unit.unitId, epochId, granteePublicIdentity: request.identity, grantorPublicIdentity: record.signingIdentity, grantorEcdhPrivateKey: master.ecdhPrivateKey, granteeEcdhPublicKey: granteeEcdh, grantorSigner: master.identity }))
-  }
-  const admission: AdmissionPackage = { unit: { unitId: record.unit.unitId, unitName: record.unit.unitName, authorityIdentity: record.unit.authorityIdentity }, credential, grantor: { identity: record.signingIdentity, ecdh: record.ecdhPublicKey, credential: record.credential }, grants, currentEpoch: record.unit.currentEpoch }
-  // Members' names and wallets are not kept in this device record (it is plaintext storage); the unit's encrypted history holds them.
-  return { admissionCode: await encodeCode('ADMIT', admission), credential, displayName, walletAddress: request.wallet, ecdhPublicKey: request.ecdh }
-}
-
-const unsignedJson = <T extends { signature: string }>(value: T) => { const rest: Partial<T> = { ...value }; delete rest.signature; return canonicalize(rest) }
-/** A joining device verifies its admission code, pins the unit authority, unwraps the unit key(s) and stores them sealed under its passphrase key. */
-export async function acceptAdmission(device: UnlockedDevice, admissionCode: string, storage: Storage2 = localStorage): Promise<UnlockedDevice> {
-  const admission = await decodeCode<AdmissionPackage>('ADMIT', admissionCode)
-  const { record } = device
-  if (!admission?.unit?.unitId || !admission.credential || !admission.grantor?.credential || !Array.isArray(admission.grants)) throw new Error('This admission code is damaged.')
-  if (record.unit && record.unit.unitId !== admission.unit.unitId) throw new Error('This device already belongs to a different unit.')
-  const { credential, grantor } = admission, authority = admission.unit.authorityIdentity
-  if (credential.subjectPublicIdentity !== record.signingIdentity) throw new Error('This admission code was made for a different device.')
-  if (grantor.credential.issuedBy !== authority || grantor.credential.subjectPublicIdentity !== grantor.identity || grantor.credential.role !== 'MASTER' || !(await device.identity.verify(unsignedJson(grantor.credential), grantor.credential.signature, authority))) throw new Error('The admitting device is not a Master of this unit.')
-  // Signed by the unit authority, or by the delegated Master who admitted this device (never a Master credential: only the authority makes Masters).
-  const signedByGrantor = credential.issuedBy === grantor.identity && credential.role !== 'MASTER'
-  if ((credential.issuedBy !== authority && !signedByGrantor) || !(await device.identity.verify(unsignedJson(credential), credential.signature, credential.issuedBy))) throw new Error('This admission code is not signed by the unit authority.')
-  const grantorEcdh = await importEcdhPublic(grantor.ecdh), secrets = { ...record.secrets }, epochs: string[] = []
-  for (const raw of admission.grants) {
-    const grant = parseKeyGrantRecord(raw)
-    if (grant.organizationId !== admission.unit.unitId || grant.granteePublicIdentity !== record.signingIdentity || grant.grantorPublicIdentity !== grantor.identity) throw new Error('This admission code contains a key for someone else.')
-    if (!(await device.identity.verify(canonicalize(unsignedKeyGrantFields(grant)), grant.signature, grantor.identity))) throw new Error('A unit key in this admission code failed its signature check.')
-    const key = await unwrapEpochKeyFromGrant(grant, { granteeEcdhPrivateKey: device.ecdhPrivateKey, grantorEcdhPublicKey: grantorEcdh, extractable: true })
-    const raw32 = b64url(new Uint8Array(await crypto.subtle.exportKey('raw', key)))
-    secrets[epochSecretName(grant.epochId)] = await seal(device.vaultKey, epochSecretName(grant.epochId), raw32)
-    epochs.push(grant.epochId)
-  }
-  if (!epochs.includes(admission.currentEpoch)) throw new Error('This admission code is missing the current unit key.')
-  const updated: DeviceVaultRecord = { ...record, secrets, role: credential.role, credential, ...(signedByGrantor ? { issuerCredential: grantor.credential } : {}), unit: { unitId: admission.unit.unitId, unitName: admission.unit.unitName, authorityIdentity: authority, currentEpoch: admission.currentEpoch, epochs: [...new Set(epochs)], joinedAt: new Date().toISOString() } }
-  saveDeviceVault(updated, storage)
-  const unitKeys = new Map<string, CryptoKey>()
-  for (const epoch of updated.unit!.epochs) unitKeys.set(epoch, await importUnitKey(await unseal(device.vaultKey, epochSecretName(epoch), secrets[epochSecretName(epoch)]), credential.role === 'MASTER'))
-  return { ...device, record: updated, unitKeys }
 }
 
 /** Next unit key generation: e<n+1>-<random>, so two Masters rotating at the same moment never collide. The key is extractable only so it can be wrapped for members. */

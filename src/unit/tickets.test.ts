@@ -11,20 +11,17 @@ import { openTicketRecord } from '../private-sync/ticketRecord'
 import { Transaction } from '@bsv/sdk'
 import { MemoryLedgerStore } from './ledgerStore'
 import { DEFAULT_MEMBER_TOP_UP_SATOSHIS, UnitRuntime } from './runtime'
-import { acceptAdmission, createJoiningDevice, createMasterDevice, encodeJoinRequest, rawUnitKeys, readTicketSecret, type UnlockedDevice } from './vault'
+import { joinByTicket } from '../test/joinByTicket'
+import { createMasterDevice, rawUnitKeys, readTicketSecret, type UnlockedDevice } from './vault'
 import type { ArgusRole } from '../distributed/types'
 
 const storage = () => { const values = new Map<string, string>(); return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) }, removeItem: (key: string) => { values.delete(key) } } }
 const open = (device: UnlockedDevice, chain: FakeChain) => UnitRuntime.open(device, { api: chain, ledger: new MemoryLedgerStore(), walletStore: new MemoryWalletStateStore(), storage: storage() })
 const DAY = 24 * 60 * 60 * 1000
 
-async function join(master: UnitRuntime, chain: FakeChain, name: string, role: ArgusRole, topUp = 30_000) {
-  const pending = await createJoiningDevice({ passphrase: 'another pass 77', displayName: name }, storage())
-  const admitted = await master.admit(await encodeJoinRequest(pending), role, { topUpSatoshis: topUp })
-  expect(admitted.topUpError).toBeUndefined()
-  const device = await acceptAdmission(pending, admitted.admissionCode, storage())
-  const runtime = await open(device, chain)
-  await runtime.confirmAdmission(); await runtime.syncNow(); await master.syncNow(); chain.mine()
+async function join(master: UnitRuntime, chain: FakeChain, name: string, role: ArgusRole, satoshis = 30_000) {
+  const { runtime, device } = await joinByTicket(master, chain, name, role, { satoshis })
+  await runtime.syncNow(); await master.syncNow(); chain.mine()
   return { runtime, device }
 }
 
@@ -80,7 +77,7 @@ describe('issuing and cancelling admission tickets (ADR 012)', { timeout: 180_00
       expect(chain.spenderOf(invitation.funding.txid, 0)).toBeUndefined()
     }
     await master.syncNow()
-    const listed = await master.tickets()
+    const listed = (await master.tickets()).filter(entry => entry.status === 'open')
     expect(listed.map(entry => [entry.role, entry.status, entry.daysLeft])).toEqual([['MASTER', 'open', 7], ['INSTRUCTOR', 'open', 7], ['SUPPLY_ASSISTANT', 'open', 7]])
   })
 
@@ -265,6 +262,6 @@ describe('tickets when the money or the network is not there', { timeout: 180_00
     expect(await secondDevice.identity.verify(canonicalize(unsigned), signature, record.invitation.issuedBy)).toBe(true)
     expect(record.issuerCredentials).toEqual([secondDevice.record.credential])
     await expect(second.issueTicket('Jo Kay', 'MASTER')).rejects.toThrow(/Only the unit authority/)
-    expect((await second.tickets()).map(entry => entry.role)).toEqual(['INSTRUCTOR'])
+    expect((await second.tickets()).filter(entry => entry.status === 'open').map(entry => entry.role)).toEqual(['INSTRUCTOR'])
   })
 })

@@ -20,7 +20,7 @@ import { IndexedDbLedgerStore, type LedgerStore } from './ledgerStore'
 import { UnitEventSyncProvider } from './syncProvider'
 import { ChainTransport, type TransportStatus } from './transport'
 import { openEnvelope } from './envelope'
-import { admitMember, exportRecoveryFile, forgetTicketSecret, installUnitKey, newUnitKey, rawUnitKeys, readTicketSecret, recoveryFingerprint, recoveryGranteeIdentity, sealTicketSecret, setCurrentEpoch, ticketGranteeIdentity, updateDeviceCredential, type UnlockedDevice } from './vault'
+import { exportRecoveryFile, forgetTicketSecret, installUnitKey, newUnitKey, rawUnitKeys, readTicketSecret, recoveryFingerprint, recoveryGranteeIdentity, sealTicketSecret, setCurrentEpoch, ticketGranteeIdentity, updateDeviceCredential, type UnlockedDevice } from './vault'
 
 export type UnitRuntimeOptions = {
   api?: ChainApi
@@ -186,30 +186,6 @@ export class UnitRuntime {
 
   // ---------- Master actions ----------
   private requireMaster() { if (this.device.record.role !== 'MASTER' || this.revoked) throw new Error('Only a unit Master can do this.') }
-  /**
-   * Master only. Admits the person behind a join code: returns the admission code to hand them,
-   * publishes the admission to the whole unit (encrypted), and optionally sends their wallet some
-   * testnet satoshis so they can publish immediately. Making someone a Master needs the unit authority.
-   */
-  async admit(joinCode: string, role: ArgusRole, options: { expiresAt?: string; displayName?: string; topUpSatoshis?: number } = {}) {
-    this.requireMaster()
-    const result = await admitMember(this.device, joinCode, role, { ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}), ...(options.displayName ? { displayName: options.displayName } : {}), storage: this.storage })
-    await this.controller.recordAdmission({ credential: result.credential, displayName: result.displayName, walletAddress: result.walletAddress, ecdhPublicKey: result.ecdhPublicKey })
-    let topUpTxid: string | undefined, topUpError: string | undefined
-    if (options.topUpSatoshis) { try { topUpTxid = await this.sendSatoshis(result.walletAddress, options.topUpSatoshis) } catch (error) { topUpError = error instanceof Error ? error.message : 'Top-up failed.' } }
-    void this.transport.poke()
-    return { ...result, ...(topUpTxid ? { topUpTxid } : {}), ...(topUpError ? { topUpError } : {}) }
-  }
-  /** Confirms that this device, not merely the Master, opened its invitation successfully. */
-  async confirmAdmission() {
-    const credentialId = this.device.record.credential?.credentialId
-    if (!credentialId) throw new Error('This device has no admission credential to confirm.')
-    const projection = await this.controller.project()
-    if (projection.events.some(record => record.event.eventType === 'ADMISSION_CONFIRMED' && record.event.actorPublicIdentity === this.device.record.signingIdentity && record.event.payload.credentialId === credentialId)) return projection
-    const confirmed = await this.controller.confirmAdmission(credentialId)
-    void this.transport.poke()
-    return confirmed
-  }
   private signerFor(targetRole: ArgusRole, newRole?: ArgusRole) {
     // Masters are made and removed only with the unit authority key; everyone else by any Master's own key.
     if (targetRole === 'MASTER' || newRole === 'MASTER') { if (!this.device.authoritySigner) throw new Error(newRole === 'MASTER' ? 'Only the unit authority (the original or a recovered Master device) can make someone a Master.' : 'Only the unit authority (the original or a recovered Master device) can remove a Master.'); return this.device.authoritySigner }

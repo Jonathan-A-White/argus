@@ -10,8 +10,8 @@ import { FACTORY_BUNDLES, GENESIS_CATALOG, GENESIS_INVENTORY, ONE_SIZE_LABEL, RE
 import { normalizeSizeLabel } from '../stage3/sizes'
 import { SUPPLY_EVENT_KINDS, templateFor } from '../stage3/calendar'
 import { stockMovedSince } from '../stage3/inventoryStatus'
-import { TICKET_LIFETIME_MS, parseKeyGrantRecord, parseTicketCancelledFact, parseTicketIssuedFact, parseTicketRedeemedFact } from '../private-sync/schema'
-import type { KeyGrantRecord, TicketCancelledFact, TicketIssuedFact, TicketRedeemedFact } from '../private-sync/types'
+import { TICKET_LIFETIME_MS, parseCadetTicketIssuedFact, parseKeyGrantRecord, parseTicketCancelledFact, parseTicketIssuedFact, parseTicketRedeemedFact } from '../private-sync/schema'
+import type { CadetTicketIssuedFact, KeyGrantRecord, TicketCancelledFact, TicketIssuedFact, TicketRedeemedFact } from '../private-sync/types'
 import { channelAddress } from '../blockchain/anchor'
 import { newChannelKey } from '../unit/envelope'
 import { cadetViewFrom } from './cadetView'
@@ -29,7 +29,7 @@ const PERMISSION_FOR: Partial<Record<DistributedEventType, ArgusPermission>> = {
   CALENDAR_ATTENDEES_ADDED: 'calendar.write', CALENDAR_ATTENDEES_REMOVED: 'calendar.write', CALENDAR_BUNDLES_ADDED: 'calendar.write', CALENDAR_BUNDLES_REMOVED: 'calendar.write', CALENDAR_TASK_UPDATED: 'calendar.write', CALENDAR_TASK_REMOVED: 'calendar.write',
   PROPERTY_CORRECTED: 'inventory.adjust', ANNUAL_ROLLOVER_COMPLETED: 'cadets.manage', CADETS_IMPORTED: 'cadets.manage',
   UNIT_KEY_ROTATED: 'users.revoke', RECOVERY_KEY_REGISTERED: 'users.authorize',
-  CADET_CHANNEL_CREATED: 'cadets.admit', CADET_CHANNEL_ROTATED: 'cadets.admit', CADET_NOTICES_KEY_CREATED: 'notices.send',
+  CADET_CHANNEL_CREATED: 'cadets.admit', CADET_CHANNEL_ROTATED: 'cadets.admit', CADET_NOTICES_KEY_CREATED: 'notices.send', CADET_TICKET_ISSUED: 'cadets.admit',
 }
 /** Unit key generations are named e<n>-<random> so two Masters rotating at once never reuse a name. */
 export const EPOCH_ID_PATTERN = /^e[1-9][0-9]{0,5}(-[0-9a-f]{4,16})?$/
@@ -621,6 +621,18 @@ export class ArgusReplica {
     const key = newChannelKey()
     return this.commit({ eventType: 'CADET_NOTICES_KEY_CREATED', entityId: NOTICES_CHANNEL_ENTITY, payload: { key, address: channelAddress(key) }, ...options })
   }
+  /**
+   * Written by the issuer once a cadet's ticket is funded and its record is queued for the chain (mw-kmgi38.2). The ticket grants the
+   * cadet's channel, so the cadet must have one; it is recorded apart from staff tickets, so no rotation ever wraps a unit key to it.
+   */
+  async recordCadetTicketIssued(fact: CadetTicketIssuedFact, options: CommandOptions = {}) {
+    const checked = parseCadetTicketIssuedFact(fact)
+    await this.actor('cadets.admit', options.timestamp)
+    const state = await this.repository.snapshot()
+    if (!state.cadetChannels.some(channel => channel.cadetId === checked.cadetId)) throw new Error('This cadet has no channel yet.')
+    if (state.cadetTickets.some(ticket => ticket.ticketId === checked.ticketId)) throw new Error('Ticket ID already exists.')
+    return this.commit({ eventType: 'CADET_TICKET_ISSUED', entityId: checked.ticketId, payload: { ...checked }, ...options })
+  }
   /** The record staff seal to this cadet's channel, as this device's fold has it. */
   async cadetViewFor(cadetId: string) { return cadetViewFrom(await this.repository.snapshot(), cadetId) }
 
@@ -846,6 +858,17 @@ export class ArgusReplica {
         if (state.noticesChannel) throw new Error('This unit already has a notices key.')
         if (channelKeyInUse(state, key)) throw new Error('This channel key is already in use.')
         state.noticesChannel = { key, address, createdBy: event.actorPublicIdentity, createdAt: event.timestamp, eventId: event.eventId }; return
+      }
+      case 'CADET_TICKET_ISSUED': {
+        const fact = parseCadetTicketIssuedFact(event.payload)
+        if (fact.ticketId !== event.entityId) throw new Error('Corrupted cadet ticket event.')
+        const lifetime = Date.parse(fact.expiresAt) - Date.parse(fact.issuedAt)
+        if (lifetime <= 0 || lifetime > TICKET_LIFETIME_MS) throw new Error('A ticket must expire within a week of being issued.')
+        if (!state.cadets.some(cadet => cadet.cadetId === fact.cadetId)) throw new Error('Cadet projection is missing.')
+        if (!state.cadetChannels.some(channel => channel.cadetId === fact.cadetId)) throw new Error('This cadet has no channel yet.')
+        // Of two made offline with one ID (odds about 2^-80), the first in the unit's order holds.
+        if (state.cadetTickets.some(ticket => ticket.ticketId === fact.ticketId)) throw new Error('Ticket ID already exists.')
+        state.cadetTickets.push({ ...fact, issuedBy: event.actorPublicIdentity, issuedEventId: event.eventId }); return
       }
       case 'CALENDAR_EVENT_CREATED': {
         if (state.calendar.some(candidate => candidate.calendarEventId === event.entityId)) throw new Error('Supply event ID already exists.')
@@ -1233,7 +1256,7 @@ export class ArgusReplica {
     const genesis = state.genesis ?? { inventory: [], catalog: [] }
     state.clock = 0
     state.inventory = structuredClone(genesis.inventory); state.catalog = structuredClone(genesis.catalog)
-    state.countSessions = []; state.cadets = []; state.stillNeeded = []; state.transactions = []; state.conflicts = []; state.members = []; state.admissionConfirmations = []; state.rejected = []; state.calendar = []; state.corrections = []; state.rollovers = []; state.keyEpochs = []; state.tickets = []; delete state.recoveryKey; state.cadetChannels = []; delete state.noticesChannel
+    state.countSessions = []; state.cadets = []; state.stillNeeded = []; state.transactions = []; state.conflicts = []; state.members = []; state.admissionConfirmations = []; state.rejected = []; state.calendar = []; state.corrections = []; state.rollovers = []; state.keyEpochs = []; state.tickets = []; delete state.recoveryKey; state.cadetChannels = []; delete state.noticesChannel; state.cadetTickets = []
     state.bundles = FACTORY_BUNDLES.map(source => factoryBundle(source, state.inventory))
     const ordered = [...state.events].sort((a, b) => eventSortKey(a.event) < eventSortKey(b.event) ? -1 : 1)
     for (const record of ordered) this.tryApply(state, record.event)

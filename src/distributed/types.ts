@@ -33,7 +33,7 @@ export type AuthorityRevocation = {
   signature: string
 }
 
-export type DistributedEventType = 'INVENTORY_ITEM_CREATED' | 'INVENTORY_ITEM_UPDATED' | 'INVENTORY_RECEIVED' | 'CATALOG_ITEM_CREATED' | 'CATALOG_ITEM_UPDATED' | 'CATALOG_SIZES_ADDED' | 'ITEM_ISSUED' | 'ITEM_RETURNED' | 'INVENTORY_COUNT_SUBMITTED' | 'COUNT_SESSION_CREATED' | 'COUNT_CONTRIBUTED' | 'COUNT_CORRECTED' | 'COUNT_RECOUNTED' | 'COUNT_SESSION_SUBMITTED' | 'COUNT_SESSION_RECONCILED' | 'COUNT_SESSION_CANCELLED' | 'AUTHORITY_GRANTED' | 'ADMISSION_CONFIRMED' | 'AUTHORITY_REVOKED' | 'ROLE_CHANGED' | 'CONFLICT_DETECTED' | 'CONFLICT_RESOLVED' | 'RECORD_CORRECTED' | 'CADET_CREATED' | 'CADET_UPDATED' | 'BUNDLE_CREATED' | 'BUNDLE_UPDATED' | 'BUNDLE_DEACTIVATED' | 'STILL_NEEDED_ADDED' | 'STILL_NEEDED_UPDATED' | 'STILL_NEEDED_CANCELLED' | 'STILL_NEEDED_FULFILLED' | 'CALENDAR_EVENT_CREATED' | 'CALENDAR_EVENT_UPDATED' | 'CALENDAR_TASK_ADDED' | 'TASK_COMPLETED' | 'CALENDAR_ATTENDEES_ADDED' | 'CALENDAR_ATTENDEES_REMOVED' | 'CALENDAR_BUNDLES_ADDED' | 'CALENDAR_BUNDLES_REMOVED' | 'CALENDAR_TASK_UPDATED' | 'CALENDAR_TASK_REMOVED' | 'PROPERTY_CORRECTED' | 'ANNUAL_ROLLOVER_COMPLETED' | 'CADETS_IMPORTED' | 'UNIT_KEY_ROTATED' | 'RECOVERY_KEY_REGISTERED' | 'COUNT_SESSION_REOPENED' | 'TICKET_ISSUED' | 'TICKET_CANCELLED' | 'TICKET_REDEEMED' | 'CADET_CHANNEL_CREATED' | 'CADET_CHANNEL_ROTATED' | 'CADET_NOTICES_KEY_CREATED'
+export type DistributedEventType = 'INVENTORY_ITEM_CREATED' | 'INVENTORY_ITEM_UPDATED' | 'INVENTORY_RECEIVED' | 'CATALOG_ITEM_CREATED' | 'CATALOG_ITEM_UPDATED' | 'CATALOG_SIZES_ADDED' | 'ITEM_ISSUED' | 'ITEM_RETURNED' | 'INVENTORY_COUNT_SUBMITTED' | 'COUNT_SESSION_CREATED' | 'COUNT_CONTRIBUTED' | 'COUNT_CORRECTED' | 'COUNT_RECOUNTED' | 'COUNT_SESSION_SUBMITTED' | 'COUNT_SESSION_RECONCILED' | 'COUNT_SESSION_CANCELLED' | 'AUTHORITY_GRANTED' | 'ADMISSION_CONFIRMED' | 'AUTHORITY_REVOKED' | 'ROLE_CHANGED' | 'CONFLICT_DETECTED' | 'CONFLICT_RESOLVED' | 'RECORD_CORRECTED' | 'CADET_CREATED' | 'CADET_UPDATED' | 'BUNDLE_CREATED' | 'BUNDLE_UPDATED' | 'BUNDLE_DEACTIVATED' | 'STILL_NEEDED_ADDED' | 'STILL_NEEDED_UPDATED' | 'STILL_NEEDED_CANCELLED' | 'STILL_NEEDED_FULFILLED' | 'CALENDAR_EVENT_CREATED' | 'CALENDAR_EVENT_UPDATED' | 'CALENDAR_TASK_ADDED' | 'TASK_COMPLETED' | 'CALENDAR_ATTENDEES_ADDED' | 'CALENDAR_ATTENDEES_REMOVED' | 'CALENDAR_BUNDLES_ADDED' | 'CALENDAR_BUNDLES_REMOVED' | 'CALENDAR_TASK_UPDATED' | 'CALENDAR_TASK_REMOVED' | 'PROPERTY_CORRECTED' | 'ANNUAL_ROLLOVER_COMPLETED' | 'CADETS_IMPORTED' | 'UNIT_KEY_ROTATED' | 'RECOVERY_KEY_REGISTERED' | 'COUNT_SESSION_REOPENED' | 'TICKET_ISSUED' | 'TICKET_CANCELLED' | 'TICKET_REDEEMED' | 'CADET_CHANNEL_CREATED' | 'CADET_CHANNEL_ROTATED' | 'CADET_NOTICES_KEY_CREATED' | 'CADET_TICKET_ISSUED'
 export type LocalSyncStatus = 'LOCAL' | 'QUEUED' | 'SYNCING' | 'SYNCHRONIZED' | 'CONFLICT' | 'FAILED'
 
 export type UnsignedArgusEvent = {
@@ -112,6 +112,12 @@ export type TicketProjection = { ticketId: string; ticketAddress: string; ticket
  * key; the cadet's phone gets it in its ticket. version counts the keys: a rotation (Replace phone) makes a new key and address.
  */
 export type CadetChannelProjection = { cadetId: string; channelKey: string; channelAddress: string; version: number; createdBy: string; createdAt: string; updatedAt: string; eventId: string; rotationReason?: string }
+/**
+ * A cadet's ticket (ADR 013, mw-kmgi38.2) as the unit log records it: which cadet, where the ticket lives, which channel it grants
+ * (the channel's address when it was made: after Replace phone it is stale), and the funding output a redemption spends. It holds
+ * no key and no code. A cadet never writes to the unit log, so whether the ticket was used is read from the cadet's channel.
+ */
+export type CadetTicketProjection = { ticketId: string; cadetId: string; ticketAddress: string; channelAddress: string; issuedAt: string; expiresAt: string; funding: { txid: string; vout: number; satoshis: number }; issuedBy: string; issuedEventId: string }
 /** The unit's one notices channel (ADR 013): a notice to all cadets is sealed under this key and paid to this address. */
 export type NoticesChannelProjection = { key: string; address: string; createdBy: string; createdAt: string; eventId: string }
 /**

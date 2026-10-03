@@ -156,6 +156,8 @@ export function describeActivity(projection: Projection, record: StoredEvent, me
       return { title: `Replaced the private record key for cadet ${cadet(event.entityId)}${typeof payload.reason === 'string' && payload.reason.trim() ? ` (${payload.reason.trim()})` : ''}`, record: { kind: 'Cadet', label: cadet(event.entityId) } }
     case 'CADET_NOTICES_KEY_CREATED':
       return { title: 'Set up notices to cadets', record: { kind: 'Unit key', label: 'Cadet notices' } }
+    case 'CADET_TICKET_ISSUED':
+      return { title: `Made a phone ticket for cadet ${cadet(payload.cadetId)}`, record: { kind: 'Ticket', label: cadet(payload.cadetId) } }
     case 'CADETS_IMPORTED': {
       const rows = Array.isArray(payload.cadets) ? payload.cadets as Array<{ cadetId?: unknown }> : []
       const codes = rows.map(row => cadet(row.cadetId))

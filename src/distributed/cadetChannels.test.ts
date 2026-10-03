@@ -163,6 +163,66 @@ describe('cadet channels in the unit log (ADR 013)', () => {
   })
 })
 
+const TESTNET_ADDRESS = 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn'
+/** A cadet ticket as the unit log records it (ADR 013, mw-kmgi38.2): no key, no code, no name. */
+const cadetTicketFact = (cadetId: string, channel: string, ticketId = `t-${'a1'.repeat(10)}`, issuedAt = '2026-10-03T12:00:00.000Z', days = 7) => ({ ticketId, cadetId, ticketAddress: TESTNET_ADDRESS, channelAddress: channel, issuedAt, expiresAt: new Date(Date.parse(issuedAt) + days * 24 * 60 * 60 * 1000).toISOString(), funding: { txid: 'b2'.repeat(32), vout: 0, satoshis: 500 } })
+
+describe('cadet tickets in the unit log (CADET_TICKET_ISSUED, mw-kmgi38.2)', () => {
+  it('a Master records a cadet ticket against the cadet’s channel; it is never a staff ticket', async () => {
+    const { replicas: { master } } = await unit({ master: 'MASTER' })
+    const cadetId = await cadet(master, { cadetCode: 'C-4F7K' })
+    await expect(master.recordCadetTicketIssued(cadetTicketFact(cadetId, TESTNET_ADDRESS))).rejects.toThrow(/no channel/)
+    await master.createCadetChannel(cadetId)
+    const channel = (await channelOf(master, cadetId))!
+    const event = await master.recordCadetTicketIssued(cadetTicketFact(cadetId, channel.channelAddress))
+    expect(event).toMatchObject({ eventType: 'CADET_TICKET_ISSUED', entityId: `t-${'a1'.repeat(10)}` })
+    const state = await master.snapshot()
+    expect(state.cadetTickets).toEqual([{ ...cadetTicketFact(cadetId, channel.channelAddress), issuedBy: 'mock:master', issuedEventId: event.eventId }])
+    expect(state.tickets).toEqual([])
+    await expect(master.recordCadetTicketIssued(cadetTicketFact(cadetId, channel.channelAddress))).rejects.toThrow(/already exists/)
+  })
+
+  it('the fold refuses a cadet ticket from a Supply Assistant, for a cadet with no channel or no record, malformed, or longer than a week', async () => {
+    const { replicas: { master } } = await unit({ master: 'MASTER', assistant: 'SUPPLY_ASSISTANT' })
+    const [first, second] = [await cadet(master, { cadetCode: 'C-AAAA' }), await cadet(master, { cadetCode: 'C-BBBB' })]
+    await master.createCadetChannel(first)
+    const address = (await channelOf(master, first))!.channelAddress, id = (n: number) => `t-${String(n).padStart(20, '0')}`
+    const cases: Array<[string, string, string, Record<string, unknown>, RegExp]> = [
+      ['from-assistant', 'assistant', id(1), cadetTicketFact(first, address, id(1)), /Unauthorized: cadets\.admit is required/],
+      ['no-channel', 'master', id(2), cadetTicketFact(second, address, id(2)), /no channel/],
+      ['no-cadet', 'master', id(3), cadetTicketFact('cadet_x', address, id(3)), /Cadet projection is missing/],
+      ['too-long', 'master', id(4), cadetTicketFact(first, address, id(4), undefined, 8), /within a week/],
+      ['entity-mismatch', 'master', id(9), cadetTicketFact(first, address, id(5)), /Corrupted cadet ticket event/],
+      ['bad-address', 'master', id(6), { ...cadetTicketFact(first, address, id(6)), ticketAddress: 'not-an-address' }, /Invalid CADET_TICKET_ISSUED fact field: ticketAddress/],
+    ]
+    for (const [eventId, author, entityId, payload] of cases) await master.receive(await forged(author, 'CADET_TICKET_ISSUED', entityId, payload, eventId))
+    const state = await master.snapshot()
+    expect(state.cadetTickets).toEqual([])
+    for (const [eventId, , , , reason] of cases) expect(state.rejected.find(record => record.eventId === eventId)?.reason).toMatch(reason)
+  })
+
+  it('two devices receiving channel, rotation and cadet ticket events in different orders end byte-identical', async () => {
+    const { replicas: { master, officer, fresh } } = await unit({ master: 'MASTER', officer: 'SUPPLY_OFFICER', fresh: 'SUPPLY_ASSISTANT' })
+    const [first, second] = [await cadet(master, { cadetCode: 'C-AAAA' }), await cadet(master, { cadetCode: 'C-BBBB' })]
+    await master.createCadetChannel(first); await master.createCadetChannel(second)
+    await officer.receiveMany(await events(master))
+    const address = async (cadetId: string) => (await channelOf(master, cadetId))!.channelAddress
+    await master.recordCadetTicketIssued(cadetTicketFact(first, await address(first), `t-${'01'.repeat(10)}`))
+    await officer.recordCadetTicketIssued(cadetTicketFact(second, (await channelOf(officer, second))!.channelAddress, `t-${'02'.repeat(10)}`))
+    // the same ticket ID written on two devices offline: the first in the unit's order holds
+    await officer.recordCadetTicketIssued(cadetTicketFact(second, (await channelOf(officer, second))!.channelAddress, `t-${'01'.repeat(10)}`))
+    await master.rotateCadetChannel(first, 'Replace phone')
+    await master.recordCadetTicketIssued(cadetTicketFact(first, await address(first), `t-${'03'.repeat(10)}`))
+    await officer.receiveMany(await events(master)); await master.receiveMany(await events(officer))
+    await fresh.receiveMany([...(await events(officer))].reverse())
+    const visible = (state: RepositoryState) => canonicalize({ cadetChannels: state.cadetChannels, cadetTickets: state.cadetTickets, rejected: state.rejected })
+    const states = await Promise.all([master, officer, fresh].map(replica => replica.snapshot()))
+    expect(visible(states[1])).toBe(visible(states[0])); expect(visible(states[2])).toBe(visible(states[0]))
+    expect(states[0].cadetTickets.map(ticket => ticket.ticketId).sort()).toEqual([`t-${'01'.repeat(10)}`, `t-${'02'.repeat(10)}`, `t-${'03'.repeat(10)}`])
+    expect(states[0].rejected.map(record => record.reason)).toEqual([expect.stringMatching(/already exists/)])
+  })
+})
+
 describe('the CADET role: outside the unit log', () => {
   it('has no unit permissions, cannot be granted as a unit credential and gets no staff ticket', async () => {
     expect(ROLE_PERMISSIONS.CADET).toEqual([])

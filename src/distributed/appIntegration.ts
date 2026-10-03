@@ -118,6 +118,7 @@ export class DistributedAppController {
   createCadetChannel(cadetId: string) { return this.run(r => r.createCadetChannel(cadetId)) }
   rotateCadetChannel(cadetId: string, reason: string) { return this.run(r => r.rotateCadetChannel(cadetId, reason)) }
   createNoticesKey() { return this.run(r => r.createNoticesKey()) }
+  recordCadetTicketIssued(fact: Parameters<ArgusReplica['recordCadetTicketIssued']>[0]) { return this.run(r => r.recordCadetTicketIssued(fact)) }
   /** The record a cadet's phone reads (ADR 013); built from this device's fold. */
   cadetViewFor(cadetId: string) { return this.ready().cadetViewFor(cadetId) }
   async markPublished(eventIds: string[], transactionId: string) { await this.ready().markPublished(eventIds, transactionId); return this.project() }

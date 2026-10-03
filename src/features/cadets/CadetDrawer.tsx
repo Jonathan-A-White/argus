@@ -2,13 +2,15 @@ import { useEffect, useState } from 'react'
 import { Activity, Eye, EyeOff, Lock, MessageSquare, PackageMinus, PackagePlus, Pencil, PencilLine, Ruler, UserRound } from 'lucide-react'
 import { Drawer, Summary } from '../../components/Drawer'
 import type { ArgusAppProjection, DistributedAppController } from '../../distributed/appIntegration'
-import type { ArgusPermission, PropertyCorrection, SupplyTransaction } from '../../distributed/types'
+import type { ArgusPermission, CadetTicketProjection, PropertyCorrection, SupplyTransaction } from '../../distributed/types'
 import { cadetLabel } from '../../stage3/domain'
 import { NOT_YET_PUBLISHED, NoticeForm, type NoticeSender } from '../../unit/screens/NoticesPanel'
 import { RecordCorrectionForm } from '../corrections/RecordCorrectionForm'
 import { KIND_LABELS, describeLine, recordCorrections, transactionTargets } from '../corrections/correctionModel'
 import { StillNeededActions } from '../needs/StillNeededActions'
 import { CadetForm } from './CadetForm'
+import { PhoneTicketPanel, type PhoneTicketMaker } from './PhoneTicketPanel'
+import { TICKET_WAITING } from './phoneTicket'
 import { SizeCorrectionForm } from './SizeCorrectionForm'
 import { cadetMonogram, memberLabel } from './cadetDisplay'
 import './cadets.css'
@@ -26,6 +28,8 @@ export type CadetDrawerProps = {
   onReturn: (cadetId: string) => void
   /** Sends a notice to this cadet alone; without it (or without notices.send) the drawer offers no message. */
   sendNotice?: NoticeSender
+  /** Makes this cadet's phone ticket; without it (or without cadets.admit) the drawer offers none. */
+  makePhoneTicket?: PhoneTicketMaker
   close: () => void
 }
 
@@ -51,24 +55,31 @@ const describeCorrection = (projection: ArgusAppProjection, correction: Property
  * after the operator taps "Show name". That reveal lives in this component's state, so it resets
  * whenever the drawer closes and is never persisted.
  */
-export function CadetDrawer({ cadet, projection, controller, can, onProjection, notify, onIssue, onReturn, sendNotice, close }: CadetDrawerProps) {
+export function CadetDrawer({ cadet, projection, controller, can, onProjection, notify, onIssue, onReturn, sendNotice, makePhoneTicket, close }: CadetDrawerProps) {
   const [nameRevealed, setNameRevealed] = useState(false)
   const [editing, setEditing] = useState(false)
   const [correctingId, setCorrectingId] = useState<string>()
   const [correctingTransactionId, setCorrectingTransactionId] = useState<string>()
   const [messaging, setMessaging] = useState(false)
-  // Whether the unit has made this cadet a channel (a phone ticket); a message needs one.
+  // Whether the unit has made this cadet a channel (a phone ticket makes one); a message needs one. And the latest ticket made for them.
   const [hasPhone, setHasPhone] = useState<boolean>()
+  const [phoneTicket, setPhoneTicket] = useState<CadetTicketProjection>()
+  const [phoneChecks, setPhoneChecks] = useState(0)
   useEffect(() => {
     let active = true
-    void controller.technicalState().then(state => { if (active) setHasPhone(state.cadetChannels.some(channel => channel.cadetId === cadet.cadetId)) }, () => { if (active) setHasPhone(false) })
+    void controller.technicalState().then(state => {
+      if (!active) return
+      setHasPhone(state.cadetChannels.some(channel => channel.cadetId === cadet.cadetId))
+      setPhoneTicket(state.cadetTickets.filter(ticket => ticket.cadetId === cadet.cadetId).sort((a, b) => b.issuedAt.localeCompare(a.issuedAt))[0])
+    }, () => { if (active) setHasPhone(false) })
     return () => { active = false }
-  }, [controller, cadet.cadetId, projection])
+  }, [controller, cadet.cadetId, projection, phoneChecks])
   const code = cadetLabel(cadet)
   const canReveal = can('cadets.read') || can('cadets.manage')
   const canManage = can('cadets.manage')
   const canCorrect = can('inventory.adjust')
   const canMessage = Boolean(sendNotice) && can('notices.send')
+  const canMakeTicket = can('cadets.admit')
   const canIssue = can('inventory.issue') && cadet.status === 'ACTIVE'
   const canReturn = can('inventory.return') && cadet.currentProperty.length > 0
   const needs = projection.stillNeeded.filter(need => need.cadetId === cadet.cadetId)
@@ -157,6 +168,16 @@ export function CadetDrawer({ cadet, projection, controller, can, onProjection, 
           accent={!ready}
         />
       </div>
+
+      <PhoneTicketPanel
+        cadetCode={code}
+        cadetId={cadet.cadetId}
+        projection={projection}
+        {...(phoneTicket ? { ticket: phoneTicket } : {})}
+        canMake={canMakeTicket}
+        {...(makePhoneTicket ? { make: makePhoneTicket } : {})}
+        onMade={waiting => { setPhoneChecks(value => value + 1); notify(waiting ? `Phone ticket for ${code} ${TICKET_WAITING}.` : `Phone ticket made for ${code}.`) }}
+      />
 
       {canMessage && sendNotice && (
         <section className="cadet-message-panel" aria-label="Message this cadet">

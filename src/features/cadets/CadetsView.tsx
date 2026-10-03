@@ -6,6 +6,7 @@ import type { ArgusPermission } from '../../distributed/types'
 import { cadetLabel } from '../../stage3/domain'
 import { cadetFullyIssued, standardIssueGaps } from '../../stage3/readiness'
 import type { NoticeSender } from '../../unit/screens/NoticesPanel'
+import type { PhoneTicketMaker } from './PhoneTicketPanel'
 import { CadetDrawer } from './CadetDrawer'
 import { CadetForm } from './CadetForm'
 import { cadetDisplayName, cadetMatches, cadetMonogram } from './cadetDisplay'
@@ -26,6 +27,7 @@ export type CadetsViewProps = {
   onReturn: (cadetId: string) => void
   /** Sends a notice to one cadet (the drawer's Message this cadet); absent where notices cannot be sent. */
   sendNotice?: NoticeSender
+  makePhoneTicket?: PhoneTicketMaker
   /** Open this cadet's record on arrival (e.g. from a dashboard alert). */
   initialCadetId?: string
   /** Start on this status filter instead of Active. */
@@ -45,7 +47,7 @@ const byName = (a: Cadet, b: Cadet) => cadetDisplayName(a).localeCompare(cadetDi
  * cadet primarily by the encrypted name after the unit has been unlocked. The opaque ID remains a
  * fallback for older records that do not yet have a name.
  */
-export function CadetsView({ projection, controller, can, onProjection, notify, onIssue, onReturn, sendNotice, initialCadetId, initialFilter = 'ACTIVE' }: CadetsViewProps) {
+export function CadetsView({ projection, controller, can, onProjection, notify, onIssue, onReturn, sendNotice, makePhoneTicket, initialCadetId, initialFilter = 'ACTIVE' }: CadetsViewProps) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<StatusFilter>(initialFilter)
   const [openCadetId, setOpenCadetId] = useState<string | undefined>(initialCadetId)
@@ -172,6 +174,7 @@ export function CadetsView({ projection, controller, can, onProjection, notify, 
           onIssue={cadetId => handOff(onIssue, cadetId)}
           onReturn={cadetId => handOff(onReturn, cadetId)}
           {...(sendNotice ? { sendNotice } : {})}
+          {...(makePhoneTicket ? { makePhoneTicket } : {})}
           close={() => setOpenCadetId(undefined)}
         />
       )}

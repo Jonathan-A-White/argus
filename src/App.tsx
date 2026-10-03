@@ -47,6 +47,8 @@ import { SharedCountView } from "./features/count/SharedCountView";
 import { InventoryCatalogView } from "./features/inventory/InventoryCatalogView";
 import { COUNT_INTERVAL_CHOICES } from "./stage3/inventoryStatus";
 import { CadetsView } from "./features/cadets/CadetsView";
+import type { PhoneTicketMaker } from "./features/cadets/PhoneTicketPanel";
+import { ticketWaiting } from "./features/cadets/phoneTicket";
 import { ConflictsPanel } from "./features/conflicts/ConflictsPanel";
 import { StillNeededActions } from "./features/needs/StillNeededActions";
 import { Dashboard, type DashboardTarget } from "./features/dashboard";
@@ -294,6 +296,17 @@ function AuthenticatedApp({
       runtime
         ? (audience: NoticeAudience, text: string) =>
             runtime.sendNotice(audience, text)
+        : undefined,
+    [runtime],
+  );
+  // A cadet's phone ticket needs a unit too. Waiting: the network did not take it yet, so it is saved here and goes out later.
+  const makePhoneTicket = useMemo<PhoneTicketMaker | undefined>(
+    () =>
+      runtime
+        ? async (cadetId: string) => {
+            const ticket = await runtime.issueCadetTicket(cadetId);
+            return { ticket, waiting: ticketWaiting(runtime.status()) };
+          }
         : undefined,
     [runtime],
   );
@@ -573,6 +586,7 @@ function AuthenticatedApp({
             onIssue={(cadetId) => openCadetWorkflow("cadet-issue", cadetId)}
             onReturn={(cadetId) => openCadetWorkflow("cadet-return", cadetId)}
             sendNotice={sendNotice}
+            makePhoneTicket={makePhoneTicket}
           />
         )}
         {tab === "activity" && (

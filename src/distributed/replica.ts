@@ -781,6 +781,8 @@ export class ArgusReplica {
         const credential = event.payload.credential as AuthorityCredential | undefined, revocation = event.payload.revocation as AuthorityRevocation | undefined
         if (!credential || !revocation || credential.subjectPublicIdentity !== event.entityId || revocation.subjectPublicIdentity !== event.entityId) throw new Error('Corrupted role change event.')
         const member = state.members.find(candidate => candidate.publicIdentity === event.entityId)
+        // The same replacement recorded twice (two Masters re-issuing one credential at once, mw-kmgi38.11) applies once.
+        if (member && member.credentialId === credential.credentialId && member.role === credential.role) return
         if (!member || member.status !== 'ACTIVE') throw new Error('Role change for someone who is not an active member.')
         if (revocation.credentialId !== member.credentialId) throw new Error('Role change does not replace the member’s current credential.')
         if (!this.authorization.hasCredential(credential.credentialId)) throw new Error('New role credential has not been verified.')

@@ -1,4 +1,4 @@
-import { canonicalize } from '../distributed/canonical'
+import { canonicalize, sha256 } from '../distributed/canonical'
 import type { ArgusIdentityProvider } from '../identity/identity'
 import { verifyTicketSignature } from '../identity/ticketKeys'
 import type { ArgusPermission, ArgusRole, AuthorityCredential, AuthorityRevocation } from '../distributed/types'
@@ -24,9 +24,30 @@ export async function issueCredential(issuer: ArgusIdentityProvider, input: Omit
   return { ...credential, signature: await issuer.sign(canonicalize(credential)) }
 }
 
-export async function issueRevocation(issuer: ArgusIdentityProvider, credential: AuthorityCredential, effectiveAt: string, revocationId = crypto.randomUUID()): Promise<AuthorityRevocation> {
+export async function issueRevocation(issuer: ArgusIdentityProvider, credential: AuthorityCredential, effectiveAt: string, revocationId: string = crypto.randomUUID()): Promise<AuthorityRevocation> {
   const value = { revocationVersion: 1 as const, revocationId, credentialId: credential.credentialId, subjectPublicIdentity: credential.subjectPublicIdentity, effectiveAt, issuedBy: await issuer.getPublicIdentity() }
   return { ...value, signature: await issuer.sign(canonicalize(value)) }
+}
+
+/**
+ * A signed credential carries the permission list it was made with, so a direct credential made before its role gained a permission
+ * (cadets.admit and notices.send, mw-kmgi38.1) lacks it until it is re-issued (mw-kmgi38.11). A ticket credential never needs it:
+ * every verifier derives its permissions from the role (ticketCredential).
+ */
+export const lacksRolePermissions = (credential: AuthorityCredential) => !isTicketCredential(credential) && credential.role !== 'CADET' && ROLE_PERMISSIONS[credential.role].some(permission => !credential.permissions.includes(permission))
+const REISSUED_PREFIX = 'reissued-'
+export const isReissuedCredential = (credential: Pick<AuthorityCredential, 'credentialId'>) => credential.credentialId.startsWith(REISSUED_PREFIX)
+/**
+ * The same credential with its role's current permissions, and the revocation of the old one, both signed by `issuer` (the unit
+ * authority). The new credential covers exactly the old one's span (same issuedAt and expiry; the old one is revoked from its own
+ * issuedAt), so everything the old one authorized stays authorized and nothing new is back-dated beyond it. Its ID and the revocation's
+ * are derived from the old credential and the new list, so two devices re-issuing at once make the same replacement.
+ */
+export async function reissueCredential(issuer: ArgusIdentityProvider, old: AuthorityCredential): Promise<{ credential: AuthorityCredential; revocation: AuthorityRevocation }> {
+  const permissions = [...new Set(ROLE_PERMISSIONS[old.role])].sort() as ArgusPermission[]
+  const digest = (await sha256(canonicalize({ replaces: old.credentialId, role: old.role, permissions }))).slice(0, 32)
+  const credential = await issueCredential(issuer, { credentialId: `${REISSUED_PREFIX}${digest}`, subjectPublicIdentity: old.subjectPublicIdentity, role: old.role, permissions, issuedAt: old.issuedAt, ...(old.expiresAt ? { expiresAt: old.expiresAt } : {}) })
+  return { credential, revocation: await issueRevocation(issuer, old, old.issuedAt, `${REISSUED_PREFIX}${digest}`) }
 }
 
 /**

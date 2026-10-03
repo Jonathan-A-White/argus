@@ -168,3 +168,22 @@ notices; Replace phone rotates the channel (new key, new address), and the old p
     wallets, mw-kmgi38.3, would link it anyway). Only addresses are linked: names, codes and gear stay inside ciphertext.
   * Not in this story: cancelling or sweeping an unused cadet ticket (its code stays sealed on the issuer's device for that), and the
     gate telling a staff code from a cadet code (`readTicket` and `readCadetTicket` each refuse the other's code as damaged).
+* **2026-10-03, story mw-kmgi38.3 (publishing the cadet's record).** Staff devices keep every cadet's channel current (`CadetPublisher`,
+  `src/unit/cadetPublisher.ts`; no screens yet):
+  * **What triggers it.** Every event this device itself commits (never one read from the chain, so a record is written by the device
+    that made the change, not by every device) that names a cadet in its payload, or is about the cadet or Still Needed line, queues
+    that cadet when they have a channel: issue, return, cadet update, Still Needed add/update/cancel/fulfil. Channel and
+    ticket events do not (a new channel is filled by `publishAllCadetRecords`). A trailing 2 s debounce folds several changes for one
+    cadet into one publish; the record is built from the fold when the timer fires, so it shows the latest state this device knows.
+  * **One record, one transaction.** The cadet's CadetView is sealed (`sealToChannel`, kind `'view'`) and paid to the channel address
+    by `prepareRecords([{ kind: 'C', ... }])` of the committing device's own wallet. A view whose sealed record is over `MAX_ENVELOPE_BYTES`
+    (60 KB) is refused with "The record for <cadet name> is too large to publish" and dropped from the queue, not retried.
+  * **Resumable.** The queue (cadet IDs only) is kept in storage under `argus.cadet-publish.v1.<unitId>`. A record the network does
+    not take stays queued and is tried again after 30 s, on the next change, on the next `publishAllCadetRecords`, and when the runtime
+    opens or starts. A transaction the wallet already built for the same cadet and version (an answer that never came) is finished,
+    never built twice.
+  * **`publishAllCadetRecords(onProgress?)`** (Master) queues every cadet with a channel and drains one transaction at a time, reporting
+    `{done, total, failed}` after each.
+  * **Reading.** `readCadetRecord(device, api)` reads the phone's own channel and returns the `view` record with the highest
+    `version` (of equal versions the one the chain lists last). Two staff devices publishing for one cadet leave two records; the older
+    view can come later on chain, and the reader still keeps the higher version.

@@ -83,7 +83,8 @@ describe('publishing cadet records (ADR 013, mw-kmgi38.3)', { timeout: 240_000 }
     const chain = new FakeChain(), { master, shorts } = await newUnit(chain)
     const cadetId = await addCadet(master, 'Casey Private'), bare = await addCadet(master, 'Drew Private', false)
     await issueOne(master, bare, shorts, 'issue-bare')
-    expect(master.cadetPublisher.queued()).toEqual([])
+    await master.cadetPublisher.idle()
+    expect(master.cadetPublisher.queued()).toEqual([cadetId]) // only Casey, from making the channel (mw-kmgi38.12); Drew has none
     await master.controller.updateCadet(cadetId, { sizes: { 'PT Shorts': 'M' } })
     await master.controller.addStillNeeded({ requirementId: 'need-1', cadetId, displayLabel: 'Combination Cover', quantityNeeded: 2, quantityFulfilled: 0, status: 'OPEN', firstNeededAt: '2026-10-01T00:00:00.000Z', source: 'MANUAL' })
     expect(master.cadetPublisher.queued()).toEqual([cadetId])
@@ -210,5 +211,107 @@ describe('publishing cadet records (ADR 013, mw-kmgi38.3)', { timeout: 240_000 }
     expect(publisher.queued()).toEqual([])
     expect(publisher.lastErrors()['cadet-big']).toMatch(/Jordan Overflow/)
     expect(wallet.prepareRecords).not.toHaveBeenCalled()
+  })
+})
+
+describe('a record goes out without waiting for a change to the cadet (mw-kmgi38.12)', { timeout: 240_000 }, () => {
+  const settle = async () => { await vi.advanceTimersByTimeAsync(DEBOUNCE + 100) }
+  const txidsAt = async (runtime: UnitRuntime, chain: FakeChain, cadetId: string) => (await recordsAt(runtime, chain, cadetId)).map(entry => entry.txid)
+  const needOf = (cadetId: string, requirementId: string) => ({ requirementId, cadetId, displayLabel: 'Combination Cover', quantityNeeded: 2, quantityFulfilled: 0, status: 'OPEN' as const, firstNeededAt: '2026-10-01T00:00:00.000Z', source: 'MANUAL' as const })
+
+  it('issuing a cadet’s ticket makes the channel and the phone reads the record as it stands, with no other change', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const chain = new FakeChain(), { master, shorts } = await newUnit(chain)
+    const cadetId = await addCadet(master, 'Jules Private', false)
+    await issueOne(master, cadetId, shorts, 'issue-1')
+    await master.controller.addStillNeeded(needOf(cadetId, 'need-1'))
+    expect(master.cadetPublisher.queued()).toEqual([])
+    await master.issueCadetTicket(cadetId)
+    await master.cadetPublisher.idle()
+    expect(master.cadetPublisher.queued()).toEqual([cadetId])
+    await settle(); await master.cadetPublisher.idle()
+    expect(await txidsAt(master, chain, cadetId)).toHaveLength(1)
+    expect(await readCadetRecord(await phoneOf(master, cadetId), chain)).toMatchObject({ cadetId, fullName: 'Jules Private', have: [expect.objectContaining({ label: 'PT Shorts', size: 'M', quantity: 1 })], stillNeeded: [{ label: 'Combination Cover', quantity: 2 }] })
+    expect(master.cadetPublisher.queued()).toEqual([])
+  })
+
+  it('making a channel queues the cadet by itself, and Replace phone sends the record to the new channel', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const chain = new FakeChain(), { master } = await newUnit(chain)
+    const cadetId = await addCadet(master, 'Kai Private')
+    await master.cadetPublisher.idle()
+    expect(master.cadetPublisher.queued()).toEqual([cadetId])
+    await settle(); await master.cadetPublisher.idle()
+    expect(await readCadetRecord(await phoneOf(master, cadetId), chain)).toMatchObject({ cadetId, fullName: 'Kai Private' })
+    const before = await phoneOf(master, cadetId)
+    await master.reissueCadetTicket(cadetId)
+    await settle(); await master.cadetPublisher.idle()
+    const after = await phoneOf(master, cadetId)
+    expect(after.cadet.channelAddress).not.toBe(before.cadet.channelAddress)
+    expect(await readCadetRecord(after, chain)).toMatchObject({ cadetId, fullName: 'Kai Private' })
+    expect(await txidsAt(master, chain, cadetId)).toHaveLength(1)
+  })
+
+  it('an import queues the cadets it adds only once they have a channel, and one transaction goes to each', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const chain = new FakeChain(), { master } = await newUnit(chain)
+    const bystander = await addCadet(master, 'Lane Private')
+    await settle(); await master.cadetPublisher.idle()
+    expect(master.cadetPublisher.queued()).toEqual([])
+    await master.controller.importCadets([{ gender: 'Female', nsLevel: 'NS1', fullName: 'Morgan Import' }, { gender: 'Male', nsLevel: 'NS1', fullName: 'Noel Import' }])
+    await master.cadetPublisher.idle()
+    expect(master.cadetPublisher.queued()).toEqual([]) // new cadets, no channel yet: nowhere to publish
+    const [x, y] = ['Morgan Import', 'Noel Import'].map(name => (async () => (await master.controller.technicalState()).cadets.find(cadet => cadet.fullName === name)!.cadetId))
+    const [xId, yId] = [await x(), await y()]
+    await master.issueCadetTicket(xId); await master.issueCadetTicket(yId)
+    await settle(); await master.cadetPublisher.idle()
+    for (const [cadetId, name] of [[xId, 'Morgan Import'], [yId, 'Noel Import']]) {
+      expect(await txidsAt(master, chain, cadetId)).toHaveLength(1)
+      expect(await readCadetRecord(await phoneOf(master, cadetId), chain)).toMatchObject({ cadetId, fullName: name })
+    }
+    expect(await txidsAt(master, chain, bystander)).toHaveLength(1)
+  })
+
+  it('an annual rollover queues every cadet it advanced who has a channel, and none without one', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const chain = new FakeChain(), { master } = await newUnit(chain)
+    const x = await addCadet(master, 'Oak Private'), y = await addCadet(master, 'Pine Private'), bare = await addCadet(master, 'Reed Private', false)
+    await settle(); await master.cadetPublisher.idle()
+    const first = { x: await readCadetRecord(await phoneOf(master, x), chain), y: await readCadetRecord(await phoneOf(master, y), chain) }
+    expect(master.cadetPublisher.queued()).toEqual([])
+    await master.controller.completeAnnualRollover('2026-2027')
+    await master.cadetPublisher.idle()
+    expect(master.cadetPublisher.queued().sort()).toEqual([x, y].sort())
+    await settle(); await master.cadetPublisher.idle()
+    for (const [cadetId, was] of [[x, first.x], [y, first.y]] as const) {
+      expect(await txidsAt(master, chain, cadetId)).toHaveLength(2)
+      expect((await readCadetRecord(await phoneOf(master, cadetId), chain))!.version).toBeGreaterThan(was!.version)
+    }
+    expect((await master.controller.technicalState()).cadetChannels.some(channel => channel.cadetId === bare)).toBe(false)
+  })
+
+  it('a correction of an issued quantity, named by the transaction and not the cadet, republishes that cadet’s record', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const chain = new FakeChain(), { master, shorts } = await newUnit(chain)
+    const cadetId = await addCadet(master, 'Sage Private')
+    await issueOne(master, cadetId, shorts, 'issue-1')
+    await settle(); await master.cadetPublisher.idle()
+    expect(await readCadetRecord(await phoneOf(master, cadetId), chain)).toMatchObject({ have: [expect.objectContaining({ quantity: 1 })] })
+    const transaction = (await master.controller.technicalState()).transactions.find(candidate => candidate.transactionId === 'issue-1')!
+    await master.controller.correctRecord({ kind: 'ISSUE_QUANTITY', targetEventId: transaction.eventId, lineId: 'l', from: 1, to: 3, reason: 'Counted again' })
+    await master.cadetPublisher.idle()
+    expect(master.cadetPublisher.queued()).toEqual([cadetId])
+    await settle(); await master.cadetPublisher.idle()
+    expect(await readCadetRecord(await phoneOf(master, cadetId), chain)).toMatchObject({ have: [expect.objectContaining({ quantity: 3 })] })
+  })
+
+  it('an event that changes no cadet queues nobody', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const chain = new FakeChain(), { master, shorts } = await newUnit(chain)
+    await addCadet(master, 'Tate Private')
+    await settle(); await master.cadetPublisher.idle()
+    await master.controller.receiveStock(shorts, 5, 'More')
+    await master.cadetPublisher.idle()
+    expect(master.cadetPublisher.queued()).toEqual([])
   })
 })

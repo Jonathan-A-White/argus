@@ -52,11 +52,24 @@ export type CadetChannelReading = { cadetId: string; channelAddress?: string; re
 /** The cadet drawer's Phone line: "Phone: joined <date>" once a phone joined the cadet's current channel, else "No phone yet". */
 export const cadetPhoneLine = (reading: Pick<CadetChannelReading, 'joined'>) => reading.joined ? `Phone: joined ${reading.joined.joinedAt.slice(0, 10)}` : 'No phone yet'
 
-/** The cadet whose record an event changes: named in its payload, or the cadet or Still Needed line it is about. Channel and ticket events are not changes to the record. */
-const cadetIdOf = (event: SignedArgusEvent, state: Awaited<ReturnType<DistributedAppController['technicalState']>>) => {
-  if (/^CADET_(CHANNEL|NOTICES|TICKET)/.test(event.eventType)) return undefined
-  if (typeof event.payload.cadetId === 'string') return event.payload.cadetId
-  return state.cadets.find(cadet => cadet.cadetId === event.entityId)?.cadetId ?? state.stillNeeded.find(need => need.requirementId === event.entityId)?.cadetId
+/**
+ * The cadets whose record an event changes, whether or not its payload names one. A cadet's channel being made or replaced (and a ticket
+ * for it) puts the record there for the first time. Otherwise: the cadet the payload, the entity, a Still Needed line or a transaction
+ * names, and every cadet or Still Needed line the fold says this very event changed (import, annual rollover, a conflict settled as
+ * Still Needed). Notices and tickets of the unit are not changes to a record.
+ */
+const cadetIdsOf = (event: SignedArgusEvent, state: Awaited<ReturnType<DistributedAppController['technicalState']>>) => {
+  const ids = new Set<string>()
+  if (event.eventType === 'CADET_CHANNEL_CREATED' || event.eventType === 'CADET_CHANNEL_ROTATED') ids.add(event.entityId)
+  else if (event.eventType === 'CADET_TICKET_ISSUED') { if (typeof event.payload.cadetId === 'string') ids.add(event.payload.cadetId) }
+  else if (!/^CADET_(CHANNEL|NOTICES|TICKET)/.test(event.eventType)) {
+    if (typeof event.payload.cadetId === 'string') ids.add(event.payload.cadetId)
+    for (const cadet of state.cadets) if (cadet.cadetId === event.entityId || cadet.appliedEventIds.includes(event.eventId)) ids.add(cadet.cadetId)
+    for (const need of state.stillNeeded) if (need.requirementId === event.entityId || need.appliedEventIds.includes(event.eventId)) ids.add(need.cadetId)
+    const transaction = state.transactions.find(candidate => candidate.transactionId === event.entityId)
+    if (transaction) ids.add(transaction.cadetId)
+  }
+  return [...ids]
 }
 
 const importEcdhPublic = (spki: string) => { const normalized = spki.replaceAll('-', '+').replaceAll('_', '/'); const bytes = Uint8Array.from(atob(normalized + '='.repeat((4 - normalized.length % 4) % 4)), c => c.charCodeAt(0)); return crypto.subtle.importKey('spki', bytes, { name: 'ECDH', namedCurve: 'P-256' }, false, []) }
@@ -86,7 +99,7 @@ export class UnitRuntime {
     this.cadetPublisher = new CadetPublisher({
       channelFor: async cadetId => { const channel = (await controller.technicalState()).cadetChannels.find(entry => entry.cadetId === cadetId); return channel && { key: channel.channelKey, address: channel.channelAddress } },
       viewFor: cadetId => controller.cadetViewFor(cadetId),
-      cadetIdFor: async event => this.revoked ? undefined : cadetIdOf(event, await controller.technicalState()),
+      cadetIdsFor: async event => this.revoked ? [] : cadetIdsOf(event, await controller.technicalState()),
       wallet, storage: options.storage ?? localStorage, storageKey: `argus.cadet-publish.v1.${device.record.unit!.unitId}`,
     })
   }

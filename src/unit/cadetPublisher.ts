@@ -13,8 +13,8 @@ export type CadetPublisherDeps = {
   /** The cadet's channel as the unit log has it, or none (a cadet with no channel has nowhere to be published). */
   channelFor: (cadetId: string) => Promise<CadetChannelRef | undefined>
   viewFor: (cadetId: string) => Promise<CadetView>
-  /** Which cadet's record an event changes (undefined: none). Only used by noteEvent. */
-  cadetIdFor?: (event: SignedArgusEvent) => Promise<string | undefined>
+  /** Which cadets' records an event changes (none: an empty list). Only used by noteEvent. */
+  cadetIdsFor?: (event: SignedArgusEvent) => Promise<string[]>
   wallet: Pick<DeviceWallet, 'prepareRecords' | 'flush' | 'pending' | 'ownTxHex'>
   /** Holds the queue, so a reload or an offline spell resumes where it stopped. */
   storage: Pick<Storage, 'getItem' | 'setItem'>
@@ -70,11 +70,10 @@ export class CadetPublisher {
   lastErrors() { return { ...this.errors } }
   /** A change touched this cadet: queue them and (re)start the debounce. */
   note(cadetId: string) { this.stopped = false; this.add(cadetId); this.schedule(this.debounceMs) }
-  /** A committed event of this device: queue the cadet it touches, if they have a channel. Never throws: a failure here must not fail the command. */
+  /** A committed event of this device: queue every cadet it touches who has a channel. Never throws: a failure here must not fail the command. */
   noteEvent(event: SignedArgusEvent) {
     const work = (async () => {
-      const cadetId = await this.deps.cadetIdFor?.(event)
-      if (cadetId && await this.deps.channelFor(cadetId)) this.note(cadetId)
+      for (const cadetId of new Set(await this.deps.cadetIdsFor?.(event) ?? [])) if (await this.deps.channelFor(cadetId)) this.note(cadetId)
     })().catch(() => undefined).finally(() => { this.noting.delete(work) })
     this.noting.add(work)
   }

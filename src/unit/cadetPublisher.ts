@@ -212,3 +212,27 @@ export async function readCadetRecord(device: { cadet?: Pick<CadetDevice, 'cadet
   }
   return best
 }
+
+/** A notice as read back from a channel: shape-checked, since anyone holding the key could write to it. */
+function parseNotice(value: unknown): NoticeRecord {
+  if (!isRecord(value) || typeof value.noticeId !== 'string' || typeof value.text !== 'string' || typeof value.sentAt !== 'string' || typeof value.from !== 'string') throw new Error('Not a notice.')
+  return { noticeId: value.noticeId, text: value.text, sentAt: value.sentAt, from: value.from }
+}
+
+/**
+ * The cadet's side of notices (ADR 013, mw-kmgi38.6): the notices sealed to the unit's notices channel (to all cadets) and to this cadet's
+ * own channel (to this cadet), each opened only with its own key; a note sealed to another cadet is at another address under another key.
+ * Newest first, each notice ID once.
+ */
+export async function readCadetNotices(device: { cadet?: Pick<CadetDevice, 'channelKey' | 'channelAddress' | 'noticesKey' | 'noticesAddress'> }, api: ChainApi): Promise<NoticeRecord[]> {
+  const { cadet } = device
+  if (!cadet) return []
+  const found = new Map<string, NoticeRecord>()
+  for (const [address, key] of [[cadet.noticesAddress, cadet.noticesKey], [cadet.channelAddress, cadet.channelKey]] as const) {
+    for (const entry of await readChannelRecords(api, address, key)) {
+      if (entry.kind !== 'notice') continue
+      try { const notice = parseNotice(entry.plaintext); if (!found.has(notice.noticeId)) found.set(notice.noticeId, notice) } catch { continue }
+    }
+  }
+  return [...found.values()].sort((a, b) => b.sentAt.localeCompare(a.sentAt) || a.noticeId.localeCompare(b.noticeId))
+}

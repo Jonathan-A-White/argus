@@ -271,6 +271,7 @@ export async function completeTicketRedemption(device: UnlockedDevice, input: { 
  *   check     — a fixed text, so a wrong passphrase is refused before anything is stored
  *   redeeming — the ticket code and the signed redemption, until the network accepts or refuses it
  *   cadet     — the CadetDevice, once the network accepted the redemption
+ *   notices   — the notices this phone has read, with when each was read (mw-kmgi38.6)
  * It never holds a signing key, a wallet, a unit key, a key grant or a unit credential, and nothing in it is readable without the
  * passphrase: not the cadet's name, not even the cadet's ID.
  */
@@ -327,6 +328,22 @@ export async function completeCadetRedemption(device: UnlockedCadetDevice, cadet
   device.record = saveCadetVault({ ...device.record, secrets }, storage)
   device.cadet = cadet
   return device
+}
+
+/** A notice a cadet's phone has read from the chain and keeps (ADR 013, mw-kmgi38.6): the record, plus when this phone showed it as read. */
+export type StoredNotice = { noticeId: string; text: string; from: string; sentAt: string; readAt?: string }
+/** The notices this phone keeps with their read state, as sealed in the cadet record; none before the first is read. Never throws for a damaged entry. */
+export async function loadCadetNotices(device: UnlockedCadetDevice): Promise<StoredNotice[]> {
+  const sealed = device.record.secrets.notices
+  if (!sealed) return []
+  try {
+    const value = JSON.parse(await unseal(device.vaultKey, 'notices', sealed)) as unknown
+    return Array.isArray(value) ? value.filter((entry): entry is StoredNotice => typeof entry?.noticeId === 'string' && typeof entry.text === 'string' && typeof entry.from === 'string' && typeof entry.sentAt === 'string' && (entry.readAt === undefined || typeof entry.readAt === 'string')) : []
+  } catch { return [] }
+}
+/** Keeps the notices, sealed under the passphrase with the rest of the cadet record: their text is not readable in the phone's storage. */
+export async function saveCadetNotices(device: UnlockedCadetDevice, notices: readonly StoredNotice[], storage: Storage2) {
+  device.record = saveCadetVault({ ...device.record, secrets: { ...device.record.secrets, notices: await seal(device.vaultKey, 'notices', JSON.stringify(notices)) } }, storage)
 }
 
 /** SHA-256 fingerprint (16 hex) of the recovery public key, used to name its key grants. */

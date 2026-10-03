@@ -50,7 +50,7 @@ export function UnitGate({ children, runtimeOptions, storage = localStorage }: U
   const lock = () => { if (step.kind === 'ready') step.runtime.stop(); const record = loadDeviceVault(storage); setStep(record ? { kind: 'unlock', record } : { kind: 'welcome' }) }
 
   if (step.kind === 'ready') return <>{children(step.runtime, lock)}</>
-  if (step.kind === 'cadet') return <CadetApp device={step.device} {...(runtimeOptions?.api ? { api: runtimeOptions.api } : {})} onLeave={async () => { await forgetDevice(storage); setError(''); setStep({ kind: 'welcome' }) }} />
+  if (step.kind === 'cadet') return <CadetApp device={step.device} storage={storage} {...(runtimeOptions?.api ? { api: runtimeOptions.api } : {})} onLeave={async () => { await forgetDevice(storage); setError(''); setStep({ kind: 'welcome' }) }} />
   if (step.kind === 'opening') return <main className="loading-state unit-gate" aria-live="polite"><GateBanner /><div className="modal"><h2>Opening your unit…</h2><p>Decrypting this device&apos;s copy and checking BSV testnet for everyone&apos;s latest work.</p></div></main>
   const openOptions = { ...runtimeOptions, storage: runtimeOptions?.storage ?? storage }
   const readOptions = runtimeOptions?.api ? { api: runtimeOptions.api } : {}

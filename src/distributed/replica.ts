@@ -12,6 +12,9 @@ import { SUPPLY_EVENT_KINDS, templateFor } from '../stage3/calendar'
 import { stockMovedSince } from '../stage3/inventoryStatus'
 import { TICKET_LIFETIME_MS, parseKeyGrantRecord, parseTicketCancelledFact, parseTicketIssuedFact, parseTicketRedeemedFact } from '../private-sync/schema'
 import type { KeyGrantRecord, TicketCancelledFact, TicketIssuedFact, TicketRedeemedFact } from '../private-sync/types'
+import { channelAddress } from '../blockchain/anchor'
+import { newChannelKey } from '../unit/envelope'
+import { cadetViewFrom } from './cadetView'
 
 const PERMISSION_FOR: Partial<Record<DistributedEventType, ArgusPermission>> = {
   INVENTORY_ITEM_CREATED: 'inventory.create', INVENTORY_ITEM_UPDATED: 'inventory.adjust', INVENTORY_RECEIVED: 'inventory.adjust',
@@ -26,6 +29,7 @@ const PERMISSION_FOR: Partial<Record<DistributedEventType, ArgusPermission>> = {
   CALENDAR_ATTENDEES_ADDED: 'calendar.write', CALENDAR_ATTENDEES_REMOVED: 'calendar.write', CALENDAR_BUNDLES_ADDED: 'calendar.write', CALENDAR_BUNDLES_REMOVED: 'calendar.write', CALENDAR_TASK_UPDATED: 'calendar.write', CALENDAR_TASK_REMOVED: 'calendar.write',
   PROPERTY_CORRECTED: 'inventory.adjust', ANNUAL_ROLLOVER_COMPLETED: 'cadets.manage', CADETS_IMPORTED: 'cadets.manage',
   UNIT_KEY_ROTATED: 'users.revoke', RECOVERY_KEY_REGISTERED: 'users.authorize',
+  CADET_CHANNEL_CREATED: 'cadets.admit', CADET_CHANNEL_ROTATED: 'cadets.admit', CADET_NOTICES_KEY_CREATED: 'notices.send',
 }
 /** Unit key generations are named e<n>-<random> so two Masters rotating at once never reuse a name. */
 export const EPOCH_ID_PATTERN = /^e[1-9][0-9]{0,5}(-[0-9a-f]{4,16})?$/
@@ -58,6 +62,11 @@ const NEED_EDITABLE = ['displayLabel', 'itemId', 'size', 'quantityNeeded', 'quan
 export const RECORD_CORRECTION_KINDS: RecordCorrectionKind[] = ['RECEIPT_QUANTITY', 'ISSUE_QUANTITY', 'RETURN_QUANTITY']
 export const CONFLICT_OUTCOMES: ConflictOutcome[] = ['KEEP_AS_IS', 'RECORD_STILL_NEEDED']
 const MAX_NOTE_LENGTH = 500
+/** Channel keys travel as 32 bytes in lowercase hex, one spelling, so a key is never in use twice under two spellings. */
+const CHANNEL_KEY = /^[0-9a-f]{64}$/
+const MAX_CHANNEL_REASON_LENGTH = 200
+/** The entity of the unit's one CADET_NOTICES_KEY_CREATED event. */
+export const NOTICES_CHANNEL_ENTITY = 'cadet-notices'
 export type RecordCorrectionInput = { kind: RecordCorrectionKind; targetEventId: string; lineId?: string; from?: number; to: number; reason: string }
 const CALENDAR_SCALARS: readonly CalendarScalarField[] = ['title', 'startsAt', 'notes', 'active', 'kind']
 /** bundleIds/cadetIds stay here only so legacy whole-list updates still fold; new edits use the set-style ADDED/REMOVED events. */
@@ -587,6 +596,34 @@ export class ArgusReplica {
     return member?.roleChangedAt ? member.role : credential.role
   }
 
+  // ---------- cadet channels (docs/adr/013-cadet-channels.md) ----------
+  /** Makes the cadet's private channel: a fresh key, recorded only in the sealed unit log, and the address derived from it. */
+  async createCadetChannel(cadetId: string, options: CommandOptions = {}) {
+    await this.actor('cadets.admit', options.timestamp)
+    const state = await this.repository.snapshot()
+    if (!state.cadets.some(cadet => cadet.cadetId === cadetId)) throw new Error('Cadet was not found.')
+    if (state.cadetChannels.some(channel => channel.cadetId === cadetId)) throw new Error('This cadet already has a channel.')
+    const channelKey = newChannelKey()
+    return this.commit({ eventType: 'CADET_CHANNEL_CREATED', entityId: cadetId, payload: { cadetId, channelKey, channelAddress: channelAddress(channelKey) }, ...options })
+  }
+  /** A new key and address for the cadet's channel (Replace phone): a phone holding the old key reads nothing new. */
+  async rotateCadetChannel(cadetId: string, reason: string, options: CommandOptions = {}) {
+    const why = reason.trim(); if (!why || why.length > MAX_CHANNEL_REASON_LENGTH) throw new Error(`Give a reason (up to ${MAX_CHANNEL_REASON_LENGTH} characters) for replacing the channel.`)
+    await this.actor('cadets.admit', options.timestamp)
+    if (!(await this.repository.snapshot()).cadetChannels.some(channel => channel.cadetId === cadetId)) throw new Error('This cadet has no channel to replace.')
+    const channelKey = newChannelKey()
+    return this.commit({ eventType: 'CADET_CHANNEL_ROTATED', entityId: cadetId, payload: { cadetId, channelKey, channelAddress: channelAddress(channelKey), reason: why }, ...options })
+  }
+  /** Makes the unit's one notices channel, which every cadet's ticket grants. */
+  async createNoticesKey(options: CommandOptions = {}) {
+    await this.actor('notices.send', options.timestamp)
+    if ((await this.repository.snapshot()).noticesChannel) throw new Error('This unit already has a notices key.')
+    const key = newChannelKey()
+    return this.commit({ eventType: 'CADET_NOTICES_KEY_CREATED', entityId: NOTICES_CHANNEL_ENTITY, payload: { key, address: channelAddress(key) }, ...options })
+  }
+  /** The record staff seal to this cadet's channel, as this device's fold has it. */
+  async cadetViewFor(cadetId: string) { return cadetViewFrom(await this.repository.snapshot(), cadetId) }
+
   // ---------- canonical fold ----------
   private applyEvent(state: RepositoryState, event: SignedArgusEvent) {
     const permission = PERMISSION_FOR[event.eventType]; if (permission) this.authorization.require(event.actorPublicIdentity, permission, event.timestamp)
@@ -788,6 +825,27 @@ export class ArgusReplica {
         if (typeof publicKey !== 'string' || typeof fingerprint !== 'string' || !/^[0-9a-f]{16}$/.test(fingerprint) || event.entityId !== `recovery:${fingerprint}`) throw new Error('Corrupted recovery key event.')
         state.recoveryKey = { publicKey, fingerprint, registeredBy: event.actorPublicIdentity, registeredAt: event.timestamp, eventId: event.eventId }
         return
+      }
+      case 'CADET_CHANNEL_CREATED': case 'CADET_CHANNEL_ROTATED': {
+        const value = event.payload as { cadetId?: unknown; channelKey?: unknown; channelAddress?: unknown; reason?: unknown }, rotating = event.eventType === 'CADET_CHANNEL_ROTATED'
+        if (typeof value.cadetId !== 'string' || value.cadetId !== event.entityId || typeof value.channelKey !== 'string' || !CHANNEL_KEY.test(value.channelKey) || typeof value.channelAddress !== 'string' || (rotating && (typeof value.reason !== 'string' || !value.reason.trim() || value.reason.length > MAX_CHANNEL_REASON_LENGTH))) throw new Error('Corrupted cadet channel event.')
+        if (value.channelAddress !== channelAddress(value.channelKey)) throw new Error('This channel’s address is not derived from its key.')
+        if (!state.cadets.some(cadet => cadet.cadetId === value.cadetId)) throw new Error('Cadet projection is missing.')
+        if (channelKeyInUse(state, value.channelKey)) throw new Error('This channel key is already in use.')
+        const channel = state.cadetChannels.find(candidate => candidate.cadetId === value.cadetId)
+        // One channel per cadet: of two made offline for the same cadet, the first in the unit's order holds.
+        if (!rotating) { if (channel) throw new Error('This cadet already has a channel.'); state.cadetChannels.push({ cadetId: value.cadetId, channelKey: value.channelKey, channelAddress: value.channelAddress, version: 1, createdBy: event.actorPublicIdentity, createdAt: event.timestamp, updatedAt: event.timestamp, eventId: event.eventId }); return }
+        if (!channel) throw new Error('This cadet has no channel to replace.')
+        Object.assign(channel, { channelKey: value.channelKey, channelAddress: value.channelAddress, version: channel.version + 1, updatedAt: event.timestamp, eventId: event.eventId, rotationReason: (value.reason as string).trim() }); return
+      }
+      case 'CADET_NOTICES_KEY_CREATED': {
+        const { key, address } = event.payload as { key?: unknown; address?: unknown }
+        if (event.entityId !== NOTICES_CHANNEL_ENTITY || typeof key !== 'string' || !CHANNEL_KEY.test(key) || typeof address !== 'string') throw new Error('Corrupted notices key event.')
+        if (address !== channelAddress(key)) throw new Error('This channel’s address is not derived from its key.')
+        // One per unit: of two made offline, the first in the unit's order holds.
+        if (state.noticesChannel) throw new Error('This unit already has a notices key.')
+        if (channelKeyInUse(state, key)) throw new Error('This channel key is already in use.')
+        state.noticesChannel = { key, address, createdBy: event.actorPublicIdentity, createdAt: event.timestamp, eventId: event.eventId }; return
       }
       case 'CALENDAR_EVENT_CREATED': {
         if (state.calendar.some(candidate => candidate.calendarEventId === event.entityId)) throw new Error('Supply event ID already exists.')
@@ -1175,7 +1233,7 @@ export class ArgusReplica {
     const genesis = state.genesis ?? { inventory: [], catalog: [] }
     state.clock = 0
     state.inventory = structuredClone(genesis.inventory); state.catalog = structuredClone(genesis.catalog)
-    state.countSessions = []; state.cadets = []; state.stillNeeded = []; state.transactions = []; state.conflicts = []; state.members = []; state.admissionConfirmations = []; state.rejected = []; state.calendar = []; state.corrections = []; state.rollovers = []; state.keyEpochs = []; state.tickets = []; delete state.recoveryKey
+    state.countSessions = []; state.cadets = []; state.stillNeeded = []; state.transactions = []; state.conflicts = []; state.members = []; state.admissionConfirmations = []; state.rejected = []; state.calendar = []; state.corrections = []; state.rollovers = []; state.keyEpochs = []; state.tickets = []; delete state.recoveryKey; state.cadetChannels = []; delete state.noticesChannel
     state.bundles = FACTORY_BUNDLES.map(source => factoryBundle(source, state.inventory))
     const ordered = [...state.events].sort((a, b) => eventSortKey(a.event) < eventSortKey(b.event) ? -1 : 1)
     for (const record of ordered) this.tryApply(state, record.event)
@@ -1403,6 +1461,8 @@ const concurrentEditOfSameFields = (state: RepositoryState, event: SignedArgusEv
 // ---------- supply, Still Needed, correction and conflict helpers ----------
 type CorrectionPlan = { kind: RecordCorrectionKind; target: SignedArgusEvent; to: number; item: InventoryProjection; stockDelta: number; issuedDelta: number; propertyDelta: number; cadet?: CadetProjection; line?: SupplyTransactionLine; propertyId?: string; restore?: Omit<CurrentPropertyLine, 'quantity'>; problem?: { reason: string; shortfalls: ConflictShortfall[] } }
 const COUNT_EVENT_TYPES: DistributedEventType[] = ['COUNT_SESSION_RECONCILED', 'INVENTORY_COUNT_SUBMITTED']
+/** A key may seal one channel only: another cadet's or the notices channel reusing it would let one phone read the other's records. */
+const channelKeyInUse = (state: RepositoryState, key: string) => state.cadetChannels.some(channel => channel.channelKey === key) || state.noticesChannel?.key === key
 const isOpenNeed = (need: Pick<StillNeededProjection, 'status'>) => need.status === 'OPEN' || need.status === 'PARTIALLY_FULFILLED'
 const normalizeLabel = (value: string) => value.trim().toLowerCase().replace(/\s+/g, ' ')
 const shortfall = (kind: ConflictShortfall['kind'], item: InventoryProjection, available: number, requested: number): ConflictShortfall => ({ kind, itemId: item.entityId, label: item.name, variant: item.variant, available, requested })

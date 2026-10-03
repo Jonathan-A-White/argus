@@ -6,12 +6,16 @@ import { parseTicketRedeemedFact } from '../private-sync/schema'
 import type { TicketInvitation, TicketRedeemedFact } from '../private-sync/types'
 
 export const ROLE_PERMISSIONS: Record<ArgusRole, readonly ArgusPermission[]> = {
-  MASTER: ['inventory.read', 'inventory.issue', 'inventory.return', 'inventory.count', 'inventory.adjust', 'inventory.create', 'cadets.read', 'cadets.manage', 'calendar.read', 'calendar.write', 'bundles.read', 'bundles.manage', 'audit.read', 'conflicts.resolve', 'users.authorize', 'users.revoke', 'users.manageRoles'],
-  INSTRUCTOR: ['inventory.read', 'inventory.issue', 'inventory.return', 'inventory.count', 'cadets.read', 'calendar.read', 'audit.read'],
-  SUPPLY_OFFICER: ['inventory.read', 'inventory.issue', 'inventory.return', 'inventory.count', 'inventory.adjust', 'inventory.create', 'cadets.read', 'cadets.manage', 'calendar.read', 'calendar.write', 'bundles.read', 'bundles.manage', 'audit.read', 'conflicts.resolve'],
+  MASTER: ['inventory.read', 'inventory.issue', 'inventory.return', 'inventory.count', 'inventory.adjust', 'inventory.create', 'cadets.read', 'cadets.manage', 'calendar.read', 'calendar.write', 'bundles.read', 'bundles.manage', 'audit.read', 'conflicts.resolve', 'users.authorize', 'users.revoke', 'users.manageRoles', 'cadets.admit', 'notices.send'],
+  INSTRUCTOR: ['inventory.read', 'inventory.issue', 'inventory.return', 'inventory.count', 'cadets.read', 'calendar.read', 'audit.read', 'cadets.admit', 'notices.send'],
+  SUPPLY_OFFICER: ['inventory.read', 'inventory.issue', 'inventory.return', 'inventory.count', 'inventory.adjust', 'inventory.create', 'cadets.read', 'cadets.manage', 'calendar.read', 'calendar.write', 'bundles.read', 'bundles.manage', 'audit.read', 'conflicts.resolve', 'cadets.admit', 'notices.send'],
   SUPPLY_ASSISTANT: ['inventory.read', 'inventory.issue', 'inventory.return', 'inventory.count', 'cadets.read', 'calendar.read', 'bundles.read'],
+  // A cadet reads only their own sealed record (ADR 013) and never acts in the unit log.
+  CADET: [],
 }
 
+/** ADR 013: cadets read their own channel and are never members, so no unit credential, grant or rotation ever reaches one. */
+const CADET_OUTSIDE_UNIT = 'A cadet never joins the unit: cadets read only their own channel (ADR 013).'
 type Clock = () => string
 const unsigned = <T extends { signature: string }>(value: T) => { const rest: Partial<T> = { ...value }; delete rest.signature; return canonicalize(rest) }
 
@@ -120,6 +124,7 @@ export class AuthorizationService {
   async acceptCredential(credential: AuthorityCredential) {
     if (isTicketCredential(credential)) return this.acceptTicketCredential(credential)
     if (credential.credentialVersion !== 1 || !credential.credentialId || !credential.subjectPublicIdentity || !credential.issuedBy || !Array.isArray(credential.permissions)) throw new Error('Malformed authority credential.')
+    if (credential.role === 'CADET') throw new Error(CADET_OUTSIDE_UNIT)
     if (!(await this.verifier.verify(unsigned(credential), credential.signature, credential.issuedBy))) throw new Error('Invalid credential signature.')
     if (!this.issuerCanAuthorize(credential.issuedBy, credential.issuedAt)) throw new Error('Credential issuer is not authorized.')
     // Master authority is delegated only by the unit authority itself, never re-delegated by another Master.
@@ -158,6 +163,7 @@ export const CADET_TICKET_ROLES: readonly ArgusRole[] = ['SUPPLY_OFFICER', 'SUPP
  * It needs no permission of its own (adding one would change existing credentials): the ticket verifier and the unit fold apply this rule.
  */
 export function ticketRuleViolation(issuerRole: ArgusRole, ticketRole: ArgusRole): string | undefined {
+  if (ticketRole === 'CADET') return 'A cadet’s ticket is made from the cadet’s record: it opens only that cadet’s channel, never the unit.'
   if (issuerRole === 'MASTER') return undefined
   if (issuerRole === 'INSTRUCTOR') return CADET_TICKET_ROLES.includes(ticketRole) ? undefined : 'An Instructor can make tickets only for Supply Officers and Supply Assistants. Only a Master can make a Master or Instructor ticket.'
   return 'Only a Master or an Instructor can make tickets.'

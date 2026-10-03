@@ -115,6 +115,11 @@ export class DistributedAppController {
   recordTicketIssued(fact: Parameters<ArgusReplica['recordTicketIssued']>[0]) { return this.run(r => r.recordTicketIssued(fact)) }
   recordTicketCancelled(fact: Parameters<ArgusReplica['recordTicketCancelled']>[0]) { return this.run(r => r.recordTicketCancelled(fact)) }
   recordTicketRedeemed(fact: Parameters<ArgusReplica['recordTicketRedeemed']>[0]) { return this.run(r => r.recordTicketRedeemed(fact)) }
+  createCadetChannel(cadetId: string) { return this.run(r => r.createCadetChannel(cadetId)) }
+  rotateCadetChannel(cadetId: string, reason: string) { return this.run(r => r.rotateCadetChannel(cadetId, reason)) }
+  createNoticesKey() { return this.run(r => r.createNoticesKey()) }
+  /** The record a cadet's phone reads (ADR 013); built from this device's fold. */
+  cadetViewFor(cadetId: string) { return this.ready().cadetViewFor(cadetId) }
   async markPublished(eventIds: string[], transactionId: string) { await this.ready().markPublished(eventIds, transactionId); return this.project() }
   /** Re-reads the delivery of these records (or every unverified one) from the sync provider: queued, publishing, on chain, mined, rolled back. */
   async refreshDelivery(eventIds?: string[]) { await this.ready().refreshDelivery(eventIds); return this.project() }

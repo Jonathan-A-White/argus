@@ -63,6 +63,17 @@ describe('publishing cadet records (ADR 013, mw-kmgi38.3)', { timeout: 240_000 }
     expect(await chain.unconfirmedHistory(records[0].envelope.ch)).toEqual([records[0].txid])
   })
 
+  it('a batch of records for different cadets is one transaction that pays each cadet’s address, and each cadet’s address lists it', async () => {
+    const chain = new FakeChain(), { master } = await newUnit(chain)
+    const [x, y] = [await addCadet(master, 'Quinn Private'), await addCadet(master, 'Reese Private')]
+    const result = await master.publishAllCadetRecords()
+    expect(result).toEqual({ done: 2, total: 2, failed: 0 })
+    const [first, second] = [await recordsAt(master, chain, x), await recordsAt(master, chain, y)]
+    expect(first).toHaveLength(1); expect(second).toHaveLength(1)
+    expect(first[0].txid).toBe(second[0].txid) // one transaction for both
+    expect(first[0].envelope.ch).not.toBe(second[0].envelope.ch)
+  })
+
   it('a return one second later folds into the same publish: still one transaction, and the item is gone', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const chain = new FakeChain(), { master, shorts } = await newUnit(chain)
@@ -123,20 +134,22 @@ describe('publishing cadet records (ADR 013, mw-kmgi38.3)', { timeout: 240_000 }
     expect(await readCadetRecord({}, chain)).toBeUndefined()
   })
 
-  it('publishAllCadetRecords fills every channel (30 cadets, 3 without one), one transaction at a time, and each phone reads only its own', async () => {
+  it('publishAllCadetRecords fills every channel (30 cadets, 3 without one), 25 records to a transaction, one transaction at a time, and each phone reads only its own', async () => {
     const chain = new FakeChain(), { master, shorts } = await newUnit(chain, 2_000_000)
     const cadets: string[] = [], bare: string[] = [], names = new Map<string, string>()
     for (let index = 0; index < 30; index++) { const withChannel = index % 10 !== 9, id = await addCadet(master, `Cadet Number${index}`, withChannel); names.set(id, `Cadet Number${index}`); (withChannel ? cadets : bare).push(id) }
     expect(cadets).toHaveLength(27); expect(bare).toHaveLength(3)
     await issueOne(master, cadets[0], shorts, 'issue-first')
     await master.cadetPublisher.run() // what the debounce would do, and the queue it leaves is empty
+    const transactionsBefore = chain.transactions().length
     let inFlight = 0, most = 0
     const broadcast = chain.broadcast.bind(chain)
     chain.broadcast = async hex => { inFlight++; most = Math.max(most, inFlight); try { return await broadcast(hex) } finally { inFlight-- } }
     const progress: Array<{ done: number; total: number; failed: number }> = []
     const result = await master.publishAllCadetRecords(entry => { progress.push({ ...entry }) })
     expect(result).toEqual({ done: 27, total: 27, failed: 0 })
-    expect(progress.at(-1)).toEqual({ done: 27, total: 27, failed: 0 }); expect(progress.length).toBeGreaterThanOrEqual(27)
+    expect(progress.at(-1)).toEqual({ done: 27, total: 27, failed: 0 }); expect(progress.map(entry => entry.done)).toEqual([0, 25, 27]) // after each transaction
+    expect(chain.transactions().length - transactionsBefore).toBe(2) // 27 records: 25 + 2
     expect(most).toBe(1)
     for (const cadetId of cadets) expect(await readCadetRecord(await phoneOf(master, cadetId), chain)).toMatchObject({ cadetId, fullName: names.get(cadetId) })
     // X's key cannot open Y's record.

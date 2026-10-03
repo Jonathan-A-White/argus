@@ -102,9 +102,9 @@ export class UnitRuntime {
       noticeFor: async noticeId => {
         const state = await controller.technicalState(), notice = state.notices.find(entry => entry.noticeId === noticeId)
         if (!notice) return undefined
-        const channel = notice.audience === 'all' ? state.noticesChannel && { key: state.noticesChannel.key, address: state.noticesChannel.address } : state.cadetChannels.filter(entry => entry.cadetId === (notice.audience as { cadetId: string }).cadetId).map(entry => ({ key: entry.channelKey, address: entry.channelAddress }))[0]
+        const channels = state.cadetChannels.filter(entry => notice.audience === 'all' || entry.cadetId === notice.audience.cadetId).map(entry => ({ key: entry.channelKey, address: entry.channelAddress }))
         const sender = state.members.find(member => member.publicIdentity === notice.sentBy)
-        return channel && { channel, record: { noticeId, text: notice.text, sentAt: notice.sentAt, from: sender?.displayName ?? 'Staff' } }
+        return { channels, record: { noticeId, text: notice.text, sentAt: notice.sentAt, from: sender?.displayName ?? 'Staff' } }
       },
       cadetIdsFor: async event => this.revoked ? [] : cadetIdsOf(event, await controller.technicalState()),
       wallet, storage: options.storage ?? localStorage, storageKey: `argus.cadet-publish.v1.${device.record.unit!.unitId}`,
@@ -487,15 +487,16 @@ export class UnitRuntime {
   }
 
   /**
-   * Master, Instructor or Supply Officer (notices.send): a notice to every cadet (sealed to the unit's notices channel) or to one cadet
-   * (sealed to their channel), ADR 013 / mw-kmgi38.5. Records NOTICE_SENT in the unit log (which cadets never read), then publishes the
-   * sealed text from this device's wallet through the publisher's queue, one record in one transaction. A cadet with no channel is refused
-   * with nothing recorded. When the network does not take the record now, the notice stays queued and goes out later (`published` false).
+   * Master, Instructor or Supply Officer (notices.send): a notice to every cadet or to one cadet, ADR 013 / mw-kmgi38.5. Records
+   * NOTICE_SENT in the unit log (which cadets never read), then publishes the sealed text from this device's wallet through the
+   * publisher's queue: one record in the channel of each cadet it is for (a notice to all is one record per cadet who has a channel
+   * when it goes out, in transactions of up to 25 records; a note to one cadet is one record in one transaction). A cadet with no
+   * channel is refused with nothing recorded. When the network does not take the records now, the notice stays queued and goes out
+   * later to the channels it has not reached (`published` false). The unit's shared notices address is no longer written.
    */
   async sendNotice(audience: NoticeAudience, text: string): Promise<{ noticeId: string; published: boolean }> {
     if (this.revoked) throw new Error('Your access to this unit was removed.')
     this.authorization.require(this.device.record.signingIdentity, 'notices.send')
-    if (audience === 'all' && !(await this.controller.technicalState()).noticesChannel) await this.controller.createNoticesKey()
     const known = new Set((await this.controller.technicalState()).notices.map(notice => notice.noticeId))
     const projection = await this.controller.sendNotice(audience, text), noticeId = projection.notices.find(notice => !known.has(notice.noticeId))!.noticeId
     this.emit(projection)
@@ -507,9 +508,9 @@ export class UnitRuntime {
   }
 
   /**
-   * Master only: seals every cadet's current record to their channel (every cadet who has one), one transaction at a time, from this
-   * device's wallet. Resumable: what did not go out stays queued, and the next call (or the publisher's own retry) carries on. Reports
-   * how far it is after each cadet. A cadet whose record is over the cap, or whose record the network refused, counts as failed.
+   * Master only: seals every cadet's current record to their channel (every cadet who has one), up to 25 records to a transaction
+   * (250 cadets: 10 transactions), one transaction at a time, from this device's wallet. Resumable: what did not go out stays queued, and the next call (or the publisher's own retry) carries on. Reports
+   * how far it is after each transaction. A cadet whose record is over the cap, or whose record the network refused, counts as failed.
    */
   async publishAllCadetRecords(onProgress?: (progress: CadetPublishProgress) => void): Promise<CadetPublishProgress> {
     this.requireMaster()

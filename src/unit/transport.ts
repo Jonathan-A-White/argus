@@ -44,7 +44,7 @@ export type ChainTransportDependencies = {
 }
 
 /** Records in one transaction are capped both by count and by total size so a transaction stays small and cheap to relay. */
-const MAX_BATCH_BYTES = 90 * 1024
+export const MAX_BATCH_BYTES = 90 * 1024
 const MAX_HISTORY_PAGES_PER_SCAN = 20
 /**
  * A transaction the network accepted must appear on the anchor history. One still missing after

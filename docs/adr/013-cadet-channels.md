@@ -1,9 +1,8 @@
 # ADR 013: Cadet channels
 
-**Status:** accepted for implementation, 2026-10-03 (story mw-kmgi38.1 of epic mw-kmgi38). This first version covers the
-domain: the unit-log events, the projections, the cadet's record (CadetView), sealing to a channel and the channel address.
-The cadet ticket (mw-kmgi38.2), publishing (mw-kmgi38.3), cadet mode (mw-kmgi38.4) and notices (mw-kmgi38.5, .6) build on it
-and will amend this ADR; mw-kmgi38.9 makes it final.
+**Status:** final, 2026-10-03 (story mw-kmgi38.9 of epic mw-kmgi38). It began as the domain design of story mw-kmgi38.1 and was
+amended by every story after it; the amendments below are kept in order, and **"The design as built"** at the end says in one
+place what the epic delivered, where a later story changed an earlier one, and what is not built.
 
 ## Context
 
@@ -114,7 +113,7 @@ Only, from its cadet ticket (mw-kmgi38.2):
 * the unit's notices key and notices address;
 * its cadet ID and display name, and its own device keys.
 
-It holds **no** epoch key, no unit credential, no key grant and no other cadet's key. It polls two small addresses and can
+It holds **no** epoch key, no unit credential, no key grant and no other cadet's key. It polls two small addresses (one, its own channel, after mw-kmgi38.15) and can
 open nothing else: not the unit log, not another cadet's record. Losing the phone exposes that one cadet's record and the
 notices; Replace phone rotates the channel (new key, new address), and the old phone reads nothing new.
 
@@ -127,8 +126,8 @@ notices; Replace phone rotates the channel (new key, new address), and the old p
   `cadets.admit` and `notices.send`: the unit creator's own Master device credential (`createMasterDevice`,
   `src/unit/vault.ts`), direct admissions and role changes. Members admitted by ticket (whose permissions follow
   `ROLE_PERMISSIONS` when the fold reads them) and devices set up or restored after this change have them. An existing
-  unit's Master needs a fresh credential before it can make channels: left to a later story (see mw-kmgi38.1's closing comment).
-* Channel addresses are new addresses on WhatsOnChain: a cadet phone reads two, never the unit anchor, so 250 cadets add
+  unit's Master needs a fresh credential before it can make channels: done by story mw-kmgi38.11 (below).
+* Channel addresses are new addresses on WhatsOnChain: a cadet phone reads two (one after mw-kmgi38.15), never the unit anchor, so 250 cadets add
   250 small readers, not 250 readers of the unit's history.
 
 ## Amendments
@@ -229,4 +228,52 @@ notices; Replace phone rotates the channel (new key, new address), and the old p
   queue and a notice to all (250 records: 10 transactions). A note to one cadet and a single record stay one transaction. A notice that
   did not reach everyone stays queued with the addresses it has reached (`argus.cadet-publish.v1.<unitId>.notices.delivered`, addresses
   only) and a retry sends only the rest. Correlation of a notice's record is `notice:<noticeId>:<channelAddress>`.
+* **2026-10-03, story mw-kmgi38.12 (a record goes out without waiting for a change).** Making a cadet's channel (issuing the cadet's ticket,
+  `CADET_CHANNEL_CREATED`, `CADET_CHANNEL_ROTATED`, `CADET_TICKET_ISSUED`) queues that cadet, so the first record is published at once. Events that
+  change cadets without naming one in the payload (annual rollover, roster import, a conflict resolved with new needs, a quantity correction)
+  queue every cadet they changed, found by the cadets whose `appliedEventIds` include the event. A change that alters no cadet's record
+  (a new cadet with no channel, stock events, calendar, bundles) queues nobody.
+* **2026-10-03, story mw-kmgi38.11 (an existing Master gains the cadet permissions).** A credential carries the permission list it was made
+  with, so a Master device made before `cadets.admit` and `notices.send` existed re-issues its own credential with the current
+  `ROLE_PERMISSIONS` when it opens, and records it (the Activity line "has the current Master permissions"). Only a device holding the unit
+  authority (the creator, or a device restored from a recovery file) can sign it, so a delegated Master is brought up to date the next time an
+  authority device opens. This closes the "Consequences" item below about existing units.
+* **2026-10-03, story mw-kmgi38.13 (the phone ticket from the cadet drawer).** The cadet drawer has a **Phone ticket** section: **Make phone
+  ticket** (for `cadets.admit`) calls `issueCadetTicket`, which makes the cadet's channel when there is none, and shows the code and QR
+  once, labelled with the cadet ID and never the name; afterwards the drawer says when and by whom the ticket was made. **Message this cadet**
+  then sends. A ticket the network did not take is saved and goes out later.
+* **2026-10-03, stories mw-kmgi38.7 and mw-kmgi38.8 (proof at scale).** 20 simulated staff phones issuing and returning at once converge to the
+  same state (`docs/concurrency.md`), and the chain client backs off with jitter on HTTP 429. 250 cadets with channels each get their record
+  and the notice to all published; each of 250 phones reads exactly its own record and its notices and opens no other cadet's (62,250
+  cross-reads refused); a unit key rotation with 250 cadets stays one unit record, since cadets are never members (`src/unit/cadetScale.test.ts`).
+  The test redeems 50 of the 250 tickets in full and builds the other 200 phones' records directly, to keep the run under 120 s.
 
+## The design as built
+
+* **What the epic delivered.** Per-cadet channels (a key and an address of their own); a ticket per cadet that gives a phone those keys and
+  no unit key; staff phones that keep each cadet's record current (one record in one transaction, up to 25 records to a transaction when
+  many go at once); cadet mode (**My gear**: **Have** and **Still needed**, **Notices**, **Settings**, **Leave this unit**, no unit screen);
+  notices to all cadets and to one cadet, with an unread badge and banner and, while the app is open, a device notification.
+* **Where a later story replaced an earlier one.** Notices to all were first one record at a shared notices address read by every cadet
+  (mw-kmgi38.5, .6); mw-kmgi38.15 replaced that with one record per cadet channel, so a cadet phone reads one address, and the poll went from
+  every 5 minutes to every **25 minutes**, on open, on return to the tab and on **Refresh**. The notices key and address are still in the
+  cadet ticket and unused; the notices key is no longer made by `sendNotice` (`issueCadetTicket` still makes it).
+* **Privacy as shipped.** A cadet phone holds its own channel key and address, the unit's (unused) notices key and address, its cadet ID
+  and name, and no epoch key, credential, key grant or other cadet's key. Everything on chain is AES-GCM ciphertext; only addresses link a
+  channel to the issuing staff wallet (see the mw-kmgi38.2 consequence). A removed staff member who copied channel keys can read those
+  cadets' records until each channel is rotated.
+* **Not built (known, for later).**
+  * **Replace phone has no screen.** `reissueCadetTicket` rotates the cadet's channel (reason `Replace phone`) and makes a new ticket and is
+    tested, but the cadet drawer has no button for it, and no screen shows the drawer's phone line (`cadetPhoneLine`: "Phone: joined <date>"
+    or "No phone yet"). A made code cannot be shown a second time.
+  * **No cancel or sweep of an unused cadet ticket:** its starter satoshis stay at the ticket address, and `reissueCadetTicket` does not
+    cancel the previous open ticket (it redeems only into the replaced channel, which staff no longer read).
+  * **No Web Push.** A closed app shows nothing, since that needs a push server, which A.R.G.U.S. does not have. If Luke later wants a
+    cadet's phone told while the app is closed, it is a decision for a later epic (a push service sees only that a notice exists, never its
+    text, but it is a server, which this design avoids).
+  * **A cadet phone remembers no transactions.** Each poll fetches every transaction at the cadet's address, so a poll costs 2 requests plus
+    one per transaction there; the 0.33 requests a second of `docs/concurrency.md` counts only the scans. Remembering what was read is a
+    story of its own.
+  * **The last record is kept in memory only,** so a cadet who opens the app offline before the first read sees "Could not reach the
+    network", not yesterday's record; the cadet Settings sheet has no Lock; a phone that joins late sees every earlier notice to all as new.
+  * `issueCadetTicket` gets slower as the unit log grows (about 0.26 s a ticket at 250 cadets).

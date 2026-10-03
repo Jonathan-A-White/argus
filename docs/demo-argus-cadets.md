@@ -63,8 +63,9 @@ Phone B's camera.
 
 Tap **Hide**, close the drawer and open the cadet again.
 
-**Expect:** the drawer now says "Phone ticket made" with today's date, "by You", and there is no **Make phone ticket** button:
-the code is shown once, so copy it now.
+**Expect:** the drawer now says "Phone ticket made" with today's date, "by You", and a line "No phone yet" (no phone has joined
+yet). There is no **Make phone ticket** button but there is a **Replace phone** button (step 10): the code is shown once, so copy it
+now.
 
 Within a few seconds of the ticket being made, Phone A also publishes the cadet's first record, without any other change.
 
@@ -87,6 +88,10 @@ Choose a passphrase (for example `cadet one 2026`) twice and tap **Join unit**.
 say "Reading your gear…", and if the first record is not there yet, "The supply counter has not published your gear yet": tap
 **Refresh** after a few seconds.) There are no tabs and no unit screens: the only buttons are **Notices**, **Settings** and
 **Refresh**. The phone needed no coins of its own; the ticket paid for joining.
+
+Back on Phone A, open the cadet's drawer again (close it and open it, to read the line afresh).
+
+**Expect:** the line under the ticket now says "Phone: joined" with today's date, where it said "No phone yet" before.
 
 ## 6. An issue shows up (Phone A, then Phone B)
 
@@ -149,7 +154,24 @@ Look around Phone B.
 reach one. Tap **Settings**: it says which cadet the phone belongs to, says where device notifications stand (with **Allow
 notifications** when the phone has not been asked), and offers **Close** and **Leave this unit**.
 
-## 10. Leave this unit (Phone B)
+## 10. Replace the cadet's phone (Phone A, then Phone B)
+
+Say Phone B was lost or swapped. On Phone A, open the cadet's drawer. Under the ticket line tap **Replace phone**.
+
+**Expect:** a question, "Replace this cadet's phone? The old phone stops getting updates.", with the buttons **Yes, replace
+phone** and **Keep this phone**. Tap **Keep this phone**: nothing happens and the **Replace phone** button is back. Tap **Replace
+phone** again, then **Yes, replace phone**.
+
+**Expect:** the same box as in step 4, **Phone ticket ready for** the cadet's ID, with a new QR and a new code (different from the
+first), and the toast "Phone replaced for" the ID. Copy the new code. Tap **Hide**, close the drawer and open it again: the line now
+says "No phone yet" again, because the new phone has not joined.
+
+On Phone A tap **More**, then **Notices**, and send a notice to all cadets, `After the replacement`. On Phone B tap **Refresh**.
+
+**Expect:** nothing new: no banner, no new notice, and "Updated" does not move. The old phone reads only its old, abandoned
+address, and staff no longer write there. Phone B keeps showing what it had.
+
+## 11. Leave this unit (Phone B)
 
 Tap **Leave this unit**.
 
@@ -159,13 +181,17 @@ leave this unit**. Tap **Yes, leave this unit**.
 **Expect:** the phone returns to **Set up this device**. Type the same code again under **I have a ticket** and tap **Check
 ticket**: it is refused, since a ticket works once. A cadet who has left needs a new ticket from the supply counter.
 
+## 12. The new phone joins (Phone B, or a third phone)
+
+On Phone B, now at **Set up this device** (or on a third phone that has never opened A.R.G.U.S.), tap **I have a ticket**, type the
+**new** code from step 10 into **TICKET CODE** and tap **Check ticket**. Choose a passphrase twice and tap **Join unit**.
+
+**Expect:** **My gear** opens as in step 5, with the same **Have** and **Still needed**; and **Notices** lists the notice from
+step 10 (`After the replacement`) as **New**. Back on Phone A, open the cadet's drawer: the line says "Phone:
+joined" with today's date. That is the whole replace: a new ticket, a new phone, and the old phone dark.
+
 ## Not on a screen yet
 
-- Replace phone. The code that replaces a cadet's phone exists and is tested (`reissueCadetTicket`: it gives the cadet a new
-  key and address and makes a new ticket, and the old phone reads nothing new), but no button for it is in the cadet drawer yet.
-  It cannot be shown by hand in this demo.
-- The drawer's phone line. Whether the cadet's phone has joined ("Phone: joined <date>" or "No phone yet") is built but not
-  yet shown in the drawer. Step 4 shows only that a ticket was made.
 - Showing a made code again, and sweeping the coins of a ticket nobody used.
 
 ## If something does not match

@@ -263,9 +263,8 @@ notices; Replace phone rotates the channel (new key, new address), and the old p
   channel to the issuing staff wallet (see the mw-kmgi38.2 consequence). A removed staff member who copied channel keys can read those
   cadets' records until each channel is rotated.
 * **Not built (known, for later).**
-  * **Replace phone has no screen.** `reissueCadetTicket` rotates the cadet's channel (reason `Replace phone`) and makes a new ticket and is
-    tested, but the cadet drawer has no button for it, and no screen shows the drawer's phone line (`cadetPhoneLine`: "Phone: joined <date>"
-    or "No phone yet"). A made code cannot be shown a second time.
+  * **A made code cannot be shown a second time.** (Replace phone and the drawer's phone line were later put on the cadet drawer, mw-kmgi38.16:
+    **Replace phone** asks once and calls `reissueCadetTicket`; the line is `cadetPhoneLine` over `readCadetChannel`.)
   * **No cancel or sweep of an unused cadet ticket:** its starter satoshis stay at the ticket address, and `reissueCadetTicket` does not
     cancel the previous open ticket (it redeems only into the replaced channel, which staff no longer read).
   * **No Web Push.** A closed app shows nothing, since that needs a push server, which A.R.G.U.S. does not have. If Luke later wants a

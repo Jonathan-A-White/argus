@@ -105,6 +105,7 @@ describe('Activity / audit view (spec §36)', () => {
     expect(describeActivity(projection, { ...base, event: { ...base.event, eventType: 'UNIT_KEY_ROTATED', entityId: 'e2', payload: { reason: 'REVOCATION' } } }, () => 'Chief')).toMatchObject({ title: 'Unit key replaced', record: { kind: 'Unit key' } })
     const member = { publicIdentity: 'member-1', displayName: 'Jordan', role: 'SUPPLY_OFFICER' as const, credentialId: 'c1', issuedAt: '', admittedBy: '', admittedEventId: '', status: 'ACTIVE' as const }
     expect(describeActivity({ ...projection, members: [member] }, { ...base, event: { ...base.event, eventType: 'ROLE_CHANGED', entityId: 'member-1', payload: { credential: { role: 'SUPPLY_OFFICER' } } } }, () => 'Jordan').title).toBe('Jordan is now Supply Officer')
+    expect(describeActivity({ ...projection, members: [member] }, { ...base, event: { ...base.event, eventType: 'ROLE_CHANGED', entityId: 'member-1', payload: { credential: { role: 'SUPPLY_OFFICER', credentialId: 'reissued-0fa848ee632ef3162421933aac5eda0b' } } } }, () => 'Jordan').title).toBe('Jordan has the current Supply Officer permissions')
   })
 
   it('describes tickets by the person they are for, never by their code or keys', async () => {

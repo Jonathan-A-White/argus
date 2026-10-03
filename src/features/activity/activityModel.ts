@@ -1,3 +1,4 @@
+import { isReissuedCredential } from '../../auth/authorization'
 import type { ArgusAppProjection } from '../../distributed/appIntegration'
 import { canonicalize, sha256 } from '../../distributed/canonical'
 import { isVerified } from '../../distributed/delivery'
@@ -119,7 +120,9 @@ export function describeActivity(projection: Projection, record: StoredEvent, me
     case 'AUTHORITY_REVOKED':
       return { title: `Removed access for ${person(event.entityId)}`, record: { kind: 'Member', label: person(event.entityId) } }
     case 'ROLE_CHANGED': {
-      const role = (payload.credential as { role?: string } | undefined)?.role
+      const { role, credentialId } = (payload.credential ?? {}) as { role?: string; credentialId?: unknown }
+      // A credential re-issued with its role's current permissions (mw-kmgi38.11) is not a new role.
+      if (role && typeof credentialId === 'string' && isReissuedCredential({ credentialId })) return { title: `${person(event.entityId)} has the current ${roleLabel(role)} permissions`, record: { kind: 'Member', label: person(event.entityId) } }
       return { title: `${person(event.entityId)} is now ${role ? roleLabel(role) : 'in a new role'}`, record: { kind: 'Member', label: person(event.entityId) } }
     }
     case 'CONFLICT_DETECTED':

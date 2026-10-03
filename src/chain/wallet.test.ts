@@ -439,6 +439,17 @@ describe('spending an admission ticket’s funding output (ADR 012)', () => {
     expect(feeOf(chain, spend.hex)).toBeLessThanOrEqual(5)
   })
 
+  it('marks every address it is asked to: a redemption shows at the ticket address and on the unit’s anchor', async () => {
+    const { chain, wallet, key, ticketAddress, funding } = await fundedTicket()
+    const anchor = fakeAddress()
+    const spend = await wallet.prepareSpendOfOutpoint({ key, outpoint: { txid: funding.txid, vout: 0 }, records: [{ kind: 'T', payload: Uint8Array.of(1) }, { kind: 'E', payload: Uint8Array.of(2) }], markerAddress: ticketAddress, alsoMarkAddresses: [anchor], correlationIds: ['redeem:t-x'] })
+    expect((await wallet.flush()).broadcast).toEqual([funding.txid, spend.txid])
+    expect(decodeArgusRecords(spend.hex).map(record => record.kind)).toEqual(['T', 'E'])
+    expect([chain.balanceOf(ticketAddress), chain.balanceOf(anchor)]).toEqual([1, 1])
+    expect(await chain.unconfirmedHistory(anchor)).toEqual([spend.txid])
+    await expect(wallet.prepareSpendOfOutpoint({ key, outpoint: { txid: funding.txid, vout: 0 }, records: [{ kind: 'T', payload: Uint8Array.of(1) }], markerAddress: ticketAddress, alsoMarkAddresses: ['1BoatSLRHtKNngkdXEeobR76b53LETtpyT'], correlationIds: [] })).rejects.toThrow(/Marker address/)
+  })
+
   it('queues the spend durably, in order behind its funding transaction, and survives a restart', async () => {
     const { wallet, key, ticketAddress, funding, store, wif, chain } = await fundedTicket()
     const spend = await wallet.prepareSpendOfOutpoint({ key, outpoint: { txid: funding.txid, vout: 0 }, records: [{ kind: 'T', payload: Uint8Array.of(9) }], markerAddress: ticketAddress, correlationIds: ['cancel:t-x'] })

@@ -316,14 +316,15 @@ export class DeviceWallet {
 
   /**
    * Builds, signs and queues one transaction that spends a single output belonging to ANOTHER key (an admission ticket's
-   * funding output, ADR 012), signed with that key: its records (data outputs) and a 1-satoshi output to `markerAddress`,
-   * with everything else going back to this wallet as change. The output is not one of this wallet's coins, so it is never
+   * funding output, ADR 012), signed with that key: its records (data outputs) and a 1-satoshi output to `markerAddress` (and to
+   * each of `alsoMarkAddresses`: a redemption also shows on the unit's anchor), with everything else going back to this wallet as change. The output is not one of this wallet's coins, so it is never
    * selected or reserved here; the network alone decides whether it is still unspent. Never broadcasts.
    */
-  prepareSpendOfOutpoint(spend: { key: PrivateKey; outpoint: { txid: string; vout: number }; records: ArgusRecord[]; markerAddress: string; correlationIds: string[] }): Promise<WalletPendingTx> {
+  prepareSpendOfOutpoint(spend: { key: PrivateKey; outpoint: { txid: string; vout: number }; records: ArgusRecord[]; markerAddress: string; alsoMarkAddresses?: string[]; correlationIds: string[] }): Promise<WalletPendingTx> {
     return this.exclusive(async () => {
       assertValidRecordBatch(spend.records)
-      assertTestnetAddress(spend.markerAddress, 'Marker address')
+      const markers = [spend.markerAddress, ...(spend.alsoMarkAddresses ?? [])]
+      for (const marker of markers) assertTestnetAddress(marker, 'Marker address')
       const state = await this.loadState()
       const hex = this.localTxHex(state, spend.outpoint.txid) ?? (await this.api.txHex(spend.outpoint.txid)).trim().toLowerCase()
       if (computeTxid(hex) !== spend.outpoint.txid.toLowerCase()) throw new Error('The funding transaction the network returned is not the one this ticket names.')
@@ -332,7 +333,7 @@ export class DeviceWallet {
       const tx = new Transaction()
       tx.addInput({ sourceTransaction: source, sourceOutputIndex: spend.outpoint.vout, unlockingScriptTemplate: new P2PKH().unlock(spend.key) })
       for (const record of spend.records) tx.addOutput({ lockingScript: encodeArgusRecordScript(record), satoshis: 0 })
-      tx.addOutput({ lockingScript: anchorLockingScript(spend.markerAddress), satoshis: ANCHOR_OUTPUT_SATOSHIS })
+      for (const marker of markers) tx.addOutput({ lockingScript: anchorLockingScript(marker), satoshis: ANCHOR_OUTPUT_SATOSHIS })
       tx.addOutput({ lockingScript: new P2PKH().lock(this.address), change: true })
       const rate = this.feeRate(state)
       try {

@@ -1,4 +1,4 @@
-import { PrivateKey } from '@bsv/sdk'
+import { PrivateKey, PublicKey, Signature } from '@bsv/sdk'
 
 /**
  * What the 128-bit ticket secret turns into (ADR 012): HKDF-SHA-256 with the secret as key material and the salt
@@ -47,7 +47,7 @@ export async function deriveTicketKeys(secret: Uint8Array): Promise<TicketKeys> 
 /** t- and 20 random hex digits. */
 export const newTicketId = () => `t-${Array.from(crypto.getRandomValues(new Uint8Array(10)), byte => byte.toString(16).padStart(2, '0')).join('')}`
 
-const b64url = (bytes: Uint8Array) => { let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte); return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '') }
+const b64url = (bytes: Uint8Array | number[]) => { let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte); return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '') }
 /**
  * A random P-256 ECDH key pair made for one ticket (ADR 012, "How members admitted by ticket get later rotations"): the
  * public half (SPKI, base64url) goes in the unit's TICKET_ISSUED fact so a rotation can grant to the ticket while it is
@@ -56,4 +56,13 @@ const b64url = (bytes: Uint8Array) => { let binary = ''; for (const byte of byte
 export async function newTicketEcdhKeyPair() {
   const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']) as CryptoKeyPair
   return { publicKey: b64url(new Uint8Array(await crypto.subtle.exportKey('spki', pair.publicKey))), privateJwk: JSON.stringify(await crypto.subtle.exportKey('jwk', pair.privateKey)) }
+}
+
+const fromB64url = (value: string) => { const normalized = value.replaceAll('-', '+').replaceAll('_', '/'); return Array.from(atob(normalized + '='.repeat((4 - normalized.length % 4) % 4)), c => c.charCodeAt(0)) }
+/** The ticket key's signature over a text (canonical JSON): `k1sig:` and the base64url DER of a low-S secp256k1 signature of its SHA-256. */
+export const signWithTicketKey = (privateKey: PrivateKey, message: string) => `k1sig:${b64url(privateKey.sign(message, 'utf8').toDER() as number[])}`
+/** Whether `signature` is the ticket key `k1:<hex>`'s signature over exactly `message`. Never throws: anything malformed is false. */
+export function verifyTicketSignature(publicIdentity: string, message: string, signature: string) {
+  if (!/^k1:0[23][0-9a-f]{64}$/.test(publicIdentity) || !signature.startsWith('k1sig:')) return false
+  try { return PublicKey.fromString(publicIdentity.slice(3)).verify(message, Signature.fromDER(fromB64url(signature.slice(6))), 'utf8') } catch { return false }
 }

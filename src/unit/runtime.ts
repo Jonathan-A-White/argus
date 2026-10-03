@@ -11,11 +11,13 @@ import type { ArgusRole, AuthorityCredential, SignedArgusEvent } from '../distri
 import { decodeTicketCode, encodeTicketCode, makeTicketSecret } from '../identity/ticketCode'
 import { deriveTicketKeys, newTicketEcdhKeyPair, newTicketId } from '../identity/ticketKeys'
 import { unsignedKeyGrantFields, unwrapEpochKeyFromGrant, wrapEpochKeyForGrant } from '../private-sync/keyGrant'
-import { TICKET_LIFETIME_MS, parseKeyGrantRecord } from '../private-sync/schema'
+import { TICKET_LIFETIME_MS, parseCadetJoinedRecord, parseKeyGrantRecord } from '../private-sync/schema'
 import { sealTicketRecord } from '../private-sync/ticketRecord'
 import { listTickets } from '../private-sync/tickets'
-import type { KeyGrantRecord, TicketCancellation, TicketFundingOutpoint, TicketInvitation, TicketPackage } from '../private-sync/types'
+import type { CadetJoinedRecord, CadetTicketPackage, KeyGrantRecord, TicketCancellation, TicketFundingOutpoint, TicketInvitation, TicketPackage } from '../private-sync/types'
 import { MemoryRepository } from '../storage/repository'
+import { cadetLabel } from '../stage3/domain'
+import { readChannelRecords, type ChannelRecordRead } from './channelReader'
 import { IndexedDbLedgerStore, type LedgerStore } from './ledgerStore'
 import { UnitEventSyncProvider } from './syncProvider'
 import { ChainTransport, type TransportStatus } from './transport'
@@ -40,6 +42,14 @@ export type IssuedTicket = { ticketId: string; code: string; displayName: string
 export type TicketCancelResult = { status: 'CANCELLED' | 'PENDING'; txid: string }
 /** Satoshis kept back beyond the starter satoshis when making a ticket, for the fees of its record and of the fact that announces it. */
 export const TICKET_FEE_RESERVE_SATOSHIS = 50
+/** Starter satoshis on a cadet's ticket: the phone's redemption pays its small fee from them and sends the rest back to the issuer. */
+export const CADET_TICKET_SATOSHIS = 500
+/** A cadet's ticket (ADR 013): the code to hand to the cadet, and the channel it opens. */
+export type IssuedCadetTicket = { ticketId: string; code: string; cadetId: string; displayName: string; ticketAddress: string; channelAddress: string; issuedAt: string; expiresAt: string; funding: TicketFundingOutpoint }
+/** What staff read from a cadet's channel on demand: every record that opens, and the latest CADET_JOINED (absent: no phone yet). */
+export type CadetChannelReading = { cadetId: string; channelAddress?: string; records: ChannelRecordRead[]; joined?: CadetJoinedRecord }
+/** The cadet drawer's Phone line: "Phone: joined <date>" once a phone joined the cadet's current channel, else "No phone yet". */
+export const cadetPhoneLine = (reading: Pick<CadetChannelReading, 'joined'>) => reading.joined ? `Phone: joined ${reading.joined.joinedAt.slice(0, 10)}` : 'No phone yet'
 
 const importEcdhPublic = (spki: string) => { const normalized = spki.replaceAll('-', '+').replaceAll('_', '/'); const bytes = Uint8Array.from(atob(normalized + '='.repeat((4 - normalized.length % 4) % 4)), c => c.charCodeAt(0)); return crypto.subtle.importKey('spki', bytes, { name: 'ECDH', namedCurve: 'P-256' }, false, []) }
 
@@ -61,6 +71,7 @@ export class UnitRuntime {
     readonly authorization: AuthorizationService,
     private readonly provider: UnitEventSyncProvider,
     private readonly options: UnitRuntimeOptions,
+    private readonly api: ChainApi,
   ) {}
 
   private get storage() { return this.options.storage ?? localStorage }
@@ -93,7 +104,7 @@ export class UnitRuntime {
       checkEnvelope: async envelope => { try { const { event } = await openEnvelope(envelope, async epoch => device.unitKeys.get(epoch)); return await genuine(event) ? 'valid' : 'invalid' } catch (error) { return error instanceof Error && error.message.startsWith('NO_EPOCH_KEY') ? 'unknown' : 'invalid' } },
     })
     await provider.prime()
-    const runtime = late.runtime = new UnitRuntime(device, controller, transport, wallet, authorization, provider, options)
+    const runtime = late.runtime = new UnitRuntime(device, controller, transport, wallet, authorization, provider, options, api)
     await runtime.reconcile(await controller.initialize())
     return runtime
   }
@@ -341,6 +352,71 @@ export class UnitRuntime {
     forgetTicketSecret(this.device, ticketId, this.storage)
     void this.transport.poke()
     return { status: 'CANCELLED', txid }
+  }
+
+  // ---------- cadet tickets (docs/adr/013-cadet-channels.md, mw-kmgi38.2) ----------
+  /** Checks, before anything is written or paid, that this device may admit cadets, the cadet exists and the wallet can pay. */
+  private async cadetTicketPreflight(cadetId: string, satoshis: number) {
+    if (this.revoked) throw new Error('Your access to this unit was removed.')
+    this.authorization.require(this.device.record.signingIdentity, 'cadets.admit')
+    const cadet = (await this.controller.technicalState()).cadets.find(candidate => candidate.cadetId === cadetId)
+    if (!cadet) throw new Error('Cadet was not found.')
+    if (!Number.isSafeInteger(satoshis) || satoshis < 100) throw new Error('A ticket needs at least 100 starter satoshis.')
+    const balance = await this.wallet.refresh().catch(() => this.wallet.balance())
+    if (balance.spendable < satoshis + TICKET_FEE_RESERVE_SATOSHIS) throw new InsufficientFundsError(this.wallet.address, balance.spendable, satoshis + TICKET_FEE_RESERVE_SATOSHIS)
+    return cadet
+  }
+  /**
+   * Master, Instructor or Supply Officer (cadets.admit): a one-week, one-use ticket for one cadet's phone. Makes the cadet's channel and
+   * the unit's notices key when there are none yet, funds the ticket's address with the starter satoshis, publishes the encrypted
+   * CADET record there (the channel key and address, the notices key and address, and nothing of the unit's keys), seals the code in
+   * this device's vault, and records CADET_TICKET_ISSUED in the unit's history. Refused, with nothing left behind, when the wallet cannot pay.
+   */
+  async issueCadetTicket(cadetId: string, options: { satoshis?: number } = {}): Promise<IssuedCadetTicket> {
+    const satoshis = options.satoshis ?? CADET_TICKET_SATOSHIS, cadet = await this.cadetTicketPreflight(cadetId, satoshis)
+    if (!(await this.controller.technicalState()).cadetChannels.some(channel => channel.cadetId === cadetId)) await this.controller.createCadetChannel(cadetId)
+    if (!(await this.controller.technicalState()).noticesChannel) await this.controller.createNoticesKey()
+    const state = await this.controller.technicalState(), channel = state.cadetChannels.find(entry => entry.cadetId === cadetId)!, notices = state.noticesChannel!
+    const { record } = this.device, unit = record.unit!, displayName = (cadet.fullName.trim() || cadetLabel(cadet)).slice(0, 60).trim()
+    const secret = makeTicketSecret(), code = encodeTicketCode(secret), keys = await deriveTicketKeys(secret), ticketId = newTicketId()
+    // Sealed before any money moves, as for a staff ticket: the funding can be recovered by spending it with the code.
+    await sealTicketSecret(this.device, ticketId, code, this.storage)
+    let fundingQueued = false
+    try {
+      const funding = await this.wallet.prepareTransfer(keys.address, satoshis)
+      fundingQueued = true
+      if (Transaction.fromHex(funding.hex).outputs[0]?.lockingScript.toHex() !== new P2PKH().lock(keys.address).toHex()) throw new Error('The ticket’s funding output is not where it was expected.')
+      const issuedAt = new Date().toISOString(), expiresAt = new Date(Date.parse(issuedAt) + TICKET_LIFETIME_MS).toISOString(), outpoint = { txid: funding.txid, vout: 0, satoshis }
+      const ticketPackage: CadetTicketPackage = { kind: 'CADET', packageVersion: 1, invitation: { invitationVersion: 1, ticketId, unitId: unit.unitId, role: 'CADET', cadetId, displayName, issuedAt, expiresAt, ticketPublicKey: keys.publicIdentity, funding: outpoint, returnAddress: record.walletAddress }, unit: { unitId: unit.unitId, unitName: unit.unitName }, channelKey: channel.channelKey, channelAddress: channel.channelAddress, noticesKey: notices.key, noticesAddress: notices.address }
+      await this.wallet.prepareRecords([{ kind: 'T', payload: await sealTicketRecord(keys.wrappingKey, keys.address, ticketPackage) }], keys.address, [ticketId])
+      this.emit(await this.controller.recordCadetTicketIssued({ ticketId, cadetId, ticketAddress: keys.address, channelAddress: channel.channelAddress, issuedAt, expiresAt, funding: outpoint }))
+      void this.transport.poke()
+      return { ticketId, code, cadetId, displayName, ticketAddress: keys.address, channelAddress: channel.channelAddress, issuedAt, expiresAt, funding: outpoint }
+    } catch (error) {
+      if (!fundingQueued) forgetTicketSecret(this.device, ticketId, this.storage)
+      throw error
+    }
+  }
+  /**
+   * Replace phone: a new key and address for the cadet's channel (so the old phone reads nothing new), then a new ticket that grants
+   * them. A cadet with no channel yet simply gets a first ticket.
+   */
+  async reissueCadetTicket(cadetId: string, options: { satoshis?: number } = {}): Promise<IssuedCadetTicket> {
+    await this.cadetTicketPreflight(cadetId, options.satoshis ?? CADET_TICKET_SATOSHIS)
+    if ((await this.controller.technicalState()).cadetChannels.some(channel => channel.cadetId === cadetId)) await this.controller.rotateCadetChannel(cadetId, 'Replace phone')
+    return this.issueCadetTicket(cadetId, options)
+  }
+  /**
+   * Reads one cadet's current channel from the chain, on demand (the cadet drawer's Phone line): that one address and nothing else.
+   * Before a phone redeems the cadet's ticket there is nothing there; after, its CADET_JOINED record. A cadet with no channel has no records.
+   */
+  async readCadetChannel(cadetId: string): Promise<CadetChannelReading> {
+    const channel = (await this.controller.technicalState()).cadetChannels.find(entry => entry.cadetId === cadetId)
+    if (!channel) return { cadetId, records: [] }
+    const records = await readChannelRecords(this.api, channel.channelAddress, channel.channelKey)
+    let joined: CadetJoinedRecord | undefined
+    for (const entry of records) if (entry.kind === 'joined') { try { joined = parseCadetJoinedRecord(entry.plaintext) } catch { /* damaged: not a phone */ } }
+    return { cadetId, channelAddress: channel.channelAddress, records, ...(joined ? { joined } : {}) }
   }
 
   /** Sends testnet satoshis from this device's wallet (e.g. the Master topping up a member). */

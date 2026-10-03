@@ -1,5 +1,5 @@
 import { PrivateKey } from '@bsv/sdk'
-import { ROLE_PERMISSIONS, issueCredential } from '../auth/authorization'
+import { ROLE_PERMISSIONS, issueCredential, type TicketCredential } from '../auth/authorization'
 import { DEFAULT_WALLET_DB_NAME } from '../chain/walletStore'
 import { canonicalize } from '../distributed/canonical'
 import type { ArgusRole, AuthorityCredential } from '../distributed/types'
@@ -7,7 +7,7 @@ import { decodeCode, encodeCode } from '../identity/codes'
 import { WebCryptoIdentityProvider, type ArgusIdentityProvider } from '../identity/identity'
 import { unsignedKeyGrantFields, unwrapEpochKeyFromGrant, wrapEpochKeyForGrant } from '../private-sync/keyGrant'
 import { parseKeyGrantRecord } from '../private-sync/schema'
-import type { KeyGrantRecord } from '../private-sync/types'
+import type { KeyGrantRecord, TicketPackage } from '../private-sync/types'
 import { IndexedDbLedgerStore } from './ledgerStore'
 
 /**
@@ -17,6 +17,9 @@ import { IndexedDbLedgerStore } from './ledgerStore'
  *   wallet    — this device's own BSV TESTNET key that pays the few satoshis each record costs
  *   authority — MASTER only: the unit authority key that signs member credentials
  *   unitKey:* — the AES-256 unit data key(s) that encrypt everything the unit writes to chain
+ *   ticket:*  — an admission ticket's code, kept by its issuer until the ticket is spent
+ *   redeeming:* — a joining device's ticket code and redemption txid, until the network accepts or refuses the redemption
+ *   ticketEcdh:* — a device admitted by ticket: the ticket's own ECDH key, which opens unit keys granted to the ticket while it was open
  * Each secret is AES-256-GCM ciphertext under a key derived from the passphrase
  * (PBKDF2-SHA-256, 600k iterations) with the secret's name as additional data. Nothing here is
  * usable without the passphrase, and nothing secret ever leaves the device: members are admitted
@@ -56,6 +59,8 @@ export type UnlockedDevice = {
   unitKeys: Map<string, CryptoKey>
   /** Private half of the unit recovery key: lets a restored Master open every later key generation. */
   recoveryEcdhPrivateKey?: CryptoKey
+  /** A device admitted by ticket: the ticket's own ECDH key, for unit keys granted to the ticket before it was redeemed (ADR 012). */
+  ticketEcdh?: { ticketId: string; privateKey: CryptoKey }
   /** Kept only in memory while unlocked so an admission can be stored without re-entering the passphrase. */
   vaultKey: CryptoKey
 }
@@ -162,7 +167,9 @@ export async function unlockDevice(record: DeviceVaultRecord, passphrase: string
   const unitKeys = new Map<string, CryptoKey>()
   for (const epoch of record.unit?.epochs ?? []) { const sealed = record.secrets[epochSecretName(epoch)]; if (sealed) unitKeys.set(epoch, await importUnitKey(await unseal(vaultKey, epochSecretName(epoch), sealed), record.role === 'MASTER')) }
   const recoveryEcdhPrivateKey = record.secrets.recoveryEcdh ? await importEcdhPrivate(await unseal(vaultKey, 'recoveryEcdh', record.secrets.recoveryEcdh)) : undefined
-  return { record, identity, ...(authoritySigner ? { authoritySigner } : {}), ecdhPrivateKey, walletWif, unitKeys, ...(recoveryEcdhPrivateKey ? { recoveryEcdhPrivateKey } : {}), vaultKey }
+  const ticketEcdhName = Object.keys(record.secrets).find(name => name.startsWith(TICKET_ECDH_PREFIX))
+  const ticketEcdh = ticketEcdhName ? { ticketId: ticketEcdhName.slice(TICKET_ECDH_PREFIX.length), privateKey: await importEcdhPrivate(await unseal(vaultKey, ticketEcdhName, record.secrets[ticketEcdhName])) } : undefined
+  return { record, identity, ...(authoritySigner ? { authoritySigner } : {}), ecdhPrivateKey, walletWif, unitKeys, ...(recoveryEcdhPrivateKey ? { recoveryEcdhPrivateKey } : {}), ...(ticketEcdh ? { ticketEcdh } : {}), vaultKey }
 }
 
 /** Public, non-secret code a joining device shows so the Master can admit it. Safe to text, email or read aloud. */
@@ -287,6 +294,45 @@ export async function readTicketSecret(device: UnlockedDevice, ticketId: string)
 export function forgetTicketSecret(device: UnlockedDevice, ticketId: string, storage: Storage2) {
   const secrets = { ...device.record.secrets }; delete secrets[ticketSecretName(ticketId)]
   device.record = saveDeviceVault({ ...device.record, secrets }, storage)
+}
+/**
+ * A joining device part-way through redeeming a ticket keeps the code and its redemption's txid sealed as `redeeming:<ticketId>` until
+ * the network decides, so it resumes with the same transaction after a restart (never a second, conflicting one).
+ */
+const REDEEMING_PREFIX = 'redeeming:'
+export type RedemptionInProgress = { ticketId: string; code: string; txid: string }
+export async function sealRedemption(device: UnlockedDevice, redemption: RedemptionInProgress, storage: Storage2) {
+  const name = `${REDEEMING_PREFIX}${redemption.ticketId}`
+  device.record = saveDeviceVault({ ...device.record, secrets: { ...device.record.secrets, [name]: await seal(device.vaultKey, name, JSON.stringify({ code: redemption.code, txid: redemption.txid })) } }, storage)
+}
+export async function readRedemption(device: UnlockedDevice): Promise<RedemptionInProgress | undefined> {
+  const name = Object.keys(device.record.secrets).find(candidate => candidate.startsWith(REDEEMING_PREFIX)); if (!name) return undefined
+  const { code, txid } = JSON.parse(await unseal(device.vaultKey, name, device.record.secrets[name])) as { code: string; txid: string }
+  return { ticketId: name.slice(REDEEMING_PREFIX.length), code, txid }
+}
+const withoutRedemption = (secrets: Record<string, SealedSecret>) => Object.fromEntries(Object.entries(secrets).filter(([name]) => !name.startsWith(REDEEMING_PREFIX)))
+export function forgetRedemption(device: UnlockedDevice, storage: Storage2) { device.record = saveDeviceVault({ ...device.record, secrets: withoutRedemption(device.record.secrets) }, storage) }
+
+const TICKET_ECDH_PREFIX = 'ticketEcdh:'
+/** Who a rotation grants to while a ticket is open: the ticket itself, through the ECDH key in its TICKET record (ADR 012). */
+export const ticketGranteeIdentity = (ticketId: string) => `ticket:${ticketId}`
+/**
+ * The network accepted this device's redemption of a ticket: it becomes the named person with the ticket's role. Stores the unit keys
+ * the ticket carried and the ticket's ECDH key sealed under the passphrase key, takes the ticket credential as its own, and forgets the
+ * redemption in progress. Unit keys are kept extractable only for a Master, as everywhere.
+ */
+export async function completeTicketRedemption(device: UnlockedDevice, input: { ticket: TicketPackage; credential: TicketCredential }, storage: Storage2): Promise<UnlockedDevice> {
+  const { record } = device, { ticket, credential } = input, { invitation } = ticket
+  if (record.unit) throw new Error('This device already belongs to a unit.')
+  if (credential.subjectPublicIdentity !== record.signingIdentity || credential.credentialId !== invitation.ticketId) throw new Error('That redemption belongs to someone else.')
+  const secrets = withoutRedemption(record.secrets)
+  for (const { epochId, key } of ticket.epochKeys) secrets[epochSecretName(epochId)] = await seal(device.vaultKey, epochSecretName(epochId), key)
+  const ecdhName = `${TICKET_ECDH_PREFIX}${invitation.ticketId}`
+  secrets[ecdhName] = await seal(device.vaultKey, ecdhName, ticket.ticketEcdhPrivateKey)
+  const updated = saveDeviceVault({ ...record, secrets, displayName: invitation.displayName, role: invitation.role, credential, unit: { ...ticket.unit, currentEpoch: ticket.currentEpoch, epochs: ticket.epochKeys.map(entry => entry.epochId), joinedAt: new Date().toISOString() } }, storage)
+  const unitKeys = new Map<string, CryptoKey>()
+  for (const { epochId, key } of ticket.epochKeys) unitKeys.set(epochId, await importUnitKey(key, invitation.role === 'MASTER'))
+  return { ...device, record: updated, unitKeys, ticketEcdh: { ticketId: invitation.ticketId, privateKey: await importEcdhPrivate(ticket.ticketEcdhPrivateKey) } }
 }
 
 /** SHA-256 fingerprint (16 hex) of the recovery public key, used to name its key grants. */

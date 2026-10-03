@@ -20,7 +20,7 @@ import { IndexedDbLedgerStore, type LedgerStore } from './ledgerStore'
 import { UnitEventSyncProvider } from './syncProvider'
 import { ChainTransport, type TransportStatus } from './transport'
 import { openEnvelope } from './envelope'
-import { admitMember, exportRecoveryFile, forgetTicketSecret, installUnitKey, newUnitKey, rawUnitKeys, readTicketSecret, recoveryFingerprint, recoveryGranteeIdentity, sealTicketSecret, setCurrentEpoch, updateDeviceCredential, type UnlockedDevice } from './vault'
+import { admitMember, exportRecoveryFile, forgetTicketSecret, installUnitKey, newUnitKey, rawUnitKeys, readTicketSecret, recoveryFingerprint, recoveryGranteeIdentity, sealTicketSecret, setCurrentEpoch, ticketGranteeIdentity, updateDeviceCredential, type UnlockedDevice } from './vault'
 
 export type UnitRuntimeOptions = {
   api?: ChainApi
@@ -155,10 +155,11 @@ export class UnitRuntime {
     if (!credential || credential.credentialId !== me.credentialId || credential.subjectPublicIdentity !== record.signingIdentity || !this.authorization.hasCredential(credential.credentialId)) return
     await updateDeviceCredential(this.device, credential, this.storage)
   }
-  /** Opens this device's copy of every unit key generation it has been given (directly, or through the unit recovery key). */
+  /** Opens this device's copy of every unit key generation it has been given (directly, through the unit recovery key, or to the ticket it joined by). */
   private async installGrantedKeys(projection: ArgusAppProjection) {
     let installed = 0
     const recoveryId = this.device.record.recoveryPublicKey && this.device.recoveryEcdhPrivateKey ? recoveryGranteeIdentity(await recoveryFingerprint(this.device.record.recoveryPublicKey)) : undefined
+    const { ticketEcdh } = this.device, ticketId = ticketEcdh ? ticketGranteeIdentity(ticketEcdh.ticketId) : undefined
     for (const epoch of projection.keyEpochs) {
       if (this.device.unitKeys.has(epoch.epochId)) continue
       const event = projection.events.find(stored => stored.event.eventId === epoch.eventId)?.event
@@ -166,10 +167,11 @@ export class UnitRuntime {
       if (!event || !payload?.grantorEcdhPublicKey || !Array.isArray(payload.grants)) continue
       const grants = payload.grants.map(grant => parseKeyGrantRecord(grant))
       const mine = grants.find(grant => grant.granteePublicIdentity === this.device.record.signingIdentity), viaRecovery = !mine && recoveryId ? grants.find(grant => grant.granteePublicIdentity === recoveryId) : undefined
-      const grant = mine ?? viaRecovery
+      const viaTicket = !mine && !viaRecovery && ticketId ? grants.find(grant => grant.granteePublicIdentity === ticketId) : undefined
+      const grant = mine ?? viaRecovery ?? viaTicket
       if (!grant || grant.grantorPublicIdentity !== event.actorPublicIdentity || !(await this.device.identity.verify(canonicalize(unsignedKeyGrantFields(grant)), grant.signature, grant.grantorPublicIdentity))) continue
       try {
-        const key = await unwrapEpochKeyFromGrant(grant, { granteeEcdhPrivateKey: mine ? this.device.ecdhPrivateKey : this.device.recoveryEcdhPrivateKey!, grantorEcdhPublicKey: await importEcdhPublic(payload.grantorEcdhPublicKey), extractable: true })
+        const key = await unwrapEpochKeyFromGrant(grant, { granteeEcdhPrivateKey: mine ? this.device.ecdhPrivateKey : viaRecovery ? this.device.recoveryEcdhPrivateKey! : ticketEcdh!.privateKey, grantorEcdhPublicKey: await importEcdhPublic(payload.grantorEcdhPublicKey), extractable: true })
         await installUnitKey(this.device, epoch.epochId, key, { makeCurrent: false }, this.storage)
         installed++
       } catch { /* wrapped for a different key pair: not this device's to open */ }
@@ -245,8 +247,9 @@ export class UnitRuntime {
   }
   /**
    * Master only: creates a new unit key and hands one wrapped copy to every active member (and to
-   * the unit recovery key). The announcement is encrypted under the old key; members who were
-   * removed can read the announcement but cannot open any copy, nor anything written afterwards.
+   * the unit recovery key, and to every ticket still open, for whoever redeems it). The announcement
+   * is encrypted under the old key; members who were removed can read the announcement but cannot
+   * open any copy, nor anything written afterwards.
    */
   async rotateUnitKey(reason: 'REVOCATION' | 'MANUAL' = 'MANUAL'): Promise<KeyRotationResult> {
     this.requireMaster()
@@ -257,11 +260,14 @@ export class UnitRuntime {
     const grants: KeyGrantRecord[] = [await wrap(record.signingIdentity, record.ecdhPublicKey)]
     for (const member of recipients) if (member.ecdhPublicKey && member.publicIdentity !== record.signingIdentity) grants.push(await wrap(member.publicIdentity, member.ecdhPublicKey))
     if (projection.recoveryKey) grants.push(await wrap(recoveryGranteeIdentity(projection.recoveryKey.fingerprint), projection.recoveryKey.publicKey))
+    const people = grants.length - (projection.recoveryKey ? 1 : 0)
+    // A ticket out now carries only the keys made before it: one rotated now reaches its person through the ticket's own ECDH key (ADR 012).
+    for (const ticket of listTickets(projection.tickets).filter(entry => entry.status === 'open')) grants.push(await wrap(ticketGranteeIdentity(ticket.ticketId), ticket.ticketEcdhPublicKey))
     await this.controller.rotateUnitKey({ epochId, previousEpoch: unit.currentEpoch, reason, grants, grantorEcdhPublicKey: record.ecdhPublicKey })
     await installUnitKey(this.device, epochId, raw, { makeCurrent: true }, this.storage)
     void this.transport.poke()
     this.emitStatus()
-    return { epochId, recipients: grants.length - (projection.recoveryKey ? 1 : 0), missing }
+    return { epochId, recipients: people, missing }
   }
   /**
    * Original (or recovered) Master only: an encrypted recovery file for getting the unit authority

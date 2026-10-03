@@ -1,5 +1,5 @@
 import { P2PKH, Transaction } from '@bsv/sdk'
-import { AuthorizationService, ROLE_PERMISSIONS, issueCredential, issueRevocation, ticketRuleViolation } from '../auth/authorization'
+import { AuthorizationService, ROLE_PERMISSIONS, isTicketCredential, issueCredential, issueRevocation, lacksRolePermissions, reissueCredential, ticketCredential, ticketRuleViolation } from '../auth/authorization'
 import type { ChainApi, WalletBalance, WalletStateStore } from '../chain/types'
 import { DeviceWallet, InsufficientFundsError } from '../chain/wallet'
 import { IndexedDbWalletStateStore } from '../chain/walletStore'
@@ -79,6 +79,8 @@ export class UnitRuntime {
   static async open(device: UnlockedDevice, options: UnitRuntimeOptions = {}) {
     const { record } = device, unit = record.unit
     if (!unit || !record.credential || record.role === 'PENDING') throw new Error('This device has not been admitted to a unit yet.')
+    // A ticket credential's permissions are its role's, derived anew by every verifier: this device's own copy follows (mw-kmgi38.11).
+    if (isTicketCredential(record.credential)) { const derived = ticketCredential(record.credential.ticket); if (canonicalize(derived) !== canonicalize(record.credential)) await updateDeviceCredential(device, derived, options.storage ?? localStorage) }
     const authorization = new AuthorizationService(unit.authorityIdentity, device.identity)
     const api = options.api ?? new WhatsOnChainApi()
     const ledger = options.ledger ?? new IndexedDbLedgerStore(unit.unitId)
@@ -136,7 +138,10 @@ export class UnitRuntime {
   private async reconcileOnce(initial: ArgusAppProjection): Promise<ArgusAppProjection> {
     let projection = initial
     for (let round = 0; round < 4; round++) {
+      // A credential replaced elsewhere is adopted before a Master introduces itself, so it never re-introduces the old one.
+      await this.adoptOwnCredential(projection)
       projection = await this.introduceMaster(projection)
+      projection = await this.reissueOutdatedCredentials(projection)
       await this.adoptOwnCredential(projection)
       const installed = await this.installGrantedKeys(projection)
       this.adoptCurrentEpoch(projection)
@@ -156,6 +161,30 @@ export class UnitRuntime {
     if (record.role !== 'MASTER' || this.revoked || !this.transport.status().lastScanAt) return projection
     if (projection.members.some(member => member.publicIdentity === record.signingIdentity && member.credentialId === record.credential?.credentialId)) return projection
     return this.controller.recordAdmission({ credential: record.credential!, displayName: record.displayName, walletAddress: record.walletAddress, ecdhPublicKey: record.ecdhPublicKey })
+  }
+  /**
+   * mw-kmgi38.11: a credential made before its role gained a permission lacks it (cadets.admit and notices.send on a unit made before
+   * the cadet epic). A device holding the unit authority re-issues every active member's direct credential that falls short of its
+   * role's current list, its own included, as a role change to the same role; each member's device then adopts its new credential.
+   * Two such devices doing it at once make the same replacement, and the second changes nothing (see reissueCredential).
+   */
+  private async reissueOutdatedCredentials(initial: ArgusAppProjection) {
+    const signer = this.device.authoritySigner, now = new Date().toISOString()
+    if (!signer || this.device.record.role !== 'MASTER' || this.revoked) return initial
+    const outdated = (projection: ArgusAppProjection) => projection.members.flatMap(member => {
+      if (member.status !== 'ACTIVE' || (member.expiresAt && member.expiresAt <= now)) return []
+      const credential = projection.events.find(stored => stored.event.eventId === member.credentialEventId)?.event.payload.credential as AuthorityCredential | undefined
+      return credential && credential.credentialId === member.credentialId && this.authorization.hasCredential(credential.credentialId) && lacksRolePermissions(credential) ? [credential] : []
+    })
+    if (!outdated(initial).length) return initial
+    // Read afresh: a reconcile queued behind another holds a projection from before the other's re-issues.
+    let projection = await this.controller.project(), reissued = 0
+    for (const credential of outdated(projection)) {
+      // A refused re-issue must not keep the unit from opening: it is tried again at the next reconcile.
+      try { projection = await this.controller.changeRole(await reissueCredential(signer, credential)); reissued++ } catch { /* tried again later */ }
+    }
+    if (reissued) void this.transport.poke()
+    return projection
   }
   private async adoptOwnCredential(projection: ArgusAppProjection) {
     const { record } = this.device, me = projection.members.find(member => member.publicIdentity === record.signingIdentity)
